@@ -1,0 +1,12 @@
+.env
+.venv
+.git
+.gitignore
+__pycache__
+*.pyc
+*.egg-info
+tests/
+*.ipynb
+.pytest_cache
+requirements-dev.txt
+README.md

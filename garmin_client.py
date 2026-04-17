@@ -8,10 +8,14 @@ logger = logging.getLogger(__name__)
 TOKEN_DIR = os.path.expanduser("~/.garminconnect")
 _client: Garmin | None = None
 
-# Corporate proxy SSL fix — set REQUESTS_CA_BUNDLE in .env if needed
+# Corporate proxy SSL fix — only apply if the cert bundle actually exists
 ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE")
 if ca_bundle:
-    os.environ["REQUESTS_CA_BUNDLE"] = ca_bundle
+    if os.path.exists(ca_bundle):
+        os.environ["REQUESTS_CA_BUNDLE"] = ca_bundle
+    else:
+        # Path doesn't exist (e.g. running in Docker) — remove it entirely
+        del os.environ["REQUESTS_CA_BUNDLE"]
 
 def get_client() -> Garmin:
     """
