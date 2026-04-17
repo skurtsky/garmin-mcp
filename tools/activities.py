@@ -176,24 +176,24 @@ def get_activities(limit: int = 10, sport_type: str | None = None) -> list[dict]
     """
     client = get_client()
     limit = min(limit, 50)
-    activities = client.get_activities(0, limit)
+
+    if sport_type:
+        activities = client.get_activities(0, limit, activitytype=sport_type)
+    else:
+        activities = client.get_activities(0, limit)
 
     summaries = []
     for a in activities:
-        # get_activities() returns a lighter payload than get_activity()
-        # so we build a minimal summary directly from the list response
         sport = a.get('activityType', {}).get('typeKey', '')
-        if sport_type and sport != sport_type:
-            continue
         summaries.append({
-            'id':           a.get('activityId'),
-            'name':         a.get('activityName'),
-            'type':         sport,
-            'date':         a.get('startTimeLocal'),
-            'distance_km':  round((a.get('distance') or 0) / 1000, 2),
-            'duration_min': round((a.get('duration') or 0) / 60, 1),
-            'avg_hr':       a.get('averageHR'),
-            'training_load':round(a.get('activityTrainingLoad') or 0, 1),
+            'id':            a.get('activityId'),
+            'name':          a.get('activityName'),
+            'type':          sport,
+            'date':          a.get('startTimeLocal'),
+            'distance_km':   round((a.get('distance') or 0) / 1000, 2),
+            'duration_min':  round((a.get('duration') or 0) / 60, 1),
+            'avg_hr':        a.get('averageHR'),
+            'training_load': round(a.get('activityTrainingLoad') or 0, 1),
         })
 
     return summaries

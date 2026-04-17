@@ -1,6 +1,25 @@
 # tools/health.py
 from garmin_client import get_client
+from datetime import date, timedelta
 
+def _resolve_sleep_date(date_str: str) -> str:
+    """
+    Garmin files sleep under the wake-up date, not the bedtime date.
+    'last night' means today's date, not yesterday's.
+    """
+    if date_str == 'today':
+        return date.today().isoformat()
+    if date_str == 'yesterday':
+        return (date.today() - timedelta(days=1)).isoformat()
+    return date_str
+
+def _resolve_date(date_str: str) -> str:
+    """Resolve 'today' and 'yesterday' to ISO date strings."""
+    if date_str == 'today':
+        return date.today().isoformat()
+    if date_str == 'yesterday':
+        return (date.today() - timedelta(days=1)).isoformat()
+    return date_str
 
 def get_sleep(date: str) -> dict:
     """
@@ -9,6 +28,8 @@ def get_sleep(date: str) -> dict:
     Args:
         date: Date string in YYYY-MM-DD format
     """
+    date = _resolve_sleep_date(date)
+
     client = get_client()
     sleep_raw = client.get_sleep_data(date)
 
@@ -58,7 +79,9 @@ def get_daily_readiness(date: str) -> dict:
 
     Args:
         date: Date string in YYYY-MM-DD format
-    """
+    """    
+    date = _resolve_date(date)
+    
     client = get_client()
 
     hrv_raw          = client.get_hrv_data(date)

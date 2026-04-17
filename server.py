@@ -83,9 +83,11 @@ def activity_detail(activity_id: int) -> dict:
 def sleep(date: str) -> dict:
     """
     Get sleep quality and recovery metrics for a given date.
+    Garmin files sleep under the wake-up date — so 'last night's sleep'
+    should use today's date, not yesterday's.
 
     Args:
-        date: Date in YYYY-MM-DD format
+        date: Date in YYYY-MM-DD format. Use today's date for last night's sleep.
     """
     return get_sleep(date)
 
@@ -93,12 +95,11 @@ def sleep(date: str) -> dict:
 @mcp.tool()
 def daily_readiness(date: str) -> dict:
     """
-    Get daily readiness metrics for a given date including HRV status
-    and baseline, body battery charge/drain, training load balance,
-    ACWR, and VO2max trends.
+    Get daily readiness metrics for a given date including HRV, body battery,
+    training load balance, ACWR, and VO2max trends.
 
     Args:
-        date: Date in YYYY-MM-DD format
+        date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
     return get_daily_readiness(date)
 
