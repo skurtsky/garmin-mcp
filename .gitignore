@@ -1,3 +1,8 @@
 .env
 .garminconnect/
-*.ipynb_checkpoints
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
+*.egg-info/
+*.ipynb_checkpoints/
