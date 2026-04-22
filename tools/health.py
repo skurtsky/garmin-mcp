@@ -109,12 +109,23 @@ def get_daily_readiness(date: str) -> dict:
         }
         for e in bb.get('bodyBatteryActivityEvent', [])
     ]
+    
+    # "Start of day" level — the battery when you woke up (peak after sleep).
+    # Garmin may expose this as 'startLevel', 'highest', or similar. We try
+    # several known field names and fall back to None if none are present.
+    start_level = (
+        bb.get('startLevel')
+        or bb.get('startBodyBattery')
+        or bb.get('wakeBodyBattery')
+        or bb.get('highest')
+    )
     bb_clean = {
-        'charged':  bb.get('charged'),
-        'drained':  bb.get('drained'),
-        'events':   bb_events,
+        'charged':     bb.get('charged'),
+        'drained':     bb.get('drained'),
+        'start_level': start_level,
+        'events':      bb_events,
     }
-
+    
     # Training status
     ts = training_raw.get('mostRecentTrainingStatus', {}) \
                      .get('latestTrainingStatusData', {})

@@ -2,6 +2,7 @@
 import os
 import logging
 from garminconnect import Garmin
+import glob
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +19,6 @@ if ca_bundle:
         del os.environ["REQUESTS_CA_BUNDLE"]
 
 def get_client() -> Garmin:
-    """
-    Return a cached authenticated Garmin client.
-    Attempts to resume from saved tokens first, falls back to fresh login.
-    """
     global _client
     if _client is not None:
         return _client
@@ -36,8 +33,12 @@ def get_client() -> Garmin:
         try:
             client.client.load(TOKEN_DIR)
             logger.info("Resumed Garmin session from saved tokens")
+            prof = client.client.connectapi("/userprofile-service/socialProfile")
+            client.display_name = prof.get("displayName", client.username)
+            client.get_user_profile()  # verify tokens are still valid
         except Exception as e:
-            logger.warning(f"Token load failed ({e}), attempting fresh login")
+            logger.warning(f"Tokens invalid or expired ({e}), performing fresh login")
+            _clear_tokens()
             _fresh_login(client, token_file)
     else:
         _fresh_login(client, token_file)
@@ -52,3 +53,15 @@ def _fresh_login(client: Garmin, token_file: str) -> None:
     client.login()
     client.client.dump(TOKEN_DIR)
     logger.info(f"Fresh login successful, tokens saved to {TOKEN_DIR}")
+
+def _clear_tokens() -> None:
+    """Remove saved token files from disk."""
+    for f in glob.glob(os.path.join(TOKEN_DIR, "*.json")):
+        os.remove(f)
+
+def reset_client() -> None:
+    """Clear cached client and saved tokens, forcing a fresh login next call."""
+    global _client
+    _client = None
+    _clear_tokens()
+    logger.info("Cleared cached client and tokens")

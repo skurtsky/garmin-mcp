@@ -1,6 +1,7 @@
 # tools/activities.py
 from garmin_client import get_client
 from tools.profile import get_athlete_profile
+from datetime import date, timedelta
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -221,4 +222,91 @@ def get_activity(activity_id: int) -> dict:
         'summary':  summary,
         'laps':     laps,
         'hr_zones': hr_zones,
+    }
+
+def _activity_summary_from_list(a: dict) -> dict:
+    """Extract compact summary fields from a Garmin activities-list entry."""
+    return {
+        'id':            a.get('activityId'),
+        'name':          a.get('activityName'),
+        'type':          a.get('activityType', {}).get('typeKey', ''),
+        'date':          a.get('startTimeLocal'),
+        'distance_km':   round((a.get('distance') or 0) / 1000, 2),
+        'duration_min':  round((a.get('duration') or 0) / 60, 1),
+        'avg_hr':        a.get('averageHR'),
+        'training_load': round(a.get('activityTrainingLoad') or 0, 1),
+    }
+def get_activities(
+    limit: int = 10,
+    sport_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """
+    Get a list of activities with summary metrics.
+    When start_date is supplied the date-range endpoint is used (returns all
+    matching activities regardless of limit).  When omitted the most-recent
+    endpoint is used with the given limit.
+    Args:
+        limit:      Number of activities when no date range is given (default 10, max 50)
+        sport_type: Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+        start_date: Optional start date YYYY-MM-DD (inclusive)
+        end_date:   Optional end date YYYY-MM-DD (inclusive, defaults to today)
+    """
+    client = get_client()
+    if start_date:
+        activities = client.get_activities_by_date(
+            startdate=start_date,
+            enddate=end_date,
+            activitytype=sport_type,
+        )
+    else:
+        limit = min(limit, 50)
+        activities = client.get_activities(0, limit, activitytype=sport_type) \
+            if sport_type else client.get_activities(0, limit)
+    return [_activity_summary_from_list(a) for a in activities]
+
+def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> dict:
+    """
+    Get an aggregated summary of activities for a Monday-to-Sunday week.
+    Args:
+        week_offset: 0 = current week, 1 = last week, 2 = two weeks ago, …
+        sport_type:  Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+    """
+    today = date.today()
+    week_monday = today - timedelta(days=today.weekday() + week_offset * 7)
+    week_sunday = week_monday + timedelta(days=6)
+    # Don't ask for future dates
+    if week_sunday > today:
+        week_sunday = today
+    client = get_client()
+    activities = client.get_activities_by_date(
+        startdate=week_monday.isoformat(),
+        enddate=week_sunday.isoformat(),
+        activitytype=sport_type,
+    )
+    summaries = [_activity_summary_from_list(a) for a in activities]
+    # Aggregate totals
+    total_distance_km = round(sum(a['distance_km'] for a in summaries), 2)
+    total_duration_min = round(sum(a['duration_min'] for a in summaries), 1)
+    total_training_load = round(sum(a['training_load'] for a in summaries), 1)
+    # Breakdown by type
+    by_type: dict[str, dict] = {}
+    for a in summaries:
+        t = a['type']
+        if t not in by_type:
+            by_type[t] = {'count': 0, 'distance_km': 0.0, 'duration_min': 0.0}
+        by_type[t]['count'] += 1
+        by_type[t]['distance_km'] = round(by_type[t]['distance_km'] + a['distance_km'], 2)
+        by_type[t]['duration_min'] = round(by_type[t]['duration_min'] + a['duration_min'], 1)
+    return {
+        'week_start': week_monday.isoformat(),
+        'week_end':   week_sunday.isoformat(),
+        'sport_type_filter': sport_type,
+        'total_activities':  len(summaries),
+        'total_distance_km': total_distance_km,
+        'total_duration_min': total_duration_min,
+        'total_training_load': total_training_load,
+        'by_type': by_type,
+        'activities': summaries,
     }

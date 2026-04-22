@@ -5,8 +5,9 @@ from fastmcp import FastMCP
 from dotenv import load_dotenv
 
 from tools.profile import get_athlete_profile
-from tools.activities import get_activities, get_activity
+from tools.activities import get_activities, get_activity, get_weekly_summary
 from tools.health import get_sleep, get_daily_readiness
+from tools.trends import get_performance_predictions, get_performance_trends
 
 load_dotenv()
 
@@ -56,15 +57,25 @@ def athlete_profile() -> dict:
 
 
 @mcp.tool()
-def recent_activities(limit: int = 10, sport_type: Optional[str] = None) -> list:
+def recent_activities(
+    limit: int = 10,
+    sport_type: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> list:
     """
-    Get a list of recent Garmin activities with summary metrics.
-
+    Get Garmin activities with summary metrics.
+    When start_date is provided a date-range query is used and all matching
+    activities are returned (limit is ignored).  Without dates, the most
+    recent activities up to limit are returned.
     Args:
-        limit:      Number of activities to return (default 10, max 50)
-        sport_type: Optional filter — 'running', 'road_biking', 'lap_swimming'
+        limit:      Activities to return when no date range given (default 10, max 50)
+        sport_type: Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+        start_date: Optional start date YYYY-MM-DD (inclusive)
+        end_date:   Optional end date YYYY-MM-DD (inclusive, defaults to today)
     """
-    return get_activities(limit=limit, sport_type=sport_type)
+    return get_activities(limit=limit, sport_type=sport_type,
+                          start_date=start_date, end_date=end_date)
 
 
 @mcp.tool()
@@ -95,13 +106,44 @@ def sleep(date: str) -> dict:
 @mcp.tool()
 def daily_readiness(date: str) -> dict:
     """
-    Get daily readiness metrics for a given date including HRV, body battery,
-    training load balance, ACWR, and VO2max trends.
+    Get daily readiness metrics for a given date including HRV, body battery
+    (with start-of-day level), training load balance, ACWR, and VO2max trends.
 
     Args:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
     return get_daily_readiness(date)
+
+@mcp.tool()
+def performance_predictions() -> dict:
+    """
+    Get current race time predictions for 5K, 10K, half marathon, and marathon
+    based on recent training data and VO2max estimates.
+    """
+    return get_performance_predictions()
+
+@mcp.tool()
+def performance_trends(period: str = 'weekly', lookback: int = 4) -> list:
+    """
+    Get trends for HRV and VO2max over recent weeks or months.
+    Each entry covers one period end-date and reports the HRV weekly average
+    and baseline, plus the most recent VO2max (running & cycling).
+    Args:
+        period:   'weekly' or 'monthly'
+        lookback: Number of periods to include (max 26 weekly, 12 monthly)
+    """
+    return get_performance_trends(period=period, lookback=lookback)
+
+@mcp.tool()
+def weekly_summary(week_offset: int = 0, sport_type: Optional[str] = None) -> dict:
+    """
+    Get an aggregated summary of activities for a Monday-to-Sunday week,
+    with per-type breakdowns and a full activity list.
+    Args:
+        week_offset: 0 = current week, 1 = last week, 2 = two weeks ago, …
+        sport_type:  Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+    """
+    return get_weekly_summary(week_offset=week_offset, sport_type=sport_type)
 
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────

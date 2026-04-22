@@ -46,3 +46,9 @@ def test_get_daily_readiness_training_status_has_acwr(test_date):
     ts = result['training_status']
     assert ts['acwr'] is not None
     assert 0 < ts['acwr'] < 3
+
+def test_get_daily_readiness_body_battery_has_start_level_key(test_date):
+    result = get_daily_readiness(test_date)
+    bb = result['body_battery']
+    # start_level key must exist; value may be None if Garmin doesn't provide it
+    assert 'start_level' in bb
