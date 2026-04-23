@@ -4,10 +4,23 @@ import logging
 from fastmcp import FastMCP
 from dotenv import load_dotenv
 
-from tools.profile import get_athlete_profile
-from tools.activities import get_activities, get_activity, get_weekly_summary
-from tools.health import get_sleep, get_daily_readiness
+from tools.profile import get_athlete_profile, get_gear
+from tools.activities import (
+    get_activities,
+    get_activity,
+    get_weekly_summary,
+)
+from tools.health import (
+    get_sleep,
+    get_daily_readiness,
+    get_training_status,
+    get_training_readiness,
+)
 from tools.trends import get_performance_predictions, get_performance_trends
+from tools.performance import (
+    get_endurance_score,
+    get_running_tolerance,
+)
 
 load_dotenv()
 
@@ -25,22 +38,6 @@ from starlette.responses import Response
 from starlette.types import ASGIApp
 
 BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN")
-
-# class TokenAuthMiddleware:
-#     def __init__(self, app: ASGIApp):
-#         self.app = app
-
-#     async def __call__(self, scope, receive, send):
-#         if scope["type"] in ("http", "websocket"):
-#             query_string = scope.get("query_string", b"").decode()
-#             params = dict(p.split("=") for p in query_string.split("&") if "=" in p)
-#             token = params.get("token", "")
-#             if BEARER_TOKEN and not secrets.compare_digest(token, BEARER_TOKEN):
-#                 from starlette.responses import Response
-#                 response = Response("Unauthorized", status_code=401)
-#                 await response(scope, receive, send)
-#                 return
-#         await self.app(scope, receive, send)
 
 
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
@@ -106,13 +103,28 @@ def sleep(date: str) -> dict:
 @mcp.tool()
 def daily_readiness(date: str) -> dict:
     """
-    Get daily readiness metrics for a given date including HRV, body battery
-    (with start-of-day level), training load balance, ACWR, and VO2max trends.
+    Get recovery-focused daily readiness for a given date — HRV, body
+    battery (start/current/highest/lowest levels and sleep gain), and
+    daily activity & stress stats (RHR, 7-day RHR average, average and
+    max stress, steps, active seconds).
 
     Args:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
     return get_daily_readiness(date)
+
+
+@mcp.tool()
+def training_status(date: str) -> dict:
+    """
+    Get training status for a given date — acute:chronic workload ratio
+    (ACWR) and status, training load balance phrase, training status
+    feedback phrase and sport, and current VO2max for running and cycling.
+
+    Args:
+        date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
+    """
+    return get_training_status(date)
 
 @mcp.tool()
 def performance_predictions() -> dict:
@@ -133,6 +145,58 @@ def performance_trends(period: str = 'weekly', lookback: int = 4) -> list:
         lookback: Number of periods to include (max 26 weekly, 12 monthly)
     """
     return get_performance_trends(period=period, lookback=lookback)
+
+@mcp.tool()
+def training_readiness(date: str = 'today') -> dict:
+    """
+    Get training readiness for a given date — a composite score (0–100)
+    indicating whether to train hard today, plus level, feedback phrases,
+    contributing factors (sleep, recovery, ACWR, stress, HRV), and the
+    morning readiness snapshot.
+
+    Args:
+        date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
+    """
+    return get_training_readiness(date)
+
+
+@mcp.tool()
+def endurance_score(start_date: Optional[str] = None,
+                    end_date: Optional[str] = None) -> dict:
+    """
+    Get endurance score and aerobic/anaerobic contribution breakdown for a
+    date range. Defaults to the trailing 30 days.
+
+    Args:
+        start_date: Optional start date YYYY-MM-DD or 'today' / 'yesterday'
+        end_date:   Optional end date YYYY-MM-DD or 'today' / 'yesterday'
+    """
+    return get_endurance_score(start_date=start_date, end_date=end_date)
+
+
+@mcp.tool()
+def running_tolerance(start_date: Optional[str] = None,
+                      end_date: Optional[str] = None) -> dict:
+    """
+    Get running load tolerance metrics for a date range — current tolerance,
+    weekly running load and its lower/upper bounds, plus acute and chronic
+    load. Defaults to the trailing 7 days.
+
+    Args:
+        start_date: Optional start date YYYY-MM-DD or 'today' / 'yesterday'
+        end_date:   Optional end date YYYY-MM-DD or 'today' / 'yesterday'
+    """
+    return get_running_tolerance(start_date=start_date, end_date=end_date)
+
+
+@mcp.tool()
+def gear() -> list:
+    """
+    Get the athlete's registered gear (shoes, bikes, etc.) with name,
+    activity type, distance and time used, and current status.
+    """
+    return get_gear()
+
 
 @mcp.tool()
 def weekly_summary(week_offset: int = 0, sport_type: Optional[str] = None) -> dict:

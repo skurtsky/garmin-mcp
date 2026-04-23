@@ -1,5 +1,9 @@
 # tests/test_activities.py
-from tools.activities import get_activities, get_activity, get_weekly_summary
+from tools.activities import (
+    get_activities,
+    get_activity,
+    get_weekly_summary,
+)
 
 
 def test_get_activities_returns_list(client):
@@ -87,3 +91,4 @@ def test_get_weekly_summary_sport_filter(client):
     result = get_weekly_summary(week_offset=1, sport_type='running')
     assert result['sport_type_filter'] == 'running'
     assert all(a['type'] == 'running' for a in result['activities'])
+

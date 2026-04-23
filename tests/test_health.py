@@ -1,5 +1,10 @@
 # tests/test_health.py
-from tools.health import get_sleep, get_daily_readiness
+from tools.health import (
+    get_sleep,
+    get_daily_readiness,
+    get_training_status,
+    get_training_readiness,
+)
 
 def test_get_sleep_returns_dict(test_date):
     result = get_sleep(test_date)
@@ -29,10 +34,10 @@ def test_get_daily_readiness_returns_dict(test_date):
 
 def test_get_daily_readiness_has_required_keys(test_date):
     result = get_daily_readiness(test_date)
+    assert 'date' in result
     assert 'hrv' in result
     assert 'body_battery' in result
-    assert 'training_status' in result
-    assert 'vo2max' in result
+    assert 'daily_stats' in result
 
 def test_get_daily_readiness_hrv_is_reasonable(test_date):
     result = get_daily_readiness(test_date)
@@ -41,14 +46,51 @@ def test_get_daily_readiness_hrv_is_reasonable(test_date):
     assert 20 < hrv['last_night_avg'] < 120
     assert hrv['status'] in ('BALANCED', 'UNBALANCED', 'LOW', 'POOR')
 
-def test_get_daily_readiness_training_status_has_acwr(test_date):
-    result = get_daily_readiness(test_date)
-    ts = result['training_status']
-    assert ts['acwr'] is not None
-    assert 0 < ts['acwr'] < 3
 
 def test_get_daily_readiness_body_battery_has_start_level_key(test_date):
     result = get_daily_readiness(test_date)
     bb = result['body_battery']
-    # start_level key must exist; value may be None if Garmin doesn't provide it
+    # keys must exist; values may be None if Garmin doesn't provide them
     assert 'start_level' in bb
+    assert 'current_level' in bb
+    assert 'highest' in bb
+
+def test_get_daily_readiness_has_daily_stats(test_date):
+    result = get_daily_readiness(test_date)
+    assert 'daily_stats' in result
+    stats = result['daily_stats']
+    assert 'resting_hr' in stats
+    assert 'avg_stress' in stats
+
+def test_get_training_readiness_returns_dict(test_date):
+    result = get_training_readiness(test_date)
+    assert isinstance(result, dict)
+
+def test_get_training_readiness_has_required_keys(test_date):
+    result = get_training_readiness(test_date)
+    assert 'date' in result
+    assert 'readiness' in result
+    assert 'morning' in result
+    readiness = result['readiness']
+    for key in ('score', 'level', 'feedback_long', 'feedback_short'):
+        assert key in readiness, f"Missing readiness key: {key}"
+
+def test_get_training_readiness_score_in_range(test_date):
+    result = get_training_readiness(test_date)
+    score = result['readiness'].get('score')
+    if score is not None:
+        assert 0 <= score <= 100
+
+def test_get_training_status_returns_dict(test_date):
+    result = get_training_status(test_date)
+    assert isinstance(result, dict)
+
+def test_get_training_status_has_required_keys(test_date):
+    result = get_training_status(test_date)
+    for key in ('acwr', 'load_balance', 'status', 'vo2max'):
+        assert key in result, f"Missing key: {key}"
+
+def test_get_training_status_acwr_is_reasonable(test_date):
+    result = get_training_status(test_date)
+    assert result['acwr'] is not None
+    assert 0 < result['acwr'] < 3

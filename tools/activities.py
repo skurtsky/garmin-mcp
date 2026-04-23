@@ -167,39 +167,6 @@ def _extract_hr_zones(hr_zones_data: list, total_duration_secs: float) -> list[d
 
 # ── PUBLIC TOOL FUNCTIONS ─────────────────────────────────────────────────────
 
-def get_activities(limit: int = 10, sport_type: str | None = None) -> list[dict]:
-    """
-    Get a list of recent activities with clean summaries.
-
-    Args:
-        limit:      Number of activities to return (default 10, max 50)
-        sport_type: Optional filter e.g. 'running', 'road_biking', 'lap_swimming'
-    """
-    client = get_client()
-    limit = min(limit, 50)
-
-    if sport_type:
-        activities = client.get_activities(0, limit, activitytype=sport_type)
-    else:
-        activities = client.get_activities(0, limit)
-
-    summaries = []
-    for a in activities:
-        sport = a.get('activityType', {}).get('typeKey', '')
-        summaries.append({
-            'id':            a.get('activityId'),
-            'name':          a.get('activityName'),
-            'type':          sport,
-            'date':          a.get('startTimeLocal'),
-            'distance_km':   round((a.get('distance') or 0) / 1000, 2),
-            'duration_min':  round((a.get('duration') or 0) / 60, 1),
-            'avg_hr':        a.get('averageHR'),
-            'training_load': round(a.get('activityTrainingLoad') or 0, 1),
-        })
-
-    return summaries
-
-
 def get_activity(activity_id: int) -> dict:
     """
     Get full detail for a single activity including lap splits and HR zones.

@@ -32,3 +32,15 @@ def swim_activity_id():
 @pytest.fixture(scope="session")
 def test_date():
     return TEST_DATE
+
+@pytest.fixture(scope="session")
+def test_date_range_start():
+    return "2026-04-10"
+
+@pytest.fixture(scope="session")
+def test_date_range_end():
+    return "2026-04-16"
+
+@pytest.fixture(scope="session")
+def test_month_range_start():
+    return "2026-03-16"

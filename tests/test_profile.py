@@ -1,5 +1,5 @@
 # tests/test_profile.py
-from tools.profile import get_athlete_profile
+from tools.profile import get_athlete_profile, get_gear
 
 def test_get_athlete_profile_returns_dict():
     """Profile should return a dict with expected keys."""
@@ -33,3 +33,26 @@ def test_get_athlete_profile_lt_pace_is_reasonable():
     profile = get_athlete_profile()
     assert profile['lactate_threshold_pace'] is not None
     assert 3.0 < profile['lactate_threshold_pace'] < 8.0
+
+def test_get_gear_returns_list():
+    """Gear should return a list."""
+    gear = get_gear()
+    assert isinstance(gear, list)
+
+def test_get_gear_items_have_required_keys():
+    """Each gear item should have the expected fields."""
+    gear = get_gear()
+    if not gear:
+        return  # account may have no registered gear
+    expected = ['name', 'model', 'activity_type', 'status',
+                'distance_km', 'total_activities', 'max_distance_km']
+    for item in gear:
+        for key in expected:
+            assert key in item, f"Missing key: {key}"
+
+def test_get_gear_distance_is_non_negative():
+    """Reported distance should not be negative."""
+    gear = get_gear()
+    for item in gear:
+        if item['distance_km'] is not None:
+            assert item['distance_km'] >= 0
