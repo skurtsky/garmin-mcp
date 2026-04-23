@@ -20,13 +20,6 @@ def _resolve_range(start_date: str | None,
     return start, end
 
 
-def _latest_entry(raw):
-    """Return the latest dict from a possibly list-shaped Garmin response."""
-    if isinstance(raw, list):
-        return raw[-1] if raw else {}
-    return raw or {}
-
-
 def get_endurance_score(start_date: str | None = None,
                         end_date: str | None = None) -> dict:
     """
@@ -43,30 +36,44 @@ def get_endurance_score(start_date: str | None = None,
     client = get_client()
     raw = client.get_endurance_score(start_date, end_date) or {}
 
-    # Endurance score may live at top level or under a nested key — prefer
-    # a 'groupMap' / 'monthly' / latest-entry shape, falling back to top level.
-    latest = _latest_entry(raw)
-    contrib = latest.get('contributors') or {}
+    # Score and contributor data live under 'enduranceScoreDTO' at the top level.
+    # 'groupMap' contains per-week rolling averages which we don't need here.
+    dto = raw.get('enduranceScoreDTO') or {}
 
-    score_clean = {
-        'endurance_score':   latest.get('overallScore') or latest.get('enduranceScore'),
-        'classification':    latest.get('classification'),
-        'feedback_phrase':   latest.get('feedbackPhrase'),
-        'gauge_lower_limit': latest.get('gaugeLowerLimit'),
-        'gauge_upper_limit': latest.get('gaugeUpperLimit'),
+    # Build a full typeId -> typeKey lookup (all types, not just top-level)
+    # so sub-types like street_running (typeId 7) resolve correctly.
+    # group index is 0-based: group + 1 == typeId.
+    try:
+        types = client.get_activity_types() or []
+        type_map = {t['typeId']: t['typeKey'] for t in types}
+    except Exception:
+        type_map = {}
+
+    # Classification numeric codes map to these labels (inferred from the gauge
+    # lower limits returned in the DTO alongside the classification value).
+    _CLASSIFICATION = {
+        1: 'beginner', 2: 'intermediate', 3: 'trained',
+        4: 'well_trained', 5: 'expert', 6: 'superior', 7: 'elite',
     }
 
-    contributors_clean = {
-        'aerobic_base': contrib.get('aerobicBase') if isinstance(contrib, dict) else None,
-        'aerobic_high': contrib.get('aerobicHigh') if isinstance(contrib, dict) else None,
-        'anaerobic':    contrib.get('anaerobic')   if isinstance(contrib, dict) else None,
-    }
+    contributors = [
+        {
+            'sport':            type_map.get(c.get('group', 0) + 1, f'group_{c.get("group")}'),
+            'contribution_pct': round(c.get('contribution') or 0, 1),
+        }
+        for c in (dto.get('contributors') or [])
+    ]
 
     return {
         'start_date':      start_date,
         'end_date':        end_date,
-        'endurance_score': score_clean,
-        'contributors':    contributors_clean,
+        'endurance_score': dto.get('overallScore'),
+        'classification':  _CLASSIFICATION.get(dto.get('classification'), dto.get('classification')),
+        'gauge_lower':     dto.get('gaugeLowerLimit'),
+        'gauge_upper':     dto.get('gaugeUpperLimit'),
+        'period_avg':      raw.get('avg'),
+        'period_max':      raw.get('max'),
+        'contributors':    contributors,
     }
 
 
@@ -84,9 +91,10 @@ def get_running_tolerance(start_date: str | None = None,
     start_date, end_date = _resolve_range(start_date, end_date, default_days=7)
 
     client = get_client()
-    raw = client.get_running_tolerance(start_date, end_date) or {}
+    raw = client.get_running_tolerance(start_date, end_date) or []
 
-    latest = _latest_entry(raw)
+    # API returns a list of weekly entries ordered oldest-first; take the latest.
+    latest = raw[-1] if raw else {}
 
     tolerance_clean = {
         'running_tolerance':         latest.get('runningTolerance') or latest.get('tolerance'),

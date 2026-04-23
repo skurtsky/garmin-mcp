@@ -13,10 +13,12 @@ def test_get_endurance_score_has_required_keys(test_month_range_start, test_date
         start_date=test_month_range_start,
         end_date=test_date_range_end,
     )
-    for key in ('start_date', 'end_date', 'endurance_score', 'contributors'):
+    for key in ('start_date', 'end_date', 'endurance_score', 'classification',
+                'gauge_lower', 'gauge_upper', 'period_avg', 'period_max', 'contributors'):
         assert key in result, f"Missing key: {key}"
     assert result['start_date'] == test_month_range_start
     assert result['end_date'] == test_date_range_end
+    assert isinstance(result['contributors'], list)
 
 def test_get_endurance_score_supports_today_yesterday():
     result = get_endurance_score(start_date='yesterday', end_date='today')

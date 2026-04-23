@@ -111,12 +111,11 @@ Then test with the MCP Inspector at `http://localhost:8000/mcp?token=YOUR_TOKEN`
 After pushing a new image to GHCR:
 
 ```powershell
-az login
-
 az containerapp update `
   --name garmin-mcp `
   --resource-group garmin-mcp-rg `
-  --image ghcr.io/skurtsky/garmin-mcp:latest
+  --image ghcr.io/skurtsky/garmin-mcp:latest `
+  --set-env-vars DEPLOY_TIME="$(Get-Date -Format 'yyyyMMddHHmmss')"
 ```
 
 Azure performs a zero-downtime rolling restart automatically.

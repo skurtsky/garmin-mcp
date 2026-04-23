@@ -116,8 +116,8 @@ garmin-mcp/
 
 ## Deployment
 
-See deployment notes for Azure Container Apps setup including token persistence
-and SSL configuration.
+See the [deployment guide](test-deployment.md) for Azure Container Apps setup
+including token persistence and SSL configuration.
 
 ## Notes
 

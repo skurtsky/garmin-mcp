@@ -164,8 +164,9 @@ def training_readiness(date: str = 'today') -> dict:
 def endurance_score(start_date: Optional[str] = None,
                     end_date: Optional[str] = None) -> dict:
     """
-    Get endurance score and aerobic/anaerobic contribution breakdown for a
-    date range. Defaults to the trailing 30 days.
+    Get endurance score, classification (beginner → elite), gauge limits,
+    period average/max, and per-sport contribution breakdown for a date range.
+    Defaults to the trailing 30 days.
 
     Args:
         start_date: Optional start date YYYY-MM-DD or 'today' / 'yesterday'
