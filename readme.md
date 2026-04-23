@@ -8,13 +8,39 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 
 ## Tools
 
+### Profile & Gear
+
 | Tool | Description |
 |---|---|
-| `athlete_profile` | Weight, VO2max, lactate threshold HR and pace, FTP |
-| `recent_activities` | Recent activity list with summary metrics |
-| `activity_detail` | Full activity detail with lap splits and HR zones |
-| `sleep` | Sleep quality and recovery metrics for a given date |
-| `daily_readiness` | HRV, body battery, and training status for a given date |
+| `athlete_profile` | Weight, height, VO2max (running & cycling), lactate threshold HR and pace, FTP, and 7-day average resting HR |
+| `gear` | Registered gear (shoes, bikes, etc.) with distance, activity count, and status |
+
+### Activities
+
+| Tool | Description |
+|---|---|
+| `recent_activities` | Recent activity list with summary metrics; supports sport type filter and date range |
+| `activity_detail` | Full activity detail with lap splits, HR zones, and weather conditions |
+| `weekly_summary` | Aggregated activity totals for a Monday–Sunday week with per-sport breakdown |
+| `personal_records` | Personal records for running, cycling, and swimming grouped by sport |
+
+### Health & Recovery
+
+| Tool | Description |
+|---|---|
+| `sleep` | Sleep stages, score, HRV, and recovery metrics for a given date |
+| `daily_readiness` | HRV, body battery levels, and daily stress and activity stats |
+| `training_readiness` | Composite readiness score (0–100) with contributing factors (sleep, HRV, ACWR, stress) |
+
+### Training & Performance
+
+| Tool | Description |
+|---|---|
+| `training_status` | Acute:chronic workload ratio, load balance, training status phrase, and current VO2max |
+| `performance_predictions` | Race time predictions for 5K, 10K, half marathon, and marathon |
+| `performance_trends` | Weekly or monthly trends for HRV and VO2max over a lookback period |
+| `endurance_score` | Endurance score, classification (beginner → elite), and per-sport contribution breakdown |
+| `running_tolerance` | Running load tolerance with weekly load bounds and acute/chronic load for a date range |
 
 ## Setup
 
@@ -100,15 +126,19 @@ garmin-mcp/
 ├── server.py              # FastMCP server — tool definitions and entrypoint
 ├── garmin_client.py       # Authenticated Garmin client singleton
 ├── tools/
-│   ├── activities.py      # get_activities, get_activity
-│   ├── health.py          # get_sleep, get_daily_readiness
-│   └── profile.py         # get_athlete_profile
+│   ├── activities.py      # get_activities, get_activity, get_weekly_summary
+│   ├── health.py          # get_sleep, get_daily_readiness, get_training_status, get_training_readiness
+│   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
+│   ├── profile.py         # get_athlete_profile, get_gear
+│   └── trends.py          # get_performance_predictions, get_performance_trends
 ├── tests/
 │   ├── conftest.py        # Shared fixtures
-│   ├── test_client.py
 │   ├── test_activities.py
+│   ├── test_client.py
 │   ├── test_health.py
-│   └── test_profile.py
+│   ├── test_performance.py
+│   ├── test_profile.py
+│   └── test_trends.py
 ├── requirements.txt
 ├── requirements-dev.txt
 └── .env.example
