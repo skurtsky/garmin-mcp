@@ -147,9 +147,9 @@ _PR_TYPES: dict[int, dict] = {
     6:  {'label': 'Fastest Marathon',      'value_type': 'time_s'},
     7:  {'label': 'Longest Run',           'value_type': 'distance_m'},
     8:  {'label': 'Longest Ride',          'value_type': 'distance_m'},
-    9:  {'label': 'Best Climb',            'value_type': 'distance_m'},
+    9:  {'label': 'Biggest Climb',         'value_type': 'distance_m_raw'},
     10: {'label': 'Best 20-Min Power',     'value_type': 'power_w'},
-    11: {'label': 'Longest Virtual Ride',  'value_type': 'distance_m'},
+    11: {'label': 'Fastest 40K',           'value_type': 'time_s'},
     17: {'label': 'Longest Swim',          'value_type': 'distance_m'},
     18: {'label': 'Fastest 100m Swim',     'value_type': 'time_s'},
 }
@@ -172,6 +172,8 @@ def _fmt_pr_value(value: float, value_type: str) -> str:
         return _fmt_pr_time(value)
     if value_type == 'distance_m':
         return f"{round(value / 1000, 2)} km"
+    if value_type == 'distance_m_raw':
+        return f"{round(value)} m"
     if value_type == 'power_w':
         return f"{round(value)} W"
     return str(round(value, 2))
