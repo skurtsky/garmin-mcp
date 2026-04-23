@@ -1,18 +1,34 @@
 # tools/profile.py
 from garmin_client import get_client
+from datetime import date as _date
 
 def get_athlete_profile() -> dict:
     """
     Fetch and return key athlete attributes from Garmin user profile.
-    
+
     Returns weight, height, VO2max (running and cycling), lactate threshold
-    heart rate and pace, and FTP.
+    heart rate and pace, FTP (from cycling FTP endpoint), and 7-day average
+    resting heart rate.
     """
     client = get_client()
     profile = client.get_user_profile()
     data = profile['userData']
 
     lt_speed_ms = (data.get('lactateThresholdSpeed') or 0) * 10  # convert dm/s to m/s
+
+    # FTP from the dedicated cycling FTP endpoint — userData.functionalThresholdPower is null
+    try:
+        ftp_data = client.get_cycling_ftp() or {}
+        ftp = ftp_data.get('functionalThresholdPower')
+    except Exception:
+        ftp = None
+
+    # 7-day average resting HR from today's user summary
+    try:
+        summary = client.get_user_summary(_date.today().isoformat()) or {}
+        resting_hr_7day_avg = summary.get('lastSevenDaysAvgRestingHeartRate')
+    except Exception:
+        resting_hr_7day_avg = None
 
     return {
         'weight_kg':              round((data.get('weight') or 0) / 1000, 1),
@@ -21,7 +37,8 @@ def get_athlete_profile() -> dict:
         'vo2max_cycling':         data.get('vo2MaxCycling'),
         'lactate_threshold_hr':   data.get('lactateThresholdHeartRate'),
         'lactate_threshold_pace': round(1 / (lt_speed_ms * 0.06), 2) if lt_speed_ms > 0 else None,
-        'ftp':                    data.get('functionalThresholdPower'),
+        'ftp':                    ftp,
+        'resting_hr_7day_avg':    resting_hr_7day_avg,
     }
 
 

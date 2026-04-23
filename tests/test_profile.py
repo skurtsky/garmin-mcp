@@ -11,7 +11,8 @@ def test_get_athlete_profile_has_required_keys():
     profile = get_athlete_profile()
     expected_keys = [
         'weight_kg', 'height_cm', 'vo2max_running', 'vo2max_cycling',
-        'lactate_threshold_hr', 'lactate_threshold_pace', 'ftp'
+        'lactate_threshold_hr', 'lactate_threshold_pace', 'ftp',
+        'resting_hr_7day_avg',
     ]
     for key in expected_keys:
         assert key in profile, f"Missing key: {key}"
@@ -56,3 +57,19 @@ def test_get_gear_distance_is_non_negative():
     for item in gear:
         if item['distance_km'] is not None:
             assert item['distance_km'] >= 0
+
+
+def test_get_athlete_profile_ftp_is_populated():
+    """FTP should be fetched from the cycling FTP endpoint (not null)."""
+    profile = get_athlete_profile()
+    assert profile['ftp'] is not None
+    assert 50 < profile['ftp'] < 600, f"FTP {profile['ftp']} outside expected range"
+
+
+def test_get_athlete_profile_resting_hr_7day_avg_is_reasonable():
+    """7-day average resting HR should be a plausible value."""
+    profile = get_athlete_profile()
+    assert profile['resting_hr_7day_avg'] is not None
+    assert 30 < profile['resting_hr_7day_avg'] < 100, (
+        f"Resting HR 7-day avg {profile['resting_hr_7day_avg']} outside expected range"
+    )

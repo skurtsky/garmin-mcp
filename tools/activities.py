@@ -165,11 +165,39 @@ def _extract_hr_zones(hr_zones_data: list, total_duration_secs: float) -> list[d
     return zones
 
 
+def _f_to_c(f) -> float | None:
+    """Convert Fahrenheit to Celsius, rounded to 1 decimal."""
+    if f is None:
+        return None
+    return round((f - 32) * 5 / 9, 1)
+
+
+def _extract_weather(weather_raw: dict | None) -> dict | None:
+    """Extract and normalise activity weather data, converting temps to Celsius."""
+    if not weather_raw:
+        return None
+    station = (weather_raw.get('weatherStationDTO') or {})
+    weather_type = (weather_raw.get('weatherTypeDTO') or {})
+    return {
+        'temp_c':                 _f_to_c(weather_raw.get('temp')),
+        'apparent_temp_c':        _f_to_c(weather_raw.get('apparentTemp')),
+        'dew_point_c':            _f_to_c(weather_raw.get('dewPoint')),
+        'humidity_pct':           weather_raw.get('relativeHumidity'),
+        'wind_speed':             weather_raw.get('windSpeed'),
+        'wind_gust':              weather_raw.get('windGust'),
+        'wind_direction':         weather_raw.get('windDirection'),
+        'wind_direction_compass': weather_raw.get('windDirectionCompassPoint'),
+        'conditions':             weather_type.get('desc'),
+        'weather_station':        station.get('name'),
+    }
+
+
 # ── PUBLIC TOOL FUNCTIONS ─────────────────────────────────────────────────────
 
 def get_activity(activity_id: int) -> dict:
     """
-    Get full detail for a single activity including lap splits and HR zones.
+    Get full detail for a single activity including lap splits, HR zones,
+    and weather conditions at the time of the activity.
 
     Args:
         activity_id: Garmin activity ID
@@ -181,14 +209,21 @@ def get_activity(activity_id: int) -> dict:
     laps_raw     = client.get_activity_splits(activity_id)
     hr_zones_raw = client.get_activity_hr_in_timezones(activity_id)
 
+    try:
+        weather_raw = client.get_activity_weather(activity_id)
+    except Exception:
+        weather_raw = None
+
     summary  = _extract_activity_summary(activity_raw)
     laps     = _extract_laps(laps_raw, weight_kg=athlete['weight_kg'])
     hr_zones = _extract_hr_zones(hr_zones_raw, summary['duration_min'] * 60)
+    weather  = _extract_weather(weather_raw)
 
     return {
         'summary':  summary,
         'laps':     laps,
         'hr_zones': hr_zones,
+        'weather':  weather,
     }
 
 def _activity_summary_from_list(a: dict) -> dict:

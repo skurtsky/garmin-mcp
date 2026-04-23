@@ -20,6 +20,7 @@ from tools.trends import get_performance_predictions, get_performance_trends
 from tools.performance import (
     get_endurance_score,
     get_running_tolerance,
+    get_personal_records,
 )
 
 load_dotenv()
@@ -197,6 +198,18 @@ def gear() -> list:
     activity type, distance and time used, and current status.
     """
     return get_gear()
+
+
+@mcp.tool()
+def personal_records() -> dict:
+    """
+    Get personal records for running, cycling, and swimming.
+    Results are grouped by sport category (running, cycling, swimming).
+    Each record includes a human-readable label, formatted value,
+    the activity it was set in, and the date it was achieved.
+    Records for other activity types (yoga, wellness streaks, etc.) are excluded.
+    """
+    return get_personal_records()
 
 
 @mcp.tool()

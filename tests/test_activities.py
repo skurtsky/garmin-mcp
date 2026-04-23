@@ -92,3 +92,17 @@ def test_get_weekly_summary_sport_filter(client):
     assert result['sport_type_filter'] == 'running'
     assert all(a['type'] == 'running' for a in result['activities'])
 
+
+def test_get_activity_includes_weather(run_activity_id):
+    """Activity detail should include a weather key (may be None for indoor activities)."""
+    result = get_activity(run_activity_id)
+    assert 'weather' in result
+    weather = result['weather']
+    if weather is not None:
+        for key in ('temp_c', 'apparent_temp_c', 'humidity_pct',
+                    'wind_speed', 'wind_direction_compass', 'conditions'):
+            assert key in weather, f"Missing weather key: {key}"
+        # Sanity-check temps are in Celsius range (not Fahrenheit)
+        if weather['temp_c'] is not None:
+            assert -50 < weather['temp_c'] < 60, f"temp_c {weather['temp_c']} looks like Fahrenheit"
+

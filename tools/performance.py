@@ -112,3 +112,109 @@ def get_running_tolerance(start_date: str | None = None,
         'end_date':          end_date,
         'running_tolerance': tolerance_clean,
     }
+
+
+# ── PERSONAL RECORDS ──────────────────────────────────────────────────────────
+
+_ALLOWED_PR_SPORTS = {
+    'running',
+    'road_biking',
+    'virtual_ride',
+    'cycling',
+    'indoor_cycling',
+    'lap_swimming',
+    'open_water_swimming',
+    'swimming',
+}
+
+_SPORT_CATEGORY = {
+    'running':             'running',
+    'road_biking':         'cycling',
+    'virtual_ride':        'cycling',
+    'cycling':             'cycling',
+    'indoor_cycling':      'cycling',
+    'lap_swimming':        'swimming',
+    'open_water_swimming': 'swimming',
+    'swimming':            'swimming',
+}
+
+_PR_TYPES: dict[int, dict] = {
+    1:  {'label': 'Fastest 1K',           'value_type': 'time_s'},
+    2:  {'label': 'Fastest Mile',          'value_type': 'time_s'},
+    3:  {'label': 'Fastest 5K',           'value_type': 'time_s'},
+    4:  {'label': 'Fastest 10K',          'value_type': 'time_s'},
+    5:  {'label': 'Fastest Half Marathon', 'value_type': 'time_s'},
+    6:  {'label': 'Fastest Marathon',      'value_type': 'time_s'},
+    7:  {'label': 'Longest Run',           'value_type': 'distance_m'},
+    8:  {'label': 'Longest Ride',          'value_type': 'distance_m'},
+    9:  {'label': 'Best Climb',            'value_type': 'distance_m'},
+    10: {'label': 'Best 20-Min Power',     'value_type': 'power_w'},
+    11: {'label': 'Longest Virtual Ride',  'value_type': 'distance_m'},
+    17: {'label': 'Longest Swim',          'value_type': 'distance_m'},
+    18: {'label': 'Fastest 100m Swim',     'value_type': 'time_s'},
+}
+
+
+def _fmt_pr_time(secs: float) -> str:
+    """Format seconds as H:MM:SS or M:SS."""
+    total = int(round(secs))
+    h = total // 3600
+    m = (total % 3600) // 60
+    s = total % 60
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _fmt_pr_value(value: float, value_type: str) -> str:
+    """Format a PR value for display."""
+    if value_type == 'time_s':
+        return _fmt_pr_time(value)
+    if value_type == 'distance_m':
+        return f"{round(value / 1000, 2)} km"
+    if value_type == 'power_w':
+        return f"{round(value)} W"
+    return str(round(value, 2))
+
+
+def get_personal_records() -> dict:
+    """
+    Get personal records for running, cycling, and swimming.
+
+    Filters out non-sport PRs (wellness streaks, etc.) and groups records
+    by sport category (running, cycling, swimming).
+    """
+    client = get_client()
+    raw = client.get_personal_record() or []
+
+    result: dict[str, list] = {'running': [], 'cycling': [], 'swimming': []}
+
+    for pr in raw:
+        activity_type = pr.get('activityType')
+        if activity_type not in _ALLOWED_PR_SPORTS:
+            continue
+
+        type_id = pr.get('typeId')
+        pr_type = _PR_TYPES.get(type_id, {
+            'label':      f'PR Type {type_id}',
+            'value_type': 'raw',
+        })
+
+        category = _SPORT_CATEGORY.get(activity_type, activity_type)
+        value_raw = pr.get('value')
+        entry = {
+            'label':           pr_type['label'],
+            'value_formatted': _fmt_pr_value(value_raw, pr_type['value_type']) if value_raw is not None else None,
+            'value_raw':       value_raw,
+            'activity_name':   pr.get('activityName'),
+            'activity_type':   activity_type,
+            'date':            pr.get('actStartDateTimeInGMTFormatted'),
+            'activity_id':     pr.get('activityId'),
+        }
+
+        if category in result:
+            result[category].append(entry)
+        else:
+            result[category] = [entry]
+
+    return result
