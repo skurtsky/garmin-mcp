@@ -24,6 +24,18 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `weekly_summary` | Aggregated activity totals for a Monday–Sunday week with per-sport breakdown |
 | `personal_records` | Personal records for running, cycling, and swimming grouped by sport |
 
+### Workouts
+
+| Tool | Description |
+|---|---|
+| `get_scheduled_workouts` | Upcoming scheduled running workouts from calendar items |
+| `get_saved_workouts` | Saved workout library with optional sport filter |
+| `schedule_workout` | Schedule an existing workout ID to a date |
+| `unschedule_workout` | Remove a scheduled workout from calendar |
+| `create_workout` | Create a workout (running, cycling, strength_training, cardio) from step definitions and optionally schedule it |
+| `delete_workout` | Delete a saved workout by ID |
+| `update_workout_weights` | Update exercise weights in a strength workout by name — uploads a new version and deletes the old one |
+
 ### Health & Recovery
 
 | Tool | Description |
@@ -130,7 +142,8 @@ garmin-mcp/
 │   ├── health.py          # get_sleep, get_daily_readiness, get_training_status, get_training_readiness
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
-│   └── trends.py          # get_performance_predictions, get_performance_trends
+│   ├── trends.py          # get_performance_predictions, get_performance_trends
+│   └── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights
 ├── tests/
 │   ├── conftest.py        # Shared fixtures
 │   ├── test_activities.py
@@ -138,7 +151,8 @@ garmin-mcp/
 │   ├── test_health.py
 │   ├── test_performance.py
 │   ├── test_profile.py
-│   └── test_trends.py
+│   ├── test_trends.py
+│   └── test_workout.py
 ├── requirements.txt
 ├── requirements-dev.txt
 └── .env.example

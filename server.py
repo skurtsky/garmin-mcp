@@ -22,6 +22,15 @@ from tools.performance import (
     get_running_tolerance,
     get_personal_records,
 )
+from tools.workout import (
+    get_scheduled_workouts as get_scheduled_workouts_impl,
+    get_saved_workouts as get_saved_workouts_impl,
+    schedule_workout as schedule_workout_impl,
+    unschedule_workout as unschedule_workout_impl,
+    create_workout as create_workout_impl,
+    delete_workout as delete_workout_impl,
+    update_workout_weights as update_workout_weights_impl,
+)
 
 load_dotenv()
 
@@ -222,6 +231,99 @@ def weekly_summary(week_offset: int = 0, sport_type: Optional[str] = None) -> di
         sport_type:  Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
     """
     return get_weekly_summary(week_offset=week_offset, sport_type=sport_type)
+
+
+@mcp.tool()
+def get_scheduled_workouts(months_ahead: int = 3) -> list:
+    """
+    Get upcoming scheduled running workouts from Garmin calendar.
+
+    Args:
+        months_ahead: Number of months to scan ahead, inclusive of current month.
+    """
+    return get_scheduled_workouts_impl(months_ahead=months_ahead)
+
+
+@mcp.tool()
+def get_saved_workouts(sport_type: Optional[str] = None) -> list:
+    """
+    Get saved workouts from Garmin workout library.
+
+    Args:
+        sport_type: Optional sport filter (e.g. running, cycling).
+    """
+    return get_saved_workouts_impl(sport_type=sport_type)
+
+
+@mcp.tool()
+def schedule_workout(workout_id: int, date: str) -> dict:
+    """
+    Schedule an existing workout on a given date.
+
+    Args:
+        workout_id: Garmin workout ID.
+        date: Date in YYYY-MM-DD format.
+    """
+    return schedule_workout_impl(workout_id=workout_id, date=date)
+
+
+@mcp.tool()
+def unschedule_workout(schedule_id: int) -> dict:
+    """
+    Remove a scheduled workout from calendar.
+
+    Args:
+        schedule_id: Scheduled workout ID from get_scheduled_workouts.
+    """
+    return unschedule_workout_impl(schedule_id=schedule_id)
+
+
+@mcp.tool()
+def create_workout(
+    name: str,
+    sport_type: str,
+    steps: list,
+    schedule_date: Optional[str] = None,
+) -> dict:
+    """
+    Create a workout and optionally schedule it.
+    Supports running, cycling, strength_training, and cardio.
+
+    Args:
+        name: Workout name.
+        sport_type: Sport type key — "running", "cycling", "strength_training", "cardio".
+        steps: List of workout steps (see tools/workout.py for full step schema).
+        schedule_date: Optional schedule date in YYYY-MM-DD format.
+    """
+    return create_workout_impl(name=name, sport_type=sport_type, steps=steps, schedule_date=schedule_date)
+
+
+@mcp.tool()
+def delete_workout(workout_id: int) -> dict:
+    """
+    Delete a saved workout by ID.
+
+    Args:
+        workout_id: Garmin workout ID to delete.
+    """
+    return delete_workout_impl(workout_id=workout_id)
+
+
+@mcp.tool()
+def update_workout_weights(workout_name: str, weight_updates: dict) -> dict:
+    """
+    Update exercise weights in a strength workout by name.
+
+    Finds the workout, updates weightValue for matching exercises (interval
+    steps only — warmup weights are not changed), uploads as a new workout,
+    and deletes the old one.
+
+    Args:
+        workout_name: Exact workout name as it appears in Garmin Connect.
+        weight_updates: Mapping of exerciseName to new weight in kg.
+            e.g. {"BARBELL_BACK_SQUAT": 105.0, "OVERHEAD_BARBELL_PRESS": 32.5}
+    """
+    return update_workout_weights_impl(workout_name=workout_name, weight_updates=weight_updates)
 
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
