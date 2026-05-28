@@ -238,3 +238,104 @@ def test_update_workout_weights():
     assert warmup_step["weightValue"] == 40.0   # unchanged
     # stepIds stripped
     assert "stepId" not in warmup_step
+
+
+def test_build_payload_cycling_repeat_power():
+    payload = build_workout_payload(
+        name="TEST - Cycling Repeat Power",
+        sport_type="cycling",
+        steps=[
+            {
+                "type": "repeat",
+                "sets": 4,
+                "duration_s": 240,
+                "rest_duration_s": 180,
+                "power_watts_min": 264,
+                "power_watts_max": 288,
+                "description": "VO2max interval",
+            },
+        ],
+    )
+
+    steps = payload["workoutSegments"][0]["workoutSteps"]
+    assert len(steps) == 1
+
+    repeat = steps[0]
+    assert repeat["type"] == "RepeatGroupDTO"
+    assert repeat["numberOfIterations"] == 4
+    assert repeat["stepOrder"] == 1
+
+    interval = repeat["workoutSteps"][0]
+    assert interval["targetType"]["workoutTargetTypeId"] == 2  # power
+    assert interval["targetValueOne"] == 288
+    assert interval["targetValueTwo"] == 264
+    assert interval["endCondition"]["conditionTypeId"] == 2  # time
+    assert interval["endConditionValue"] == 240
+    assert interval["stepOrder"] == 2
+
+    rest = repeat["workoutSteps"][1]
+    assert rest["endCondition"]["conditionTypeId"] == 2  # time
+    assert rest["endConditionValue"] == 180
+    assert rest["stepOrder"] == 3
+
+
+def test_build_payload_running_repeat_pace():
+    payload = build_workout_payload(
+        name="TEST - Running Repeat Pace",
+        sport_type="running",
+        steps=[
+            {
+                "type": "repeat",
+                "sets": 6,
+                "distance_m": 400,
+                "rest_duration_s": 90,
+                "pace_min_per_km": 5.0,
+                "pace_max_per_km": 4.5,
+                "description": "400m rep",
+            },
+        ],
+    )
+
+    steps = payload["workoutSegments"][0]["workoutSteps"]
+    repeat = steps[0]
+    assert repeat["type"] == "RepeatGroupDTO"
+    assert repeat["numberOfIterations"] == 6
+
+    interval = repeat["workoutSteps"][0]
+    assert interval["targetType"]["workoutTargetTypeId"] == 6  # pace
+    assert interval["endCondition"]["conditionTypeId"] == 3  # distance
+    assert interval["endConditionValue"] == 400
+
+    rest = repeat["workoutSteps"][1]
+    assert rest["endCondition"]["conditionTypeId"] == 2  # time
+    assert rest["endConditionValue"] == 90
+
+
+def test_build_payload_running_repeat_hr():
+    payload = build_workout_payload(
+        name="TEST - Running Repeat HR",
+        sport_type="running",
+        steps=[
+            {
+                "type": "repeat",
+                "sets": 5,
+                "duration_s": 180,
+                "rest_duration_s": 120,
+                "hr_min": 155,
+                "hr_max": 170,
+                "description": "Tempo interval",
+            },
+        ],
+    )
+
+    steps = payload["workoutSegments"][0]["workoutSteps"]
+    repeat = steps[0]
+    assert repeat["type"] == "RepeatGroupDTO"
+    assert repeat["numberOfIterations"] == 5
+
+    interval = repeat["workoutSteps"][0]
+    assert interval["targetType"]["workoutTargetTypeId"] == 4  # HR
+    assert interval["targetValueOne"] == 155
+    assert interval["targetValueTwo"] == 170
+    assert interval["endCondition"]["conditionTypeId"] == 2  # time
+    assert interval["endConditionValue"] == 180

@@ -323,7 +323,25 @@ def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict
                 {"type": "repeat", "sets": int,
                  "category": str, "exercise_name": str, "weight_kg": float,
                  "description": str | None}
-                # Expands to RepeatGroupDTO wrapping interval + rest steps.
+
+            Repeat group (cycling — power target):
+                {"type": "repeat", "sets": 4,
+                 "duration_s": 240, "rest_duration_s": 180,
+                 "power_watts_min": 264, "power_watts_max": 288,
+                 "description": "VO2max interval"}
+
+            Repeat group (running — pace target):
+                {"type": "repeat", "sets": 6,
+                 "distance_m": 400, "rest_duration_s": 90,
+                 "pace_min_per_km": 4.5, "pace_max_per_km": 4.0,
+                 "description": "400m rep"}
+
+            Repeat group (running — HR target):
+                {"type": "repeat", "sets": 5,
+                 "duration_s": 180, "rest_duration_s": 120,
+                 "hr_min": 155, "hr_max": 170,
+                 "description": "Tempo interval"}
+                # All repeat variants expand to RepeatGroupDTO wrapping interval + rest steps.
     """
     if not name:
         raise ValueError("name is required")
@@ -421,7 +439,61 @@ def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict
             if not isinstance(sets, int) or sets < 1:
                 raise ValueError("repeat step requires sets as a positive integer")
 
-            # Build the two inner steps first (so their stepOrders come after the group)
+            # Determine interval end condition and target based on sport
+            if is_strength:
+                interval_end_cond = _END_CONDITION_MAP["lap_button"]
+                interval_end_val = 0.0
+                interval_target = _TARGET_NONE
+                t_one = None
+                t_two = None
+                interval_category = step.get("category")
+                interval_exercise = step.get("exercise_name")
+                interval_weight = step.get("weight_kg")
+            elif sport_type == "cycling" and "power_watts_min" in step:
+                interval_end_cond, interval_end_val = _infer_cardio_end_condition(step)
+                if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
+                    raise ValueError("cycling repeat step requires distance_m or duration_s")
+                interval_target = _TARGET_POWER
+                t_one = step["power_watts_max"]
+                t_two = step["power_watts_min"]
+                interval_category = None
+                interval_exercise = None
+                interval_weight = None
+            elif sport_type == "running" and "pace_min_per_km" in step:
+                interval_end_cond, interval_end_val = _infer_cardio_end_condition(step)
+                if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
+                    raise ValueError("running repeat step requires distance_m or duration_s")
+                interval_target = _TARGET_PACE
+                t_one = pace_to_mps(step["pace_min_per_km"])
+                t_two = pace_to_mps(step["pace_max_per_km"])
+                interval_category = None
+                interval_exercise = None
+                interval_weight = None
+            elif sport_type == "running" and "hr_min" in step:
+                interval_end_cond, interval_end_val = _infer_cardio_end_condition(step)
+                if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
+                    raise ValueError("running repeat step requires distance_m or duration_s")
+                interval_target = _TARGET_HEART_RATE
+                t_one = step["hr_min"]
+                t_two = step["hr_max"]
+                interval_category = None
+                interval_exercise = None
+                interval_weight = None
+            else:
+                raise ValueError(
+                    f"repeat step missing required target fields for sport_type {sport_type!r}"
+                )
+
+            # Determine rest end condition
+            rest_duration_s = step.get("rest_duration_s")
+            if rest_duration_s and rest_duration_s > 0:
+                rest_end_cond = _END_CONDITION_MAP["time"]
+                rest_end_val = rest_duration_s
+            else:
+                rest_end_cond = _END_CONDITION_MAP["lap_button"]
+                rest_end_val = 0.0
+
+            # Build inner steps — stepOrders are part of the flat global counter
             repeat_step_order = step_order + 1
             interval_step_order = step_order + 2
             rest_step_order = step_order + 3
@@ -430,22 +502,22 @@ def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict
             interval_inner = _make_executable_step(
                 step_order=interval_step_order,
                 step_type_key="interval",
-                end_condition=_END_CONDITION_MAP["lap_button"],
-                end_condition_value=0.0,
-                target_type=_TARGET_NONE,
-                target_value_one=None,
-                target_value_two=None,
+                end_condition=interval_end_cond,
+                end_condition_value=interval_end_val,
+                target_type=interval_target,
+                target_value_one=t_one,
+                target_value_two=t_two,
                 description=description,
                 child_step_id=child_step_id,
-                category=step.get("category"),
-                exercise_name=step.get("exercise_name"),
-                weight_value=step.get("weight_kg"),
+                category=interval_category,
+                exercise_name=interval_exercise,
+                weight_value=interval_weight,
             )
             rest_inner = _make_executable_step(
                 step_order=rest_step_order,
                 step_type_key="rest",
-                end_condition=_END_CONDITION_MAP["lap_button"],
-                end_condition_value=0.0,
+                end_condition=rest_end_cond,
+                end_condition_value=rest_end_val,
                 target_type=_TARGET_NONE,
                 target_value_one=None,
                 target_value_two=None,
