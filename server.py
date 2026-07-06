@@ -53,7 +53,7 @@ BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN")
 
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
 
-from typing import Optional
+from typing import Literal, Optional
 
 @mcp.tool()
 def athlete_profile() -> dict:
@@ -297,18 +297,66 @@ def unschedule_workout(schedule_id: int) -> dict:
 @mcp.tool()
 def create_workout(
     name: str,
-    sport_type: str,
+    sport_type: Literal["running", "cycling"],
     steps: list,
     schedule_date: Optional[str] = None,
 ) -> dict:
     """
-    Create a workout and optionally schedule it.
-    Supports running, cycling, strength_training, and cardio.
+    Create a workout and optionally schedule it. Only "running" and "cycling"
+    are supported.
+
+    Every interval/repeat step MUST carry a target — running takes EITHER a
+    pace range OR an HR range (never both), cycling takes a power range.
+    Untargeted "no effort" steps are only valid for warmup/cooldown/rest.
+
+    For ANY repeated effort (e.g. "6 x 400m" or "5 x 3min"), use ONE "repeat"
+    step with "sets" — do NOT emit the same interval step multiple times.
+
+    steps is a list of dicts, each with a "type" field:
+
+        warmup / cooldown / recovery / rest (target optional):
+            {"type": "warmup"|"cooldown"|"recovery"|"rest",
+             "description": str | None,
+             "distance_m": float,   # optional end condition — omit for lap-button end
+             "duration_s": int,     # optional end condition — omit for lap-button end
+             "pace_min_per_km": float, "pace_max_per_km": float,   # optional, running
+             "hr_min": int, "hr_max": int,                        # optional, running
+             "power_watts_min": int, "power_watts_max": int}      # optional, cycling
+
+        interval (standalone single effort — target REQUIRED):
+            {"type": "interval",
+             "distance_m": float,   # exactly one of distance_m/duration_s
+             "duration_s": int,
+             "pace_min_per_km": float, "pace_max_per_km": float,  # running: pace ...
+             "hr_min": int, "hr_max": int,                        # ... or HR
+             "power_watts_min": int, "power_watts_max": int,      # cycling: power
+             "description": str | None}
+
+        repeat (a block of N identical efforts — target REQUIRED):
+            {"type": "repeat", "sets": int,
+             "distance_m": float,   # exactly one of distance_m/duration_s — per rep
+             "duration_s": int,
+             "rest_duration_s": int,  # optional recovery between reps — omit for lap-button rest
+             "pace_min_per_km": float, "pace_max_per_km": float,  # running: pace ...
+             "hr_min": int, "hr_max": int,                        # ... or HR
+             "power_watts_min": int, "power_watts_max": int,      # cycling: power
+             "description": str | None}
+
+    Examples:
+        Running, pace:  3 x [400m @ 4:00-3:50/km, 90s recovery]
+            {"type": "repeat", "sets": 3, "distance_m": 400, "rest_duration_s": 90,
+             "pace_min_per_km": "4:00", "pace_max_per_km": "3:50"}
+        Running, HR:  5 x [3min @ 155-170bpm, 2min recovery]
+            {"type": "repeat", "sets": 5, "duration_s": 180, "rest_duration_s": 120,
+             "hr_min": 155, "hr_max": 170}
+        Cycling, power:  4 x [4min @ 264-288W, 3min recovery]
+            {"type": "repeat", "sets": 4, "duration_s": 240, "rest_duration_s": 180,
+             "power_watts_min": 264, "power_watts_max": 288}
 
     Args:
         name: Workout name.
-        sport_type: Sport type key — "running", "cycling", "strength_training", "cardio".
-        steps: List of workout steps (see tools/workout.py for full step schema).
+        sport_type: "running" or "cycling".
+        steps: List of workout step dicts as described above.
         schedule_date: Optional schedule date in YYYY-MM-DD format.
     """
     return create_workout_impl(name=name, sport_type=sport_type, steps=steps, schedule_date=schedule_date)
@@ -368,4 +416,3 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     logger.info(f"Starting Garmin MCP server on port {port}")
     uvicorn.run(auth_app, host="0.0.0.0", port=port)
-
