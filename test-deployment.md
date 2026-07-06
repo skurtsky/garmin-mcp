@@ -108,7 +108,12 @@ Then test with the MCP Inspector at `http://localhost:8000/mcp?token=YOUR_TOKEN`
 
 ## Deploying Updates to Azure
 
-After pushing a new image to GHCR:
+**Automated:** pushing to `main` triggers `.github/workflows/deploy.yml`, which builds
+the image, pushes it to GHCR, and updates the Azure Container App automatically. See
+that workflow for setup requirements (Azure OIDC federated credential + GitHub secrets
+`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`).
+
+**Manual (fallback/reference):** after pushing a new image to GHCR by hand:
 
 ```powershell
 az containerapp update `
