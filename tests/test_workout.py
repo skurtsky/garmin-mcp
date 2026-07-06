@@ -5,6 +5,7 @@ from tools.workout import (
     pace_to_mps,
     get_saved_workouts,
     get_scheduled_workouts,
+    get_workout_detail,
     build_workout_payload,
     update_workout_weights,
 )
@@ -339,3 +340,220 @@ def test_build_payload_running_repeat_hr():
     assert interval["targetValueTwo"] == 170
     assert interval["endCondition"]["conditionTypeId"] == 2  # time
     assert interval["endConditionValue"] == 180
+
+
+def _no_target():
+    return {"workoutTargetTypeId": 1, "workoutTargetTypeKey": "no.target", "displayOrder": 1}
+
+
+def _end_condition(kind: str, value):
+    key_by_kind = {
+        "distance": (3, "distance", True),
+        "time": (2, "time", True),
+        "lap_button": (1, "lap.button", True),
+        "iterations": (7, "iterations", False),
+    }
+    cid, key, displayable = key_by_kind[kind]
+    return {
+        "conditionTypeId": cid,
+        "conditionTypeKey": key,
+        "displayOrder": cid,
+        "displayable": displayable,
+    }, value
+
+
+def _step(step_type_key: str, step_type_id: int, end_cond, target_type=None,
+          t_one=None, t_two=None, description=None, exercise_name=None,
+          category=None, weight_value=None):
+    end_key, end_val = end_cond
+    step = {
+        "type": "ExecutableStepDTO",
+        "stepType": {"stepTypeId": step_type_id, "stepTypeKey": step_type_key, "displayOrder": step_type_id},
+        "endCondition": end_key,
+        "endConditionValue": end_val,
+        "targetType": target_type or _no_target(),
+        "targetValueOne": t_one,
+        "targetValueTwo": t_two,
+    }
+    if description is not None:
+        step["description"] = description
+    if exercise_name is not None:
+        step["exerciseName"] = exercise_name
+    if category is not None:
+        step["category"] = category
+    if weight_value is not None:
+        step["weightValue"] = weight_value
+    return step
+
+
+def _repeat_group(sets: int, interval: dict, rest: dict) -> dict:
+    return {
+        "type": "RepeatGroupDTO",
+        "numberOfIterations": sets,
+        "endCondition": _end_condition("iterations", sets)[0],
+        "endConditionValue": sets,
+        "workoutSteps": [interval, rest],
+    }
+
+
+def test_get_workout_detail_running_pace_and_repeat():
+    warmup = _step(
+        "warmup", 1, _end_condition("distance", 1000.0),
+        description="Easy warmup",
+    )
+    interval = _step(
+        "interval", 3, _end_condition("distance", 400.0),
+        target_type={"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6},
+        t_one=pace_to_mps("5:00"), t_two=pace_to_mps("4:30"),
+        description="400m rep",
+    )
+    rest = _step("rest", 5, _end_condition("time", 90.0))
+
+    workout = {
+        "workoutId": 555,
+        "workoutName": "Track Session",
+        "description": "5x400 @ 5K pace",
+        "sportType": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+        "workoutSegments": [
+            {"segmentOrder": 1, "workoutSteps": [warmup, _repeat_group(5, interval, rest)]}
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_workout_by_id.return_value = workout
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = get_workout_detail(555)
+
+    mock_client.get_workout_by_id.assert_called_once_with(555)
+
+    assert result["workout_id"] == 555
+    assert result["workout_name"] == "Track Session"
+    assert result["sport_type"] == "running"
+    assert result["description"] == "5x400 @ 5K pace"
+
+    steps = result["steps"]
+    assert len(steps) == 2
+
+    decoded_warmup = steps[0]
+    assert decoded_warmup["type"] == "warmup"
+    assert decoded_warmup["distance_m"] == 1000.0
+    assert decoded_warmup["description"] == "Easy warmup"
+    assert "pace_min_per_km" not in decoded_warmup
+
+    repeat = steps[1]
+    assert repeat["type"] == "repeat"
+    assert repeat["sets"] == 5
+    assert repeat["distance_m"] == 400.0
+    assert repeat["description"] == "400m rep"
+    assert repeat["pace_min_per_km"] == "5:00"
+    assert repeat["pace_max_per_km"] == "4:30"
+    assert repeat["rest_duration_s"] == 90.0
+
+
+def test_get_workout_detail_cycling_power_repeat():
+    interval = _step(
+        "interval", 3, _end_condition("time", 240.0),
+        target_type={"workoutTargetTypeId": 2, "workoutTargetTypeKey": "power.zone", "displayOrder": 2},
+        t_one=280, t_two=250,  # Garmin convention: targetValueOne = max, targetValueTwo = min
+        description="VO2max interval",
+    )
+    rest = _step("rest", 5, _end_condition("time", 180.0))
+
+    workout = {
+        "workoutId": 777,
+        "workoutName": "VO2max Bike Set",
+        "description": None,
+        "sportType": {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2},
+        "workoutSegments": [
+            {"segmentOrder": 1, "workoutSteps": [_repeat_group(4, interval, rest)]}
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_workout_by_id.return_value = workout
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = get_workout_detail(777)
+
+    repeat = result["steps"][0]
+    assert repeat["sets"] == 4
+    assert repeat["duration_s"] == 240.0
+    assert repeat["power_watts_max"] == 280
+    assert repeat["power_watts_min"] == 250
+    assert repeat["rest_duration_s"] == 180.0
+
+
+def test_get_workout_detail_running_hr_repeat():
+    interval = _step(
+        "interval", 3, _end_condition("time", 180.0),
+        target_type={"workoutTargetTypeId": 4, "workoutTargetTypeKey": "heart.rate.zone", "displayOrder": 4},
+        t_one=155, t_two=170,  # Garmin convention: targetValueOne = min bpm, targetValueTwo = max bpm
+        description="Tempo interval",
+    )
+    rest = _step("rest", 5, _end_condition("time", 120.0))
+
+    workout = {
+        "workoutId": 888,
+        "workoutName": "Tempo Set",
+        "description": None,
+        "sportType": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
+        "workoutSegments": [
+            {"segmentOrder": 1, "workoutSteps": [_repeat_group(5, interval, rest)]}
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_workout_by_id.return_value = workout
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = get_workout_detail(888)
+
+    repeat = result["steps"][0]
+    assert repeat["sets"] == 5
+    assert repeat["duration_s"] == 180.0
+    assert repeat["hr_min"] == 155
+    assert repeat["hr_max"] == 170
+    assert repeat["rest_duration_s"] == 120.0
+
+
+def test_get_workout_detail_strength_weights():
+    warmup = _step(
+        "warmup", 1, _end_condition("lap_button", 0.0),
+        description="Warm-up sets",
+        exercise_name="BARBELL_BACK_SQUAT", category="SQUAT", weight_value=-1.0,
+    )
+    interval = _step(
+        "interval", 3, _end_condition("lap_button", 0.0),
+        exercise_name="BARBELL_BACK_SQUAT", category="SQUAT", weight_value=100.0,
+    )
+    rest = _step("rest", 5, _end_condition("lap_button", 0.0))
+
+    workout = {
+        "workoutId": 999,
+        "workoutName": "Strength - A",
+        "description": None,
+        "sportType": {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5},
+        "workoutSegments": [
+            {"segmentOrder": 1, "workoutSteps": [warmup, _repeat_group(3, interval, rest)]}
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_workout_by_id.return_value = workout
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = get_workout_detail(999)
+
+    decoded_warmup = result["steps"][0]
+    assert decoded_warmup["exercise_name"] == "BARBELL_BACK_SQUAT"
+    assert decoded_warmup["category"] == "SQUAT"
+    assert decoded_warmup["weight_kg"] == -1.0  # bodyweight sentinel preserved as-is
+    assert "distance_m" not in decoded_warmup
+    assert "duration_s" not in decoded_warmup
+
+    repeat = result["steps"][1]
+    assert repeat["sets"] == 3
+    assert repeat["exercise_name"] == "BARBELL_BACK_SQUAT"
+    assert repeat["weight_kg"] == 100.0
+    assert "rest_duration_s" not in repeat

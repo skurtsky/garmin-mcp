@@ -64,6 +64,19 @@ _STROKE_TYPE = {"strokeTypeId": 0, "strokeTypeKey": None, "displayOrder": 0}
 _EQUIPMENT_TYPE = {"equipmentTypeId": 0, "equipmentTypeKey": None, "displayOrder": 0}
 
 
+def mps_to_pace(mps: float | None) -> str | None:
+    """Convert speed in m/s to a 'M:SS' min/km pace string. Inverse of pace_to_mps."""
+    if not mps or mps <= 0:
+        return None
+    secs_per_km = 1000.0 / mps
+    m = int(secs_per_km // 60)
+    s = int(round(secs_per_km % 60))
+    if s == 60:
+        m += 1
+        s = 0
+    return f"{m}:{s:02d}"
+
+
 def pace_to_mps(pace: float | str) -> float:
     """
     Convert pace in min/km to m/s.
@@ -177,7 +190,8 @@ def get_scheduled_workouts(months_ahead: int = 3) -> list[dict]:
 
 def get_saved_workouts(sport_type: str | None = None) -> list[dict]:
     """
-    Get saved workouts from Garmin workout library.
+    Get saved workouts from Garmin workout library (summary metadata only —
+    no step detail; use get_workout_detail(workout_id) for the full steps).
 
     Args:
         sport_type: Optional sport type filter (e.g. running, cycling).
@@ -603,6 +617,111 @@ def delete_workout(workout_id: int) -> dict:
     client = get_client()
     client.delete_workout(workout_id)
     return {"status": "ok", "workout_id": workout_id}
+
+
+# ── Workout detail decoding ────────────────────────────────────────────────────
+# Inverse of build_workout_payload/_make_executable_step: turns Garmin's raw
+# step DTOs back into the same schema build_workout_payload's `steps` accepts.
+
+def _decode_end_condition(step: dict) -> dict:
+    """Return {'distance_m': ...} or {'duration_s': ...}, or {} for lap-button/none."""
+    cond_key = (step.get("endCondition") or {}).get("conditionTypeKey")
+    value = step.get("endConditionValue")
+    if cond_key == "distance":
+        return {"distance_m": value}
+    if cond_key == "time":
+        return {"duration_s": value}
+    return {}
+
+
+def _decode_target(step: dict) -> dict:
+    """Return pace/power/hr target fields based on targetType, or {} for no target."""
+    target_key = (step.get("targetType") or {}).get("workoutTargetTypeKey")
+    t_one = step.get("targetValueOne")
+    t_two = step.get("targetValueTwo")
+    if target_key == "pace.zone":
+        return {"pace_min_per_km": mps_to_pace(t_one), "pace_max_per_km": mps_to_pace(t_two)}
+    if target_key == "power.zone":
+        # Garmin convention: targetValueOne = max watts, targetValueTwo = min watts
+        return {"power_watts_max": t_one, "power_watts_min": t_two}
+    if target_key == "heart.rate.zone":
+        # Garmin convention: targetValueOne = min bpm, targetValueTwo = max bpm
+        return {"hr_min": t_one, "hr_max": t_two}
+    return {}
+
+
+def _decode_executable_step(step: dict) -> dict:
+    """Decode a single ExecutableStepDTO into the create_workout step-input schema."""
+    out: dict = {"type": (step.get("stepType") or {}).get("stepTypeKey")}
+    if step.get("description"):
+        out["description"] = step["description"]
+    out.update(_decode_end_condition(step))
+    if step.get("exerciseName"):
+        out["exercise_name"] = step["exerciseName"]
+        if step.get("category"):
+            out["category"] = step["category"]
+        if "weightValue" in step:
+            out["weight_kg"] = step["weightValue"]
+    out.update(_decode_target(step))
+    return out
+
+
+def _decode_repeat_group(step: dict) -> dict:
+    """Decode a RepeatGroupDTO into the create_workout 'repeat' step-input schema."""
+    inner = step.get("workoutSteps") or []
+    interval = next((s for s in inner if (s.get("stepType") or {}).get("stepTypeKey") == "interval"), None)
+    rest = next((s for s in inner if (s.get("stepType") or {}).get("stepTypeKey") == "rest"), None)
+
+    out: dict = {"type": "repeat", "sets": step.get("numberOfIterations")}
+    if interval is not None:
+        decoded = _decode_executable_step(interval)
+        decoded.pop("type", None)
+        out.update(decoded)
+    if rest is not None:
+        rest_decoded = _decode_end_condition(rest)
+        if "duration_s" in rest_decoded:
+            out["rest_duration_s"] = rest_decoded["duration_s"]
+    return out
+
+
+def _decode_steps(steps: list[dict]) -> list[dict]:
+    """Decode a top-level workout steps list (ExecutableStepDTO/RepeatGroupDTO)."""
+    decoded = []
+    for step in steps:
+        if step.get("type") == "RepeatGroupDTO":
+            decoded.append(_decode_repeat_group(step))
+        elif step.get("type") == "ExecutableStepDTO":
+            decoded.append(_decode_executable_step(step))
+    return decoded
+
+
+def get_workout_detail(workout_id: int) -> dict:
+    """
+    Get full step-by-step detail for a saved workout by ID.
+
+    Returns the workout name/sport/description plus a decoded steps list in
+    the same shape build_workout_payload's `steps` argument accepts (warmup/
+    interval/cooldown/recovery/rest and repeat groups, with distance/duration,
+    pace/power/HR targets, and strength exercise/weight fields decoded back to
+    readable values) — so the result can be reused directly as input to
+    create_workout to clone or modify a workout.
+
+    Args:
+        workout_id: Garmin workout ID (from get_saved_workouts).
+    """
+    client = get_client()
+    workout = client.get_workout_by_id(workout_id)
+
+    segments = workout.get("workoutSegments") or []
+    steps = segments[0].get("workoutSteps") if segments else []
+
+    return {
+        "workout_id": workout.get("workoutId"),
+        "workout_name": workout.get("workoutName"),
+        "sport_type": (workout.get("sportType") or {}).get("sportTypeKey"),
+        "description": workout.get("description"),
+        "steps": _decode_steps(steps or []),
+    }
 
 
 # ── Weight update helpers ─────────────────────────────────────────────────────
