@@ -25,6 +25,7 @@ from tools.performance import (
 from tools.workout import (
     get_scheduled_workouts as get_scheduled_workouts_impl,
     get_saved_workouts as get_saved_workouts_impl,
+    get_workout_detail as get_workout_detail_impl,
     schedule_workout as schedule_workout_impl,
     unschedule_workout as unschedule_workout_impl,
     create_workout as create_workout_impl,
@@ -247,12 +248,27 @@ def get_scheduled_workouts(months_ahead: int = 3) -> list:
 @mcp.tool()
 def get_saved_workouts(sport_type: Optional[str] = None) -> list:
     """
-    Get saved workouts from Garmin workout library.
+    Get saved workouts from Garmin workout library (summary metadata only —
+    no step detail; use get_workout_detail for the full steps).
 
     Args:
         sport_type: Optional sport filter (e.g. running, cycling).
     """
     return get_saved_workouts_impl(sport_type=sport_type)
+
+
+@mcp.tool()
+def get_workout_detail(workout_id: int) -> dict:
+    """
+    Get full step-by-step detail for a saved workout by ID — warmup/interval/
+    cooldown/rest and repeat-group steps with distance/duration, pace/power/HR
+    targets, and strength exercise/weight fields, in the same shape
+    create_workout's steps argument accepts.
+
+    Args:
+        workout_id: Garmin workout ID (from get_saved_workouts).
+    """
+    return get_workout_detail_impl(workout_id=workout_id)
 
 
 @mcp.tool()
