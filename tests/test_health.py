@@ -2,6 +2,7 @@
 from tools.health import (
     get_sleep,
     get_daily_readiness,
+    get_daily_health,
     get_training_status,
     get_training_readiness,
 )
@@ -94,3 +95,42 @@ def test_get_training_status_acwr_is_reasonable(test_date):
     result = get_training_status(test_date)
     assert result['acwr'] is not None
     assert 0 < result['acwr'] < 3
+
+def test_get_daily_health_returns_dict(test_date):
+    result = get_daily_health(test_date)
+    assert isinstance(result, dict)
+
+def test_get_daily_health_has_required_keys(test_date):
+    result = get_daily_health(test_date)
+    for key in ('date', 'heart_rate', 'stress', 'body_battery', 'respiration'):
+        assert key in result, f"Missing key: {key}"
+
+def test_get_daily_health_heart_rate_is_reasonable(test_date):
+    result = get_daily_health(test_date)
+    hr = result['heart_rate']
+    for key in ('resting_hr', 'max_hr', 'min_hr', 'seven_day_avg_resting_hr'):
+        assert key in hr, f"Missing heart_rate key: {key}"
+    assert 30 < hr['resting_hr'] < 100
+    assert hr['min_hr'] <= hr['resting_hr'] <= hr['max_hr']
+
+def test_get_daily_health_stress_is_reasonable(test_date):
+    result = get_daily_health(test_date)
+    stress = result['stress']
+    for key in ('avg_stress', 'max_stress', 'rest_stress_mins',
+                'low_stress_mins', 'medium_stress_mins', 'high_stress_mins'):
+        assert key in stress, f"Missing stress key: {key}"
+    assert 0 <= stress['avg_stress'] <= 100
+    assert 0 <= stress['max_stress'] <= 100
+
+def test_get_daily_health_body_battery_has_keys(test_date):
+    result = get_daily_health(test_date)
+    bb = result['body_battery']
+    assert 'charged' in bb
+    assert 'drained' in bb
+
+def test_get_daily_health_respiration_is_reasonable(test_date):
+    result = get_daily_health(test_date)
+    resp = result['respiration']
+    for key in ('avg_waking', 'avg_sleep', 'highest', 'lowest'):
+        assert key in resp, f"Missing respiration key: {key}"
+    assert 5 < resp['avg_waking'] < 30

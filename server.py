@@ -13,6 +13,7 @@ from tools.activities import (
 from tools.health import (
     get_sleep,
     get_daily_readiness,
+    get_daily_health,
     get_training_status,
     get_training_readiness,
 )
@@ -126,6 +127,20 @@ def daily_readiness(date: str) -> dict:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
     return get_daily_readiness(date)
+
+
+@mcp.tool()
+def daily_health(date: str = 'today') -> dict:
+    """
+    Get a daily health snapshot for a given date — resting/max/min heart
+    rate, all-day stress zones (avg/max stress level and time-in-zone
+    minutes), body battery charged/drained, and respiration rate
+    (waking/sleep averages and range).
+
+    Args:
+        date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
+    """
+    return get_daily_health(date)
 
 
 @mcp.tool()
