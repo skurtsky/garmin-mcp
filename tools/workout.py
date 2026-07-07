@@ -1,6 +1,7 @@
 # tools/workout.py
 import copy
 from datetime import date
+from typing import Literal
 
 from garmin_client import get_client
 
@@ -51,15 +52,14 @@ _TARGET_HEART_RATE = {
 _TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
 _TARGET_POWER = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "power.zone", "displayOrder": 2}
 
+# create_workout only supports these two sport types. Other sport types
+# (strength_training, cardio, ...) can still be viewed via get_workout_detail
+# and get_saved_workouts, but not created — see build_workout_payload.
 _SPORT_TYPE_MAP = {
     "running": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
     "cycling": {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2},
-    "road_biking": {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2},
-    "cardio": {"sportTypeId": 3, "sportTypeKey": "cardio", "displayOrder": 3},
-    "strength_training": {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5},
 }
 
-_WEIGHT_UNIT = {"unitId": 8, "unitKey": "kilogram", "factor": 1000.0}
 _STROKE_TYPE = {"strokeTypeId": 0, "strokeTypeKey": None, "displayOrder": 0}
 _EQUIPMENT_TYPE = {"equipmentTypeId": 0, "equipmentTypeKey": None, "displayOrder": 0}
 
@@ -253,12 +253,9 @@ def _make_executable_step(
     target_value_two,
     description: str | None = None,
     child_step_id: int | None = None,
-    category: str | None = None,
-    exercise_name: str | None = None,
-    weight_value: float | None = None,
 ) -> dict:
     """Build an ExecutableStepDTO dict."""
-    step: dict = {
+    return {
         "type": "ExecutableStepDTO",
         "stepOrder": step_order,
         "stepType": _STEP_TYPE_MAP[step_type_key],
@@ -279,17 +276,9 @@ def _make_executable_step(
         "strokeType": _STROKE_TYPE,
         "equipmentType": _EQUIPMENT_TYPE,
     }
-    if category is not None:
-        step["category"] = category
-    if exercise_name is not None:
-        step["exerciseName"] = exercise_name
-    if weight_value is not None:
-        step["weightValue"] = weight_value
-        step["weightUnit"] = _WEIGHT_UNIT
-    return step
 
 
-def _infer_cardio_end_condition(step: dict) -> tuple[dict, object]:
+def _infer_end_condition(step: dict) -> tuple[dict, object]:
     """Return (endCondition dict, endConditionValue) from distance_m or duration_s."""
     if "distance_m" in step:
         return _END_CONDITION_MAP["distance"], step["distance_m"]
@@ -298,64 +287,189 @@ def _infer_cardio_end_condition(step: dict) -> tuple[dict, object]:
     return _END_CONDITION_MAP["lap_button"], 0.0
 
 
+def _resolve_target(sport_type: str, step: dict, *, required: bool) -> tuple[dict, float | None, float | None]:
+    """
+    Resolve a step's target DTO from its input fields.
+
+    running: pace_min_per_km/pace_max_per_km (converted to m/s) or hr_min/hr_max.
+    cycling: power_watts_min/power_watts_max.
+
+    Raises ValueError if `required` and no matching target fields are present,
+    or if a running step specifies both pace and HR fields at once.
+    """
+    if sport_type == "running":
+        has_pace = "pace_min_per_km" in step and "pace_max_per_km" in step
+        has_hr = "hr_min" in step and "hr_max" in step
+        if has_pace and has_hr:
+            raise ValueError("step cannot specify both pace and HR targets")
+        if has_pace:
+            return _TARGET_PACE, pace_to_mps(step["pace_min_per_km"]), pace_to_mps(step["pace_max_per_km"])
+        if has_hr:
+            return _TARGET_HEART_RATE, step["hr_min"], step["hr_max"]
+        if required:
+            raise ValueError(
+                "running interval/repeat step requires a target: "
+                "pace_min_per_km + pace_max_per_km, or hr_min + hr_max"
+            )
+    else:  # cycling
+        has_power = "power_watts_min" in step and "power_watts_max" in step
+        if has_power:
+            # Garmin convention: targetValueOne = max watts, targetValueTwo = min watts
+            return _TARGET_POWER, step["power_watts_max"], step["power_watts_min"]
+        if required:
+            raise ValueError(
+                "cycling interval/repeat step requires a target: power_watts_min + power_watts_max"
+            )
+
+    return _TARGET_NONE, None, None
+
+
+def _build_plain_step(step: dict, sport_type: str, step_order: int) -> dict:
+    """Build a warmup/cooldown/recovery/rest ExecutableStepDTO. Target is optional."""
+    end_cond, end_val = _infer_end_condition(step)
+    target_type, t_one, t_two = _resolve_target(sport_type, step, required=False)
+    return _make_executable_step(
+        step_order=step_order,
+        step_type_key=step["type"],
+        end_condition=end_cond,
+        end_condition_value=end_val,
+        target_type=target_type,
+        target_value_one=t_one,
+        target_value_two=t_two,
+        description=step.get("description"),
+        child_step_id=None,
+    )
+
+
+def _build_single_interval_step(step: dict, sport_type: str, step_order: int) -> dict:
+    """Build a standalone (non-repeated) interval ExecutableStepDTO. Target is required."""
+    end_cond, end_val = _infer_end_condition(step)
+    if end_cond == _END_CONDITION_MAP["lap_button"]:
+        raise ValueError(f"interval step requires distance_m or duration_s for {sport_type}")
+    target_type, t_one, t_two = _resolve_target(sport_type, step, required=True)
+    return _make_executable_step(
+        step_order=step_order,
+        step_type_key="interval",
+        end_condition=end_cond,
+        end_condition_value=end_val,
+        target_type=target_type,
+        target_value_one=t_one,
+        target_value_two=t_two,
+        description=step.get("description"),
+        child_step_id=None,
+    )
+
+
+def _build_repeat_group(step: dict, sport_type: str, step_order: int, child_step_id: int) -> tuple[dict, int]:
+    """
+    Build a RepeatGroupDTO wrapping one targeted interval step and one rest step.
+    Returns (repeat_group_dto, new_step_order).
+    """
+    sets = step.get("sets")
+    if not isinstance(sets, int) or sets < 1:
+        raise ValueError("repeat step requires sets as a positive integer")
+
+    interval_end_cond, interval_end_val = _infer_end_condition(step)
+    if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
+        raise ValueError(f"{sport_type} repeat step requires distance_m or duration_s")
+    interval_target, t_one, t_two = _resolve_target(sport_type, step, required=True)
+
+    rest_duration_s = step.get("rest_duration_s")
+    if rest_duration_s and rest_duration_s > 0:
+        rest_end_cond, rest_end_val = _END_CONDITION_MAP["time"], rest_duration_s
+    else:
+        rest_end_cond, rest_end_val = _END_CONDITION_MAP["lap_button"], 0.0
+
+    # stepOrders are part of the flat global counter shared with sibling steps
+    repeat_step_order = step_order + 1
+    interval_step_order = step_order + 2
+    rest_step_order = step_order + 3
+
+    interval_inner = _make_executable_step(
+        step_order=interval_step_order,
+        step_type_key="interval",
+        end_condition=interval_end_cond,
+        end_condition_value=interval_end_val,
+        target_type=interval_target,
+        target_value_one=t_one,
+        target_value_two=t_two,
+        description=step.get("description"),
+        child_step_id=child_step_id,
+    )
+    rest_inner = _make_executable_step(
+        step_order=rest_step_order,
+        step_type_key="rest",
+        end_condition=rest_end_cond,
+        end_condition_value=rest_end_val,
+        target_type=_TARGET_NONE,
+        target_value_one=None,
+        target_value_two=None,
+        description=None,
+        child_step_id=child_step_id,
+    )
+
+    repeat_dto = {
+        "type": "RepeatGroupDTO",
+        "stepOrder": repeat_step_order,
+        "childStepId": child_step_id,
+        "stepType": _STEP_TYPE_MAP["repeat"],
+        "numberOfIterations": sets,
+        "endCondition": _END_CONDITION_MAP["iterations"],
+        "endConditionValue": sets,
+        "skipLastRestStep": False,
+        "smartRepeat": False,
+        "workoutSteps": [interval_inner, rest_inner],
+    }
+    return repeat_dto, rest_step_order
+
+
 def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict:
     """
     Build a Garmin workout JSON payload ready for upload.
 
+    Supports only "running" (pace or heart-rate target) and "cycling" (power
+    target) — other sport types raise ValueError.
+
     Args:
         name: Workout name.
-        sport_type: Sport type key — "running", "cycling", "strength_training", "cardio".
+        sport_type: "running" or "cycling".
         steps: List of step dicts. Each step must have a "type" field:
 
-            Warmup/cooldown/recovery/rest step:
+            Warmup/cooldown/recovery/rest step (target optional):
                 {"type": "warmup"|"cooldown"|"recovery"|"rest",
                  "description": str | None,
-                 "distance_m": float,   # optional, cardio only
-                 "duration_s": int,     # optional, cardio only
-                 "category": str,       # optional, strength
-                 "exercise_name": str,  # optional, strength
-                 "weight_kg": float}    # optional, strength
+                 "distance_m": float,           # optional — omit for lap-button end
+                 "duration_s": int,             # optional — omit for lap-button end
+                 "pace_min_per_km": float, "pace_max_per_km": float,  # optional, running
+                 "hr_min": int, "hr_max": int,                       # optional, running
+                 "power_watts_min": int, "power_watts_max": int}     # optional, cycling
 
-            Interval step (strength):
+            Standalone interval step — a single effort, target required:
                 {"type": "interval",
-                 "category": str, "exercise_name": str, "weight_kg": float,
+                 "distance_m": float, "duration_s": int,  # exactly one required
+                 "pace_min_per_km": float, "pace_max_per_km": float,  # running: pace ...
+                 "hr_min": int, "hr_max": int,                        # ... or HR
+                 "power_watts_min": int, "power_watts_max": int,      # cycling: power
                  "description": str | None}
 
-            Interval step (running — pace target):
-                {"type": "interval",
-                 "distance_m": float | None, "duration_s": int | None,
-                 "pace_min_per_km": float, "pace_max_per_km": float,
-                 "description": str | None}
-
-            Interval step (cycling — power target):
-                {"type": "interval",
-                 "duration_s": int | None, "distance_m": float | None,
-                 "power_watts_min": int, "power_watts_max": int,
-                 "description": str | None}
-
-            Repeat group (strength sets):
+            Repeat group — use this for ANY repeated effort (e.g. "3 x 400m" or
+            "5 x 3min") instead of writing out multiple identical interval steps:
                 {"type": "repeat", "sets": int,
-                 "category": str, "exercise_name": str, "weight_kg": float,
+                 "distance_m": float, "duration_s": int,  # exactly one required
+                 "rest_duration_s": int,  # optional — omit for lap-button rest
+                 "pace_min_per_km": float, "pace_max_per_km": float,  # running: pace ...
+                 "hr_min": int, "hr_max": int,                        # ... or HR
+                 "power_watts_min": int, "power_watts_max": int,      # cycling: power
                  "description": str | None}
+                # Expands to one RepeatGroupDTO wrapping one interval + one rest step.
 
-            Repeat group (cycling — power target):
-                {"type": "repeat", "sets": 4,
-                 "duration_s": 240, "rest_duration_s": 180,
-                 "power_watts_min": 264, "power_watts_max": 288,
-                 "description": "VO2max interval"}
-
-            Repeat group (running — pace target):
-                {"type": "repeat", "sets": 6,
-                 "distance_m": 400, "rest_duration_s": 90,
-                 "pace_min_per_km": 4.5, "pace_max_per_km": 4.0,
-                 "description": "400m rep"}
-
-            Repeat group (running — HR target):
-                {"type": "repeat", "sets": 5,
-                 "duration_s": 180, "rest_duration_s": 120,
-                 "hr_min": 155, "hr_max": 170,
-                 "description": "Tempo interval"}
-                # All repeat variants expand to RepeatGroupDTO wrapping interval + rest steps.
+        Examples:
+            Running, pace repeat:  {"type": "repeat", "sets": 6, "distance_m": 400,
+                "rest_duration_s": 90, "pace_min_per_km": 4.5, "pace_max_per_km": 4.0}
+            Running, HR repeat:    {"type": "repeat", "sets": 5, "duration_s": 180,
+                "rest_duration_s": 120, "hr_min": 155, "hr_max": 170}
+            Cycling, power repeat: {"type": "repeat", "sets": 4, "duration_s": 240,
+                "rest_duration_s": 180, "power_watts_min": 264, "power_watts_max": 288}
     """
     if not name:
         raise ValueError("name is required")
@@ -365,192 +479,25 @@ def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict
         raise ValueError(f"Invalid sport_type: {sport_type!r}. Choose from {list(_SPORT_TYPE_MAP)}")
 
     sport_dto = _SPORT_TYPE_MAP[sport_type]
-    is_strength = sport_type == "strength_training"
     workout_steps: list[dict] = []
     step_order = 0   # flat global counter
     child_step_id = 0  # increments per RepeatGroupDTO
 
     for step in steps:
         step_type = step.get("type")
-        description = step.get("description")
 
         if step_type in ("warmup", "cooldown", "recovery", "rest"):
             step_order += 1
-            if is_strength:
-                end_cond = _END_CONDITION_MAP["lap_button"]
-                end_val = 0.0
-            else:
-                end_cond, end_val = _infer_cardio_end_condition(step)
-
-            workout_steps.append(_make_executable_step(
-                step_order=step_order,
-                step_type_key=step_type,
-                end_condition=end_cond,
-                end_condition_value=end_val,
-                target_type=_TARGET_NONE,
-                target_value_one=None,
-                target_value_two=None,
-                description=description,
-                child_step_id=None,
-                category=step.get("category"),
-                exercise_name=step.get("exercise_name"),
-                weight_value=step.get("weight_kg"),
-            ))
+            workout_steps.append(_build_plain_step(step, sport_type, step_order))
 
         elif step_type == "interval":
             step_order += 1
-
-            if is_strength:
-                end_cond = _END_CONDITION_MAP["lap_button"]
-                end_val = 0.0
-                target_type = _TARGET_NONE
-                t_one = None
-                t_two = None
-            elif sport_type == "running":
-                end_cond, end_val = _infer_cardio_end_condition(step)
-                if end_cond == _END_CONDITION_MAP["lap_button"]:
-                    raise ValueError("interval step requires distance_m or duration_s for running")
-                if "pace_min_per_km" in step and "pace_max_per_km" in step:
-                    target_type = _TARGET_PACE
-                    # targetValueOne = slow end (lower m/s), targetValueTwo = fast end (higher m/s)
-                    t_one = pace_to_mps(step["pace_min_per_km"])
-                    t_two = pace_to_mps(step["pace_max_per_km"])
-                else:
-                    target_type = _TARGET_NONE
-                    t_one = None
-                    t_two = None
-            else:  # cycling / cardio
-                end_cond, end_val = _infer_cardio_end_condition(step)
-                if end_cond == _END_CONDITION_MAP["lap_button"]:
-                    raise ValueError("interval step requires distance_m or duration_s for cycling/cardio")
-                if "power_watts_min" in step and "power_watts_max" in step:
-                    target_type = _TARGET_POWER
-                    t_one = step["power_watts_max"]
-                    t_two = step["power_watts_min"]
-                else:
-                    target_type = _TARGET_NONE
-                    t_one = None
-                    t_two = None
-
-            workout_steps.append(_make_executable_step(
-                step_order=step_order,
-                step_type_key="interval",
-                end_condition=end_cond,
-                end_condition_value=end_val,
-                target_type=target_type,
-                target_value_one=t_one,
-                target_value_two=t_two,
-                description=description,
-                child_step_id=None,
-                category=step.get("category"),
-                exercise_name=step.get("exercise_name"),
-                weight_value=step.get("weight_kg"),
-            ))
+            workout_steps.append(_build_single_interval_step(step, sport_type, step_order))
 
         elif step_type == "repeat":
             child_step_id += 1
-            sets = step.get("sets")
-            if not isinstance(sets, int) or sets < 1:
-                raise ValueError("repeat step requires sets as a positive integer")
-
-            # Determine interval end condition and target based on sport
-            if is_strength:
-                interval_end_cond = _END_CONDITION_MAP["lap_button"]
-                interval_end_val = 0.0
-                interval_target = _TARGET_NONE
-                t_one = None
-                t_two = None
-                interval_category = step.get("category")
-                interval_exercise = step.get("exercise_name")
-                interval_weight = step.get("weight_kg")
-            elif sport_type == "cycling" and "power_watts_min" in step:
-                interval_end_cond, interval_end_val = _infer_cardio_end_condition(step)
-                if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
-                    raise ValueError("cycling repeat step requires distance_m or duration_s")
-                interval_target = _TARGET_POWER
-                t_one = step["power_watts_max"]
-                t_two = step["power_watts_min"]
-                interval_category = None
-                interval_exercise = None
-                interval_weight = None
-            elif sport_type == "running" and "pace_min_per_km" in step:
-                interval_end_cond, interval_end_val = _infer_cardio_end_condition(step)
-                if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
-                    raise ValueError("running repeat step requires distance_m or duration_s")
-                interval_target = _TARGET_PACE
-                t_one = pace_to_mps(step["pace_min_per_km"])
-                t_two = pace_to_mps(step["pace_max_per_km"])
-                interval_category = None
-                interval_exercise = None
-                interval_weight = None
-            elif sport_type == "running" and "hr_min" in step:
-                interval_end_cond, interval_end_val = _infer_cardio_end_condition(step)
-                if interval_end_cond == _END_CONDITION_MAP["lap_button"]:
-                    raise ValueError("running repeat step requires distance_m or duration_s")
-                interval_target = _TARGET_HEART_RATE
-                t_one = step["hr_min"]
-                t_two = step["hr_max"]
-                interval_category = None
-                interval_exercise = None
-                interval_weight = None
-            else:
-                raise ValueError(
-                    f"repeat step missing required target fields for sport_type {sport_type!r}"
-                )
-
-            # Determine rest end condition
-            rest_duration_s = step.get("rest_duration_s")
-            if rest_duration_s and rest_duration_s > 0:
-                rest_end_cond = _END_CONDITION_MAP["time"]
-                rest_end_val = rest_duration_s
-            else:
-                rest_end_cond = _END_CONDITION_MAP["lap_button"]
-                rest_end_val = 0.0
-
-            # Build inner steps — stepOrders are part of the flat global counter
-            repeat_step_order = step_order + 1
-            interval_step_order = step_order + 2
-            rest_step_order = step_order + 3
-            step_order = rest_step_order  # advance global counter past all three
-
-            interval_inner = _make_executable_step(
-                step_order=interval_step_order,
-                step_type_key="interval",
-                end_condition=interval_end_cond,
-                end_condition_value=interval_end_val,
-                target_type=interval_target,
-                target_value_one=t_one,
-                target_value_two=t_two,
-                description=description,
-                child_step_id=child_step_id,
-                category=interval_category,
-                exercise_name=interval_exercise,
-                weight_value=interval_weight,
-            )
-            rest_inner = _make_executable_step(
-                step_order=rest_step_order,
-                step_type_key="rest",
-                end_condition=rest_end_cond,
-                end_condition_value=rest_end_val,
-                target_type=_TARGET_NONE,
-                target_value_one=None,
-                target_value_two=None,
-                description=None,
-                child_step_id=child_step_id,
-            )
-
-            workout_steps.append({
-                "type": "RepeatGroupDTO",
-                "stepOrder": repeat_step_order,
-                "childStepId": child_step_id,
-                "stepType": _STEP_TYPE_MAP["repeat"],
-                "numberOfIterations": sets,
-                "endCondition": _END_CONDITION_MAP["iterations"],
-                "endConditionValue": sets,
-                "skipLastRestStep": False,
-                "smartRepeat": False,
-                "workoutSteps": [interval_inner, rest_inner],
-            })
+            repeat_dto, step_order = _build_repeat_group(step, sport_type, step_order, child_step_id)
+            workout_steps.append(repeat_dto)
 
         else:
             raise ValueError(f"Unknown step type: {step_type!r}")
@@ -580,7 +527,7 @@ def _extract_uploaded_workout_id(upload_result: dict) -> int | None:
 
 def create_workout(
     name: str,
-    sport_type: str,
+    sport_type: Literal["running", "cycling"],
     steps: list[dict],
     schedule_date: str | None = None,
 ) -> dict:
@@ -589,12 +536,12 @@ def create_workout(
 
     Args:
         name: Workout name.
-        sport_type: Sport type key — "running", "cycling", "strength_training", "cardio".
+        sport_type: "running" (pace or HR target) or "cycling" (power target).
         steps: Workout steps (see build_workout_payload for schema).
         schedule_date: Optional date YYYY-MM-DD to schedule after upload.
     """
-    client = get_client()
     payload = build_workout_payload(name=name, sport_type=sport_type, steps=steps)
+    client = get_client()
     upload_result = client.upload_workout(payload) or {}
 
     workout_id = _extract_uploaded_workout_id(upload_result)
@@ -802,4 +749,3 @@ def update_workout_weights(workout_name: str, weight_updates: dict[str, float]) 
         "new_id": new_id,
         "updates_applied": updates_applied,
     }
-

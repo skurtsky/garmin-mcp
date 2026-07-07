@@ -7,6 +7,7 @@ from tools.workout import (
     get_scheduled_workouts,
     get_workout_detail,
     build_workout_payload,
+    create_workout,
     update_workout_weights,
 )
 
@@ -74,66 +75,182 @@ def test_build_payload_contains_steps():
     assert steps[1]["targetType"]["workoutTargetTypeKey"] == "pace.zone"
 
 
-def test_build_payload_strength_training():
+def test_build_payload_warmup_pace_target_is_applied():
+    """A warmup step with pace fields must get a real pace target, not be silently dropped."""
     payload = build_workout_payload(
-        name="TEST - Strength",
-        sport_type="strength_training",
+        name="TEST - Warmup Target",
+        sport_type="running",
         steps=[
             {
                 "type": "warmup",
-                "description": "Warm-up sets",
-                "category": "SQUAT",
-                "exercise_name": "BARBELL_BACK_SQUAT",
-                "weight_kg": -1.0,
-            },
-            {
-                "type": "repeat",
-                "sets": 3,
-                "category": "SQUAT",
-                "exercise_name": "BARBELL_BACK_SQUAT",
-                "weight_kg": 100.0,
+                "distance_m": 1000,
+                "pace_min_per_km": 6.0,
+                "pace_max_per_km": 5.5,
             },
         ],
     )
+    warmup = payload["workoutSegments"][0]["workoutSteps"][0]
+    assert warmup["targetType"]["workoutTargetTypeKey"] == "pace.zone"
+    assert warmup["targetValueOne"] == pace_to_mps(6.0)
+    assert warmup["targetValueTwo"] == pace_to_mps(5.5)
 
-    assert payload["sportType"]["sportTypeKey"] == "strength_training"
-    steps = payload["workoutSegments"][0]["workoutSteps"]
-    assert len(steps) == 2
 
-    # warmup
-    warmup = steps[0]
-    assert warmup["type"] == "ExecutableStepDTO"
-    assert warmup["stepType"]["stepTypeKey"] == "warmup"
-    assert warmup["stepOrder"] == 1
-    assert warmup["category"] == "SQUAT"
-    assert warmup["exerciseName"] == "BARBELL_BACK_SQUAT"
-    assert warmup["weightValue"] == -1.0
+def test_build_payload_warmup_without_target_is_no_target():
+    payload = build_workout_payload(
+        name="TEST - Warmup No Target",
+        sport_type="running",
+        steps=[{"type": "warmup", "distance_m": 1000}],
+    )
+    warmup = payload["workoutSegments"][0]["workoutSteps"][0]
+    assert warmup["targetType"]["workoutTargetTypeKey"] == "no.target"
 
-    # repeat group — flat stepOrders: group=2, interval=3, rest=4
-    repeat = steps[1]
-    assert repeat["type"] == "RepeatGroupDTO"
-    assert repeat["stepOrder"] == 2
-    assert repeat["numberOfIterations"] == 3
-    assert repeat["endCondition"]["conditionTypeKey"] == "iterations"
-    assert repeat["endConditionValue"] == 3
 
-    inner = repeat["workoutSteps"]
-    assert len(inner) == 2
+def test_build_payload_rejects_unsupported_sport_type():
+    for sport_type in ("strength_training", "cardio", "swimming"):
+        try:
+            build_workout_payload(
+                name="TEST", sport_type=sport_type,
+                steps=[{"type": "interval", "duration_s": 60}],
+            )
+            assert False, f"expected ValueError for sport_type={sport_type!r}"
+        except ValueError:
+            pass
 
-    interval = inner[0]
-    assert interval["type"] == "ExecutableStepDTO"
-    assert interval["stepType"]["stepTypeKey"] == "interval"
-    assert interval["stepOrder"] == 3
-    assert interval["childStepId"] == repeat["childStepId"]
-    assert interval["category"] == "SQUAT"
-    assert interval["exerciseName"] == "BARBELL_BACK_SQUAT"
-    assert interval["weightValue"] == 100.0
 
-    rest = inner[1]
-    assert rest["type"] == "ExecutableStepDTO"
-    assert rest["stepType"]["stepTypeKey"] == "rest"
-    assert rest["stepOrder"] == 4
-    assert rest["childStepId"] == repeat["childStepId"]
+def test_build_payload_interval_requires_target():
+    try:
+        build_workout_payload(
+            name="TEST - No Target",
+            sport_type="running",
+            steps=[{"type": "interval", "duration_s": 180}],
+        )
+        assert False, "expected ValueError for interval without a target"
+    except ValueError as e:
+        assert "target" in str(e)
+
+
+def test_build_payload_cycling_interval_requires_target():
+    try:
+        build_workout_payload(
+            name="TEST - No Target",
+            sport_type="cycling",
+            steps=[{"type": "interval", "duration_s": 180}],
+        )
+        assert False, "expected ValueError for cycling interval without a power target"
+    except ValueError as e:
+        assert "power" in str(e)
+
+
+def test_build_payload_running_step_rejects_both_pace_and_hr():
+    try:
+        build_workout_payload(
+            name="TEST - Conflicting Targets",
+            sport_type="running",
+            steps=[{
+                "type": "interval", "duration_s": 180,
+                "pace_min_per_km": 4.5, "pace_max_per_km": 4.1,
+                "hr_min": 150, "hr_max": 165,
+            }],
+        )
+        assert False, "expected ValueError for both pace and HR targets"
+    except ValueError as e:
+        assert "both" in str(e)
+
+
+def test_build_payload_interval_requires_end_condition():
+    try:
+        build_workout_payload(
+            name="TEST - No End Condition",
+            sport_type="running",
+            steps=[{"type": "interval", "pace_min_per_km": 4.5, "pace_max_per_km": 4.1}],
+        )
+        assert False, "expected ValueError for interval without distance_m/duration_s"
+    except ValueError as e:
+        assert "distance_m or duration_s" in str(e)
+
+
+def test_build_payload_repeat_requires_target():
+    try:
+        build_workout_payload(
+            name="TEST - Repeat No Target",
+            sport_type="cycling",
+            steps=[{"type": "repeat", "sets": 4, "duration_s": 240}],
+        )
+        assert False, "expected ValueError for repeat step without a target"
+    except ValueError as e:
+        assert "power" in str(e)
+
+
+def test_build_payload_repeat_requires_positive_sets():
+    try:
+        build_workout_payload(
+            name="TEST - Bad Sets",
+            sport_type="running",
+            steps=[{
+                "type": "repeat", "sets": 0, "duration_s": 180,
+                "hr_min": 150, "hr_max": 165,
+            }],
+        )
+        assert False, "expected ValueError for sets < 1"
+    except ValueError as e:
+        assert "sets" in str(e)
+
+
+def test_create_workout_rejects_unsupported_sport_type_without_network_call():
+    """Validation must happen before touching the network — get_client should never be called."""
+    with patch("tools.workout.get_client") as mock_get_client:
+        try:
+            create_workout(
+                name="TEST", sport_type="strength_training",
+                steps=[{"type": "interval", "duration_s": 60}],
+            )
+            assert False, "expected ValueError for unsupported sport_type"
+        except ValueError:
+            pass
+        mock_get_client.assert_not_called()
+
+
+def test_create_workout_uploads_and_schedules():
+    mock_client = MagicMock()
+    mock_client.upload_workout.return_value = {"workoutId": 4242}
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = create_workout(
+            name="TEST - 6x400",
+            sport_type="running",
+            steps=[{
+                "type": "repeat", "sets": 6, "distance_m": 400, "rest_duration_s": 90,
+                "pace_min_per_km": 5.0, "pace_max_per_km": 4.5,
+            }],
+            schedule_date="2026-08-01",
+        )
+
+    uploaded_payload = mock_client.upload_workout.call_args[0][0]
+    assert uploaded_payload["sportType"]["sportTypeKey"] == "running"
+    assert len(uploaded_payload["workoutSegments"][0]["workoutSteps"]) == 1
+
+    mock_client.schedule_workout.assert_called_once_with(4242, "2026-08-01")
+    assert result == {
+        "workout_id": 4242,
+        "name": "TEST - 6x400",
+        "sport_type": "running",
+        "scheduled_date": "2026-08-01",
+    }
+
+
+def test_create_workout_without_schedule_date_does_not_schedule():
+    mock_client = MagicMock()
+    mock_client.upload_workout.return_value = {"workoutId": 7}
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = create_workout(
+            name="TEST - Easy Run",
+            sport_type="running",
+            steps=[{"type": "interval", "duration_s": 1800, "hr_min": 130, "hr_max": 150}],
+        )
+
+    mock_client.schedule_workout.assert_not_called()
+    assert result["scheduled_date"] is None
 
 
 def test_build_payload_cycling_power():

@@ -58,7 +58,7 @@ def get_endurance_score(start_date: str | None = None,
 
     contributors = [
         {
-            'sport':            type_map.get(c.get('group', 0) + 1, f'group_{c.get("group")}'),
+            'sport':            type_map.get((c.get('group') or 0) + 1, f'group_{c.get("group")}'),
             'contribution_pct': round(c.get('contribution') or 0, 1),
         }
         for c in (dto.get('contributors') or [])
@@ -114,7 +114,7 @@ def get_running_tolerance(start_date: str | None = None,
     }
 
 
-# ── PERSONAL RECORDS ──────────────────────────────────────────────────────────
+# ── PERSONAL RECORDS ────────────────────────────────────────────────────────
 
 _ALLOWED_PR_SPORTS = {
     'running',

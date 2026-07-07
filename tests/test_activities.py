@@ -19,8 +19,11 @@ def test_get_activities_has_required_keys(client):
         assert key in activities[0], f"Missing key: {key}"
 
 def test_get_activities_sport_filter(client):
+    # Garmin's activityType filter is a category filter, not an exact typeKey
+    # match — it also returns subtypes like trail_running/indoor_running/etc.,
+    # all of which contain "run".
     runs = get_activities(limit=20, sport_type='running')
-    assert all(a['type'] == 'running' for a in runs)
+    assert all('run' in a['type'] for a in runs)
 
 def test_get_activity_returns_expected_structure(run_activity_id):
     result = get_activity(run_activity_id)
@@ -90,7 +93,8 @@ def test_get_weekly_summary_totals_are_consistent(client):
 def test_get_weekly_summary_sport_filter(client):
     result = get_weekly_summary(week_offset=1, sport_type='running')
     assert result['sport_type_filter'] == 'running'
-    assert all(a['type'] == 'running' for a in result['activities'])
+    # Same category-filter caveat as test_get_activities_sport_filter above.
+    assert all('run' in a['type'] for a in result['activities'])
 
 
 def test_get_activity_includes_weather(run_activity_id):
