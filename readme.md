@@ -42,6 +42,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 |---|---|
 | `sleep` | Sleep stages, score, HRV, and recovery metrics for a given date |
 | `daily_readiness` | HRV, body battery levels, and daily stress and activity stats |
+| `daily_health` | Resting/max/min heart rate, all-day stress zones, body battery charged/drained, and respiration rate |
 | `training_readiness` | Composite readiness score (0–100) with contributing factors (sleep, HRV, ACWR, stress) |
 
 ### Training & Performance
@@ -139,7 +140,7 @@ garmin-mcp/
 ├── garmin_client.py       # Authenticated Garmin client singleton
 ├── tools/
 │   ├── activities.py      # get_activities, get_activity, get_weekly_summary
-│   ├── health.py          # get_sleep, get_daily_readiness, get_training_status, get_training_readiness
+│   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
 │   ├── trends.py          # get_performance_predictions, get_performance_trends
