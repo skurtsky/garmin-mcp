@@ -20,7 +20,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | Tool | Description |
 |---|---|
 | `recent_activities` | Recent activity list with summary metrics; supports sport type filter and date range |
-| `activity_detail` | Full activity detail with lap splits, HR zones, and weather conditions |
+| `activity_detail` | Full activity detail with lap splits, structured-workout interval/phase breakdown, HR zones, and weather conditions |
 | `weekly_summary` | Aggregated activity totals for a Monday–Sunday week with per-sport breakdown |
 | `personal_records` | Personal records for running, cycling, and swimming grouped by sport |
 

@@ -151,6 +151,101 @@ def _extract_laps(laps_data: dict, weight_kg: float) -> list[dict]:
     return rows
 
 
+_PHASE_ORDER = ['Warmup', 'Active', 'Recovery', 'Rest', 'Cooldown']
+
+def _phase_label(raw_type: str) -> str:
+    """Strip the 'INTERVAL_' prefix and title-case (e.g. INTERVAL_ACTIVE -> 'Active')."""
+    return raw_type.removeprefix('INTERVAL_').replace('_', ' ').title()
+
+
+def _extract_intervals(typed_splits: dict | None, weight_kg: float) -> list[dict]:
+    """Extract structured-workout phase segments (warmup/active/recovery/rest/
+    cooldown) from Garmin typed-splits response, dropping the auto-detected
+    movement-type entries (running/walking/standing) that are already covered
+    by lap data.
+    """
+    if not typed_splits:
+        return []
+
+    rows = []
+    rep_counter = 0
+
+    for split in typed_splits.get('splits') or []:
+        raw_type = split.get('type') or ''
+        if not raw_type.startswith('INTERVAL_'):
+            continue
+
+        phase = _phase_label(raw_type)
+        distance = split.get('distance') or 0
+        avg_power = split.get('averagePower') or 0
+
+        if phase == 'Active':
+            rep_counter += 1
+            rep = rep_counter
+        else:
+            rep = None
+
+        rows.append({
+            'phase':                 phase,
+            'rep':                   rep,
+            'distance_km':           round(distance / 1000, 2),
+            'time':                  _fmt_time(split.get('duration')),
+            'avg_pace':              _fmt_pace(split.get('averageSpeed') or 0),
+            'avg_gap':               _fmt_pace(split.get('avgGradeAdjustedSpeed') or 0),
+            'avg_hr':                split.get('averageHR'),
+            'max_hr':                split.get('maxHR'),
+            'avg_cadence':           round(split.get('averageRunCadence') or 0),
+            'avg_power_w':           avg_power,
+            'normalized_power_w':    split.get('normalizedPower'),
+            'max_power_w':           split.get('maxPower'),
+            'avg_w_per_kg':          round(avg_power / weight_kg, 2) if avg_power else None,
+            'gct_ms':                round(split.get('groundContactTime') or 0, 1),
+            'stride_length_m':       round((split.get('strideLength') or 0) / 100, 2),
+            'vert_oscillation_cm':   round(split.get('verticalOscillation') or 0, 1),
+            'vert_ratio':            round(split.get('verticalRatio') or 0, 1),
+            'elevation_gain_m':      split.get('elevationGain'),
+            'calories':              split.get('calories'),
+            'lap_indexes':           split.get('lapIndexes'),
+        })
+
+    return rows
+
+
+def _extract_interval_summary(split_summaries: dict | None) -> list[dict]:
+    """Extract per-phase aggregated totals/averages from Garmin split-summaries
+    response, dropping auto-detected movement-type rollups.
+    """
+    if not split_summaries:
+        return []
+
+    rows = []
+    for summary in split_summaries.get('splitSummaries') or []:
+        raw_type = summary.get('splitType') or ''
+        if not raw_type.startswith('INTERVAL_'):
+            continue
+
+        phase = _phase_label(raw_type)
+        distance = summary.get('distance') or 0
+
+        rows.append({
+            'phase':              phase,
+            'reps':               summary.get('noOfSplits'),
+            'total_distance_km':  round(distance / 1000, 2),
+            'total_time':         _fmt_time(summary.get('duration')),
+            'avg_pace':           _fmt_pace(summary.get('averageSpeed') or 0),
+            'avg_hr':             summary.get('averageHR'),
+            'max_hr':             summary.get('maxHR'),
+            'avg_power_w':        summary.get('averagePower'),
+            'normalized_power_w': summary.get('normalizedPower'),
+            'max_power_w':        summary.get('maxPower'),
+            'avg_cadence':        round(summary.get('averageRunCadence') or 0),
+            'elevation_gain_m':   summary.get('elevationGain'),
+        })
+
+    rows.sort(key=lambda r: _PHASE_ORDER.index(r['phase']) if r['phase'] in _PHASE_ORDER else len(_PHASE_ORDER))
+    return rows
+
+
 def _extract_hr_zones(hr_zones_data: list, total_duration_secs: float) -> list[dict]:
     """Extract HR zone breakdown with time and percentage."""
     zones = []
@@ -196,8 +291,10 @@ def _extract_weather(weather_raw: dict | None) -> dict | None:
 
 def get_activity(activity_id: int) -> dict:
     """
-    Get full detail for a single activity including lap splits, HR zones,
-    and weather conditions at the time of the activity.
+    Get full detail for a single activity including lap splits, structured-
+    workout interval/phase breakdown (warmup/active/recovery/rest/cooldown,
+    for activities with a targeted workout), HR zones, and weather conditions
+    at the time of the activity.
 
     Args:
         activity_id: Garmin activity ID
@@ -214,16 +311,30 @@ def get_activity(activity_id: int) -> dict:
     except Exception:
         weather_raw = None
 
-    summary  = _extract_activity_summary(activity_raw)
-    laps     = _extract_laps(laps_raw, weight_kg=athlete['weight_kg'])
-    hr_zones = _extract_hr_zones(hr_zones_raw, summary['duration_min'] * 60)
-    weather  = _extract_weather(weather_raw)
+    try:
+        typed_splits_raw = client.get_activity_typed_splits(activity_id)
+    except Exception:
+        typed_splits_raw = None
+
+    try:
+        split_summaries_raw = client.get_activity_split_summaries(activity_id)
+    except Exception:
+        split_summaries_raw = None
+
+    summary          = _extract_activity_summary(activity_raw)
+    laps             = _extract_laps(laps_raw, weight_kg=athlete['weight_kg'])
+    hr_zones         = _extract_hr_zones(hr_zones_raw, summary['duration_min'] * 60)
+    weather          = _extract_weather(weather_raw)
+    intervals        = _extract_intervals(typed_splits_raw, weight_kg=athlete['weight_kg'])
+    interval_summary = _extract_interval_summary(split_summaries_raw)
 
     return {
-        'summary':  summary,
-        'laps':     laps,
-        'hr_zones': hr_zones,
-        'weather':  weather,
+        'summary':          summary,
+        'laps':             laps,
+        'intervals':        intervals,
+        'interval_summary': interval_summary,
+        'hr_zones':         hr_zones,
+        'weather':          weather,
     }
 
 def _activity_summary_from_list(a: dict) -> dict:

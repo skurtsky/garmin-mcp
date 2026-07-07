@@ -90,7 +90,10 @@ def recent_activities(
 def activity_detail(activity_id: int) -> dict:
     """
     Get full detail for a single activity including summary metrics,
-    per-lap splits with running dynamics, and HR time-in-zones.
+    per-lap splits with running dynamics, structured-workout interval/phase
+    breakdown (warmup/active/recovery/rest/cooldown — useful for pace-by-rep
+    or power-by-rep analysis of interval workouts, empty for non-workout
+    activities), and HR time-in-zones.
 
     Args:
         activity_id: Garmin activity ID (get from recent_activities)

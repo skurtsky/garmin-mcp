@@ -29,6 +29,8 @@ def test_get_activity_returns_expected_structure(run_activity_id):
     result = get_activity(run_activity_id)
     assert 'summary' in result
     assert 'laps' in result
+    assert 'intervals' in result
+    assert 'interval_summary' in result
     assert 'hr_zones' in result
 
 def test_get_activity_summary_has_run_fields(run_activity_id):
@@ -47,6 +49,26 @@ def test_get_activity_hr_zones_has_five_zones(run_activity_id):
     result = get_activity(run_activity_id)
     assert len(result['hr_zones']) == 5
 
+_KNOWN_PHASES = {'Warmup', 'Active', 'Recovery', 'Rest', 'Cooldown'}
+
+def test_get_activity_intervals_for_interval_workout(run_activity_id):
+    """run_activity_id is a 5x1K interval workout — intervals/interval_summary
+    should both be populated with recognizable phase labels."""
+    result = get_activity(run_activity_id)
+    intervals = result['intervals']
+    interval_summary = result['interval_summary']
+    assert len(intervals) > 0
+    assert len(interval_summary) > 0
+    for row in intervals:
+        assert row['phase'] in _KNOWN_PHASES, f"Unexpected phase: {row['phase']}"
+    for row in interval_summary:
+        assert row['phase'] in _KNOWN_PHASES, f"Unexpected phase: {row['phase']}"
+    # Only 'Active' reps are numbered; other phases leave rep unset
+    active_reps = [r['rep'] for r in intervals if r['phase'] == 'Active']
+    assert active_reps == list(range(1, len(active_reps) + 1))
+    non_active = [r['rep'] for r in intervals if r['phase'] != 'Active']
+    assert all(r is None for r in non_active)
+
 def test_get_activity_cycling_has_power_fields(cycling_activity_id):
     result = get_activity(cycling_activity_id)
     summary = result['summary']
@@ -54,6 +76,13 @@ def test_get_activity_cycling_has_power_fields(cycling_activity_id):
     assert 'tss' in summary
     assert 'normalized_power' in summary
     assert 'intensity_factor' in summary
+
+def test_get_activity_cycling_intervals_no_crash(cycling_activity_id):
+    """Cycling activity may or may not have structured-workout intervals —
+    the keys should always be present as lists, never crash."""
+    result = get_activity(cycling_activity_id)
+    assert isinstance(result['intervals'], list)
+    assert isinstance(result['interval_summary'], list)
 
 def test_get_activities_with_date_range(client, test_date):
     from datetime import date, timedelta
