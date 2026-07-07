@@ -178,6 +178,66 @@ def get_training_status(date: str) -> dict:
     }
 
 
+def get_daily_health(date: str) -> dict:
+    """
+    Get a daily health snapshot for a given date — resting/max/min heart
+    rate, all-day stress zones (avg/max level and time-in-zone minutes),
+    body battery charged/drained, and respiration rate (waking/sleep
+    averages and range).
+
+    Args:
+        date: Date string in YYYY-MM-DD format, or 'today' / 'yesterday'
+    """
+    date = resolve_date(date)
+
+    client = get_client()
+
+    hr_raw     = client.get_heart_rates(date) or {}
+    stress_raw = client.get_all_day_stress(date) or {}
+    bb_raw     = client.get_body_battery(date) or []
+    resp_raw   = client.get_respiration_data(date) or {}
+
+    def secs_to_min(secs):
+        return round(secs / 60, 1) if secs is not None else None
+
+    heart_rate = {
+        'resting_hr':              hr_raw.get('restingHeartRate'),
+        'max_hr':                  hr_raw.get('maxHeartRate'),
+        'min_hr':                  hr_raw.get('minHeartRate'),
+        'seven_day_avg_resting_hr': hr_raw.get('lastSevenDaysAvgRestingHeartRate'),
+    }
+
+    stress = {
+        'avg_stress':           stress_raw.get('avgStressLevel'),
+        'max_stress':           stress_raw.get('maxStressLevel'),
+        'rest_stress_mins':     secs_to_min(stress_raw.get('restStressDuration')),
+        'low_stress_mins':      secs_to_min(stress_raw.get('lowStressDuration')),
+        'medium_stress_mins':   secs_to_min(stress_raw.get('mediumStressDuration')),
+        'high_stress_mins':     secs_to_min(stress_raw.get('highStressDuration')),
+    }
+
+    bb = bb_raw[0] if bb_raw else {}
+    body_battery = {
+        'charged': bb.get('charged'),
+        'drained': bb.get('drained'),
+    }
+
+    respiration = {
+        'avg_waking': resp_raw.get('avgWakingRespirationValue'),
+        'avg_sleep':  resp_raw.get('avgSleepRespirationValue'),
+        'highest':    resp_raw.get('highestRespirationValue'),
+        'lowest':     resp_raw.get('lowestRespirationValue'),
+    }
+
+    return {
+        'date':         date,
+        'heart_rate':   heart_rate,
+        'stress':       stress,
+        'body_battery': body_battery,
+        'respiration':  respiration,
+    }
+
+
 def get_training_readiness(date: str) -> dict:
     """
     Get training readiness for a given date — score, recovery status, and
