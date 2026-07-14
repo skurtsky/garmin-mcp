@@ -345,6 +345,7 @@ def test_update_workout_weights():
     assert result["updates_applied"] == {
         "BARBELL_BACK_SQUAT": {"old_kg": 100.0, "new_kg": 105.0}
     }
+    assert result["workout_description"] is None
 
     # delete called on old ID
     mock_client.delete_workout.assert_called_once_with(123)
@@ -356,6 +357,107 @@ def test_update_workout_weights():
     assert warmup_step["weightValue"] == 40.0   # unchanged
     # stepIds stripped
     assert "stepId" not in warmup_step
+
+
+def test_update_workout_weights_with_description_and_workout_description():
+    old_workout = {
+        "workoutId": 123,
+        "workoutName": "Strength - A",
+        "description": "Next weight progression day: July 16",
+        "workoutSegments": [
+            {
+                "segmentOrder": 1,
+                "workoutSteps": [
+                    # warmup — should NOT be updated
+                    {
+                        "type": "ExecutableStepDTO",
+                        "stepId": 10,
+                        "stepOrder": 1,
+                        "stepType": {"stepTypeId": 1, "stepTypeKey": "warmup", "displayOrder": 1},
+                        "exerciseName": "BARBELL_BACK_SQUAT",
+                        "weightValue": 40.0,
+                        "description": None,
+                    },
+                    {
+                        "type": "RepeatGroupDTO",
+                        "stepId": 20,
+                        "stepOrder": 2,
+                        "workoutSteps": [
+                            {
+                                "type": "ExecutableStepDTO",
+                                "stepId": 30,
+                                "stepOrder": 3,
+                                "stepType": {"stepTypeId": 3, "stepTypeKey": "interval", "displayOrder": 3},
+                                "exerciseName": "BARBELL_BACK_SQUAT",
+                                "weightValue": 100.0,
+                                "description": "120 - 140 - 150",
+                            },
+                            {
+                                "type": "ExecutableStepDTO",
+                                "stepId": 40,
+                                "stepOrder": 4,
+                                "stepType": {"stepTypeId": 5, "stepTypeKey": "rest", "displayOrder": 5},
+                                "exerciseName": None,
+                                "weightValue": -1.0,
+                            },
+                        ],
+                    },
+                    # flat-weight exercise, no description update supplied — should stay unchanged
+                    {
+                        "type": "ExecutableStepDTO",
+                        "stepId": 50,
+                        "stepOrder": 5,
+                        "stepType": {"stepTypeId": 3, "stepTypeKey": "interval", "displayOrder": 3},
+                        "exerciseName": "OVERHEAD_BARBELL_PRESS",
+                        "weightValue": 30.0,
+                        "description": "30",
+                    },
+                ],
+            }
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_workouts.return_value = [
+        {"workoutId": 123, "workoutName": "Strength - A"}
+    ]
+    mock_client.get_workout_by_id.return_value = old_workout
+    mock_client.upload_workout.return_value = {"workoutId": 456}
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = update_workout_weights(
+            workout_name="Strength - A",
+            weight_updates={
+                "BARBELL_BACK_SQUAT": {"weight_kg": 105.0, "description": "125 - 145 - 155"},
+                "OVERHEAD_BARBELL_PRESS": {"weight_kg": 32.5},
+            },
+            workout_description="Next weight progression day: July 30",
+        )
+
+    assert result["updates_applied"] == {
+        "BARBELL_BACK_SQUAT": {
+            "old_kg": 100.0,
+            "new_kg": 105.0,
+            "old_description": "120 - 140 - 150",
+            "new_description": "125 - 145 - 155",
+        },
+        "OVERHEAD_BARBELL_PRESS": {"old_kg": 30.0, "new_kg": 32.5},
+    }
+    assert result["workout_description"] == {
+        "old": "Next weight progression day: July 16",
+        "new": "Next weight progression day: July 30",
+    }
+
+    uploaded_payload = mock_client.upload_workout.call_args[0][0]
+    assert uploaded_payload["description"] == "Next weight progression day: July 30"
+
+    top_steps = uploaded_payload["workoutSegments"][0]["workoutSteps"]
+    warmup_step = top_steps[0]
+    assert warmup_step["weightValue"] == 40.0   # unchanged
+
+    ohp_step = top_steps[2]
+    assert ohp_step["weightValue"] == 32.5
+    assert ohp_step["description"] == "30"   # unchanged — no description supplied
 
 
 def test_build_payload_cycling_repeat_power():
