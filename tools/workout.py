@@ -699,22 +699,39 @@ def _strip_step_ids(steps: list[dict]) -> None:
             _strip_step_ids(step.get("workoutSteps") or [])
 
 
-def update_workout_weights(workout_name: str, weight_updates: dict[str, float]) -> dict:
+def update_workout_weights(
+    workout_name: str,
+    weight_updates: dict[str, float | dict],
+    workout_description: str | None = None,
+) -> dict:
     """
-    Update exercise weights in a strength workout by name.
+    Update exercise weights (and optionally per-set notes) in a strength
+    workout by name.
 
-    Finds the workout in the saved library, updates weightValue for matching
-    exercises (interval steps only — warmup steps are left unchanged), uploads
-    as a new workout, and deletes the old one.
+    Finds the workout in the saved library, updates weightValue and/or the
+    per-exercise description text for matching exercises (interval steps
+    only — warmup steps are left unchanged), optionally replaces the
+    workout-level description, uploads as a new workout, and deletes the
+    old one.
 
     Args:
         workout_name: Exact workout name as it appears in Garmin Connect.
-        weight_updates: Mapping of exerciseName → new weight in kg.
-            e.g. {"BARBELL_BACK_SQUAT": 105.0, "OVERHEAD_BARBELL_PRESS": 32.5}
+        weight_updates: Mapping of exerciseName to either:
+            - a plain number, for a weight-only update (backward compatible)
+              e.g. {"OVERHEAD_BARBELL_PRESS": 32.5}
+            - a dict with optional "weight_kg" and/or "description" keys
+              e.g. {"BARBELL_BACK_SQUAT": {"weight_kg": 56.7,
+                                            "description": "125 - 145 - 155"}}
+            Omitting "weight_kg" or "description" for an exercise leaves
+            that field unchanged (no accidental blanking).
+        workout_description: Optional new workout-level description (e.g.
+            "Next weight progression day: July 30"). Omit to leave the
+            current workout-level description unchanged.
 
     Returns:
         {"workout_name", "old_id", "new_id",
-         "updates_applied": {exerciseName: {"old_kg": float, "new_kg": float}}}
+         "updates_applied": {exerciseName: {"old_kg", "new_kg", "old_description", "new_description"}},
+         "workout_description": {"old", "new"} | None}
     """
     client = get_client()
     workouts = client.get_workouts(start=0, limit=999) or []
@@ -734,10 +751,35 @@ def update_workout_weights(workout_name: str, weight_updates: dict[str, float]) 
         if (step.get("stepType") or {}).get("stepTypeKey") != "interval":
             continue
         exercise = step.get("exerciseName")
-        if exercise in weight_updates:
-            old_kg = step["weightValue"]
-            step["weightValue"] = weight_updates[exercise]
-            updates_applied[exercise] = {"old_kg": old_kg, "new_kg": weight_updates[exercise]}
+        if exercise not in weight_updates:
+            continue
+
+        update = weight_updates[exercise]
+        if isinstance(update, dict):
+            has_weight = update.get("weight_kg") is not None
+            has_description = update.get("description") is not None
+            new_weight = update.get("weight_kg")
+            new_description = update.get("description")
+        else:
+            has_weight, has_description = True, False
+            new_weight, new_description = update, None
+
+        applied: dict = {}
+        if has_weight:
+            applied["old_kg"] = step["weightValue"]
+            applied["new_kg"] = new_weight
+            step["weightValue"] = new_weight
+        if has_description:
+            applied["old_description"] = step.get("description")
+            applied["new_description"] = new_description
+            step["description"] = new_description
+        if applied:
+            updates_applied[exercise] = applied
+
+    workout_description_applied = None
+    if workout_description is not None:
+        workout_description_applied = {"old": updated.get("description"), "new": workout_description}
+        updated["description"] = workout_description
 
     upload_result = client.upload_workout(updated) or {}
     new_id = _extract_uploaded_workout_id(upload_result)
@@ -748,4 +790,5 @@ def update_workout_weights(workout_name: str, weight_updates: dict[str, float]) 
         "old_id": old_id,
         "new_id": new_id,
         "updates_applied": updates_applied,
+        "workout_description": workout_description_applied,
     }

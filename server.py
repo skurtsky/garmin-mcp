@@ -392,20 +392,39 @@ def delete_workout(workout_id: int) -> dict:
 
 
 @mcp.tool()
-def update_workout_weights(workout_name: str, weight_updates: dict) -> dict:
+def update_workout_weights(
+    workout_name: str,
+    weight_updates: dict,
+    workout_description: str | None = None,
+) -> dict:
     """
-    Update exercise weights in a strength workout by name.
+    Update exercise weights (and optionally per-set notes) in a strength
+    workout by name.
 
-    Finds the workout, updates weightValue for matching exercises (interval
-    steps only — warmup weights are not changed), uploads as a new workout,
-    and deletes the old one.
+    Finds the workout, updates weightValue and/or the per-exercise
+    description text for matching exercises (interval steps only — warmup
+    steps are not changed), optionally replaces the workout-level
+    description, uploads as a new workout, and deletes the old one.
 
     Args:
         workout_name: Exact workout name as it appears in Garmin Connect.
-        weight_updates: Mapping of exerciseName to new weight in kg.
-            e.g. {"BARBELL_BACK_SQUAT": 105.0, "OVERHEAD_BARBELL_PRESS": 32.5}
+        weight_updates: Mapping of exerciseName to either a plain number for
+            a weight-only update (backward compatible), e.g.
+            {"OVERHEAD_BARBELL_PRESS": 32.5}, or a dict with optional
+            "weight_kg" and/or "description" keys, e.g.
+            {"BARBELL_BACK_SQUAT": {"weight_kg": 56.7,
+                                     "description": "125 - 145 - 155"}}.
+            Omitting "weight_kg" or "description" leaves that field
+            unchanged (no accidental blanking).
+        workout_description: Optional new workout-level description (e.g.
+            "Next weight progression day: July 30"). Omit to leave it
+            unchanged.
     """
-    return update_workout_weights_impl(workout_name=workout_name, weight_updates=weight_updates)
+    return update_workout_weights_impl(
+        workout_name=workout_name,
+        weight_updates=weight_updates,
+        workout_description=workout_description,
+    )
 
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────

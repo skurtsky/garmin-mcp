@@ -34,7 +34,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `unschedule_workout` | Remove a scheduled workout from calendar |
 | `create_workout` | Create a workout (running, cycling, strength_training, cardio) from step definitions and optionally schedule it |
 | `delete_workout` | Delete a saved workout by ID |
-| `update_workout_weights` | Update exercise weights in a strength workout by name — uploads a new version and deletes the old one |
+| `update_workout_weights` | Update exercise weights, per-set notes, and/or the workout-level description in a strength workout by name — uploads a new version and deletes the old one |
 
 ### Health & Recovery
 
