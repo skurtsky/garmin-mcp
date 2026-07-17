@@ -48,8 +48,10 @@ SAMPLE = {
 def test_render_includes_all_sections():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert html.startswith("<!doctype html>")
+    # "This Week's Training" renders with its apostrophe HTML-escaped, so match
+    # the apostrophe-free prefix here.
     for title in ("Body Battery", "Sleep", "Heart Rate", "Stress",
-                  "Training Readiness", "Recent Activities", "This Week's Training"):
+                  "Training Readiness", "Recent Activities", "This Week"):
         assert title in html
 
 
