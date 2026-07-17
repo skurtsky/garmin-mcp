@@ -52,6 +52,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `training_status` | Acute:chronic workload ratio, load balance, training status phrase, and current VO2max |
 | `performance_predictions` | Race time predictions for 5K, 10K, half marathon, and marathon |
 | `performance_trends` | Weekly or monthly trends for HRV and VO2max over a lookback period |
+| `get_trends` | Pre-aggregated daily metrics (RHR, HRV, sleep, body battery, stress, steps, training load) over a window with rolling 7d/28d averages, start→end deltas, and min/max |
 | `endurance_score` | Endurance score, classification (beginner → elite), and per-sport contribution breakdown |
 | `running_tolerance` | Running load tolerance with weekly load bounds and acute/chronic load for a date range |
 
@@ -143,7 +144,7 @@ garmin-mcp/
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
-│   ├── trends.py          # get_performance_predictions, get_performance_trends
+│   ├── trends.py          # get_performance_predictions, get_performance_trends, get_trends
 │   └── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights
 ├── tests/
 │   ├── conftest.py        # Shared fixtures

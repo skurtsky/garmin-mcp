@@ -17,7 +17,11 @@ from tools.health import (
     get_training_status,
     get_training_readiness,
 )
-from tools.trends import get_performance_predictions, get_performance_trends
+from tools.trends import (
+    get_performance_predictions,
+    get_performance_trends,
+    get_trends as get_trends_impl,
+)
 from tools.performance import (
     get_endurance_score,
     get_running_tolerance,
@@ -174,6 +178,34 @@ def performance_trends(period: str = 'weekly', lookback: int = 4) -> list:
         lookback: Number of periods to include (max 26 weekly, 12 monthly)
     """
     return get_performance_trends(period=period, lookback=lookback)
+
+@mcp.tool()
+def get_trends(period: str = '1m', metrics: Optional[list] = None) -> dict:
+    """
+    Get pre-aggregated health & performance trends over a trailing window, so a
+    trend view needs one call instead of dozens of individual per-day lookups.
+
+    Supported periods: 7d, 14d, 1m (30d), 42d, 3m (90d), 6m (180d), 1y (365d).
+
+    Metrics (all optional, defaults to all):
+        rhr           — resting heart rate
+        hrv           — overnight HRV last-night average
+        sleep_score   — overall sleep score
+        body_battery  — daily peak/wake level and total drain
+        stress        — all-day average stress
+        steps         — daily total steps
+        training_load — daily acute training load
+
+    For each metric series the result returns per-day values, trailing rolling
+    7-day and 28-day averages, the period start→end value and delta, and the
+    window min/max/avg. 'body_battery' expands into two series
+    ('body_battery_wake', 'body_battery_drain').
+
+    Args:
+        period:  One of 7d, 14d, 1m, 42d, 3m, 6m, 1y (default 1m).
+        metrics: Optional list of metric names to include (defaults to all).
+    """
+    return get_trends_impl(period=period, metrics=metrics)
 
 @mcp.tool()
 def training_readiness(date: str = 'today') -> dict:
