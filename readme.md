@@ -56,6 +56,14 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `endurance_score` | Endurance score, classification (beginner → elite), and per-sport contribution breakdown |
 | `running_tolerance` | Running load tolerance with weekly load bounds and acute/chronic load for a date range |
 
+### Goals & Motivation
+
+| Tool | Description |
+|---|---|
+| `active_goals` | Step / distance / activity goals with target, current progress, and progress percentage (`goal_type`: active, future, or past) |
+| `earned_badges` | Earned challenge/achievement badges with points, category, and date earned |
+| `adhoc_challenges` | Ad-hoc / community challenges with date range, personal ranking, and player count |
+
 ## Setup
 
 **1. Clone and install**
@@ -164,6 +172,7 @@ garmin-mcp/
 ├── garmin_client.py       # Authenticated Garmin client singleton
 ├── tools/
 │   ├── activities.py      # get_activities, get_activity, get_weekly_summary
+│   ├── challenges.py      # get_active_goals, get_earned_badges, get_adhoc_challenges
 │   ├── dashboard.py       # build_dashboard_data, render_dashboard_html (/dashboard route)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
@@ -173,6 +182,7 @@ garmin-mcp/
 ├── tests/
 │   ├── conftest.py        # Shared fixtures
 │   ├── test_activities.py
+│   ├── test_challenges.py
 │   ├── test_client.py
 │   ├── test_dashboard.py
 │   ├── test_health.py
