@@ -100,6 +100,29 @@ python server.py
 The server starts on `http://0.0.0.0:8000` by default. Set the `PORT` environment
 variable to override.
 
+## Dashboard
+
+A server-rendered health dashboard is available at `/dashboard` — the same
+container and the same bearer-token auth as the MCP endpoint, just a different
+route (no extra deployment needed). Open it in a browser with the token as a
+query param:
+
+```
+http://localhost:8000/dashboard?token=YOUR_TOKEN
+```
+
+It's a single self-contained HTML page (inline CSS, no build step) that fetches
+fresh data server-side on each load and shows body battery, last night's sleep,
+heart rate, stress, training readiness, the last 5 activities, and this week's
+training load. The page auto-refreshes periodically.
+
+Optional environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Offset from UTC for the "today" date and displayed local time (e.g. `-4`) |
+| `DASHBOARD_REFRESH_SECONDS` | `300` | Browser auto-refresh interval; set `0` to disable |
+
 ## Testing
 
 ### Run the test suite
@@ -141,6 +164,7 @@ garmin-mcp/
 ├── garmin_client.py       # Authenticated Garmin client singleton
 ├── tools/
 │   ├── activities.py      # get_activities, get_activity, get_weekly_summary
+│   ├── dashboard.py       # build_dashboard_data, render_dashboard_html (/dashboard route)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
@@ -150,6 +174,7 @@ garmin-mcp/
 │   ├── conftest.py        # Shared fixtures
 │   ├── test_activities.py
 │   ├── test_client.py
+│   ├── test_dashboard.py
 │   ├── test_health.py
 │   ├── test_performance.py
 │   ├── test_profile.py
