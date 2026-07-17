@@ -467,6 +467,9 @@ if __name__ == "__main__":
     import uvicorn
     from starlette.routing import Route
     from starlette.responses import Response as StarletteResponse
+    from starlette.responses import HTMLResponse
+
+    from tools.dashboard import build_dashboard_data, render_dashboard_html
 
     # Wrap the app with a simple ASGI auth wrapper
     bearer = BEARER_TOKEN
@@ -480,6 +483,20 @@ if __name__ == "__main__":
                 response = StarletteResponse("Unauthorized", status_code=401)
                 await response(scope, receive, send)
                 return
+
+        # Server-rendered health dashboard — same container, same bearer-token
+        # auth (via ?token=), just a different route. Data is fetched live on
+        # each request.
+        if scope["type"] == "http" and scope.get("path") == "/dashboard":
+            try:
+                page = render_dashboard_html(build_dashboard_data())
+                response = HTMLResponse(page)
+            except Exception as e:  # pragma: no cover — defensive
+                logger.exception("Dashboard render failed")
+                response = HTMLResponse(f"Dashboard error: {e}", status_code=500)
+            await response(scope, receive, send)
+            return
+
         await app(scope, receive, send)
 
     port = int(os.environ.get("PORT", 8000))
