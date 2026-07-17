@@ -5,6 +5,11 @@ from fastmcp import FastMCP
 from dotenv import load_dotenv
 
 from tools.profile import get_athlete_profile, get_gear
+from tools.challenges import (
+    get_active_goals,
+    get_earned_badges,
+    get_adhoc_challenges,
+)
 from tools.activities import (
     get_activities,
     get_activity,
@@ -270,6 +275,43 @@ def personal_records() -> dict:
     Records for other activity types (yoga, wellness streaks, etc.) are excluded.
     """
     return get_personal_records()
+
+
+@mcp.tool()
+def active_goals(goal_type: str = "active") -> list:
+    """
+    Get the athlete's goals (step / distance / activity goals) with target,
+    current progress, and progress percentage.
+
+    Args:
+        goal_type: Which goals to fetch — 'active' (current, default),
+                   'future' (upcoming), or 'past' (completed/expired).
+    """
+    return get_active_goals(goal_type=goal_type)
+
+
+@mcp.tool()
+def earned_badges() -> list:
+    """
+    Get the athlete's earned challenge/achievement badges — name, points,
+    category, date earned, and how many times each was earned.
+    """
+    return get_earned_badges()
+
+
+@mcp.tool()
+def adhoc_challenges(limit: int = 100) -> list:
+    """
+    Get the athlete's ad-hoc / community challenges — name, description,
+    date range, personal ranking, and number of players.
+
+    Note: current race time predictions are available via the separate
+    performance_predictions tool.
+
+    Args:
+        limit: Maximum number of challenges to return (default 100).
+    """
+    return get_adhoc_challenges(limit=limit)
 
 
 @mcp.tool()
