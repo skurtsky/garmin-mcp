@@ -4,6 +4,10 @@ from tools.activities import (
     get_activity,
     get_activity_summary,
     get_weekly_summary,
+    get_swim_records,
+    _months_ago,
+    _fmt_pace_100m,
+    _swim_set_from_lap,
 )
 
 
@@ -176,6 +180,92 @@ def test_get_activity_summary_averages_are_consistent(
         assert abs(result['avg_distance_km'] - expected_avg) < 0.01
     else:
         assert result['avg_distance_km'] == 0
+
+
+# ── SWIM RECORDS ──────────────────────────────────────────────────────────────
+
+from datetime import date
+
+
+def test_months_ago_basic():
+    assert _months_ago(date(2026, 7, 18), 6) == date(2026, 1, 18)
+
+
+def test_months_ago_crosses_year_boundary():
+    assert _months_ago(date(2026, 1, 15), 12) == date(2025, 1, 15)
+
+
+def test_months_ago_clamps_day_to_month_end():
+    # Mar 31 minus one month -> Feb 28 (2026 is not a leap year)
+    assert _months_ago(date(2026, 3, 31), 1) == date(2026, 2, 28)
+
+
+def test_fmt_pace_100m():
+    assert _fmt_pace_100m(100, 90) == "1:30"
+    assert _fmt_pace_100m(200, 210) == "1:45"
+    # zero / missing inputs are safe
+    assert _fmt_pace_100m(0, 90) is None
+    assert _fmt_pace_100m(100, 0) is None
+
+
+def test_swim_set_from_lap_skips_rest_laps():
+    activity = {'activityId': 1, 'activityName': 'Pool Swim',
+                'startTimeLocal': '2026-07-13T18:01:10.0'}
+    # zero-distance rest lap -> None
+    assert _swim_set_from_lap({'distance': 0, 'duration': 30}, activity) is None
+    # real swim set -> populated record
+    swim_set = _swim_set_from_lap(
+        {'distance': 400, 'duration': 548.8, 'numberOfActiveLengths': 20,
+         'averageSWOLF': 39.2, 'swimStroke': 'FREESTYLE', 'averageHR': 151},
+        activity,
+    )
+    assert swim_set['distance_m'] == 400
+    assert swim_set['avg_swolf'] == 39
+    assert swim_set['lengths'] == 20
+    assert swim_set['stroke'] == 'FREESTYLE'
+    assert swim_set['date'] == '2026-07-13'
+    assert swim_set['activity_id'] == 1
+
+
+_SWIM_SET_KEYS = ['distance_m', 'duration_s', 'pace_per_100m', 'lengths',
+                  'avg_swolf', 'stroke', 'avg_hr', 'activity_name', 'date',
+                  'activity_id']
+
+
+def test_get_swim_records_returns_expected_shape(client):
+    result = get_swim_records(months=6, top_n=5)
+    assert isinstance(result, dict)
+    for key in ('period', 'swims_scanned', 'longest_sets'):
+        assert key in result, f"Missing key: {key}"
+    assert isinstance(result['longest_sets'], list)
+    assert len(result['longest_sets']) <= 5
+
+
+def test_get_swim_records_period_matches_months(client):
+    result = get_swim_records(months=6, top_n=5)
+    today = date.today()
+    expected_start = _months_ago(today, 6).isoformat()
+    assert result['period'] == f"{expected_start} to {today.isoformat()}"
+
+
+def test_get_swim_records_sets_have_required_keys(client):
+    result = get_swim_records(months=12, top_n=5)
+    for s in result['longest_sets']:
+        for key in _SWIM_SET_KEYS:
+            assert key in s, f"Missing swim-set key: {key}"
+
+
+def test_get_swim_records_sorted_by_distance_desc(client):
+    result = get_swim_records(months=12, top_n=10)
+    distances = [s['distance_m'] for s in result['longest_sets']]
+    assert distances == sorted(distances, reverse=True)
+    # all returned sets are real swum sets, never zero-distance rests
+    assert all(d > 0 for d in distances)
+
+
+def test_get_swim_records_respects_top_n(client):
+    result = get_swim_records(months=12, top_n=3)
+    assert len(result['longest_sets']) <= 3
 
 
 def test_get_activity_includes_weather(run_activity_id):

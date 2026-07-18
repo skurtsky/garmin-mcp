@@ -1,4 +1,5 @@
 # tools/activities.py
+import calendar
 from garmin_client import get_client
 from tools.profile import get_athlete_profile
 from datetime import date, timedelta
@@ -13,6 +14,27 @@ def _fmt_pace(speed_ms: float) -> str | None:
     m = int(pace_secs // 60)
     s = int(pace_secs % 60)
     return f"{m}:{s:02d}"
+
+def _fmt_pace_100m(distance_m: float, duration_s: float) -> str | None:
+    """Convert a set's distance/duration to a MM:SS per-100m pace string."""
+    if not distance_m or distance_m <= 0 or not duration_s or duration_s <= 0:
+        return None
+    pace_secs = duration_s / (distance_m / 100)
+    m = int(pace_secs // 60)
+    s = int(round(pace_secs % 60))
+    if s == 60:
+        m += 1
+        s = 0
+    return f"{m}:{s:02d}"
+
+def _months_ago(d: date, months: int) -> date:
+    """Return the date `months` calendar months before `d`, clamping the day to
+    the last valid day of the target month (e.g. Mar 31 - 1 month -> Feb 28)."""
+    month_index = d.month - 1 - months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
 
 def _fmt_time(secs: float) -> str | None:
     """Convert seconds to M:SS.s string."""
@@ -484,4 +506,77 @@ def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> d
         'total_training_load': total_training_load,
         'by_type': by_type,
         'activities': summaries,
+    }
+
+
+def _swim_set_from_lap(lap: dict, activity: dict) -> dict | None:
+    """Build a continuous-swim-set record from one swim lapDTO.
+
+    Each lapDTO in a pool swim is one continuous set (rest laps have zero
+    distance and are skipped). The distance field is already in meters.
+    Returns None for non-swimming (zero-distance) laps.
+    """
+    distance = lap.get('distance') or 0
+    if distance <= 0:
+        return None
+
+    duration = lap.get('duration') or 0
+    swolf = lap.get('averageSWOLF')
+
+    return {
+        'distance_m':    round(distance, 1),
+        'duration_s':    round(duration, 1),
+        'pace_per_100m': _fmt_pace_100m(distance, duration),
+        'lengths':       lap.get('numberOfActiveLengths'),
+        'avg_swolf':     round(swolf) if swolf is not None else None,
+        'stroke':        lap.get('swimStroke'),
+        'avg_hr':        lap.get('averageHR'),
+        'activity_name': activity.get('activityName'),
+        'date':          (activity.get('startTimeLocal') or '')[:10] or None,
+        'activity_id':   activity.get('activityId'),
+    }
+
+
+def get_swim_records(months: int = 6, top_n: int = 5) -> dict:
+    """
+    Find the longest unbroken swim sets across recent swim activities.
+
+    Continuous distance (a single unbroken set), not total session distance, is
+    the key triathlon metric. Each swim lap is one continuous set; all sets from
+    the scanned period are ranked by distance and the top N returned.
+
+    Args:
+        months: Look back this many months from today (default 6).
+        top_n:  Number of longest sets to return (default 5).
+    """
+    client = get_client()
+    today = date.today()
+    start = _months_ago(today, months)
+
+    swims = client.get_activities_by_date(
+        startdate=start.isoformat(),
+        enddate=today.isoformat(),
+        activitytype='swimming',
+    ) or []
+
+    sets: list[dict] = []
+    for swim in swims:
+        activity_id = swim.get('activityId')
+        if activity_id is None:
+            continue
+        try:
+            splits = client.get_activity_splits(activity_id) or {}
+        except Exception:
+            continue
+        for lap in splits.get('lapDTOs') or []:
+            swim_set = _swim_set_from_lap(lap, swim)
+            if swim_set is not None:
+                sets.append(swim_set)
+
+    sets.sort(key=lambda s: s['distance_m'], reverse=True)
+
+    return {
+        'period':        f"{start.isoformat()} to {today.isoformat()}",
+        'swims_scanned': len(swims),
+        'longest_sets':  sets[:top_n],
     }
