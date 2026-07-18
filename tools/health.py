@@ -192,10 +192,11 @@ def get_daily_health(date: str) -> dict:
 
     client = get_client()
 
-    hr_raw     = client.get_heart_rates(date) or {}
-    stress_raw = client.get_all_day_stress(date) or {}
-    bb_raw     = client.get_body_battery(date) or []
-    resp_raw   = client.get_respiration_data(date) or {}
+    hr_raw      = client.get_heart_rates(date) or {}
+    stress_raw  = client.get_all_day_stress(date) or {}
+    summary_raw = client.get_user_summary(date) or {}
+    bb_raw      = client.get_body_battery(date) or []
+    resp_raw    = client.get_respiration_data(date) or {}
 
     def secs_to_min(secs):
         return round(secs / 60, 1) if secs is not None else None
@@ -207,13 +208,21 @@ def get_daily_health(date: str) -> dict:
         'seven_day_avg_resting_hr': hr_raw.get('lastSevenDaysAvgRestingHeartRate'),
     }
 
+    # The per-zone stress durations live on the daily user summary, not on the
+    # dailyStress feed (which only carries the chart values and avg/max levels).
+    # Pulling them from get_all_day_stress always yielded None, so the dashboard
+    # stress breakdown showed em dashes. Read durations from the user summary.
     stress = {
-        'avg_stress':           stress_raw.get('avgStressLevel'),
-        'max_stress':           stress_raw.get('maxStressLevel'),
-        'rest_stress_mins':     secs_to_min(stress_raw.get('restStressDuration')),
-        'low_stress_mins':      secs_to_min(stress_raw.get('lowStressDuration')),
-        'medium_stress_mins':   secs_to_min(stress_raw.get('mediumStressDuration')),
-        'high_stress_mins':     secs_to_min(stress_raw.get('highStressDuration')),
+        'avg_stress':           stress_raw.get('avgStressLevel')
+                                if stress_raw.get('avgStressLevel') is not None
+                                else summary_raw.get('averageStressLevel'),
+        'max_stress':           stress_raw.get('maxStressLevel')
+                                if stress_raw.get('maxStressLevel') is not None
+                                else summary_raw.get('maxStressLevel'),
+        'rest_stress_mins':     secs_to_min(summary_raw.get('restStressDuration')),
+        'low_stress_mins':      secs_to_min(summary_raw.get('lowStressDuration')),
+        'medium_stress_mins':   secs_to_min(summary_raw.get('mediumStressDuration')),
+        'high_stress_mins':     secs_to_min(summary_raw.get('highStressDuration')),
     }
 
     bb = bb_raw[0] if bb_raw else {}
