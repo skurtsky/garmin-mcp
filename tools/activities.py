@@ -379,6 +379,68 @@ def get_activities(
             if sport_type else client.get_activities(0, limit)
     return [_activity_summary_from_list(a) for a in activities]
 
+def _aggregate_activities(activities: list[dict]) -> dict:
+    """Aggregate a list of raw Garmin activities-list entries into totals and
+    averages. Missing numeric fields are treated as 0."""
+    count = len(activities)
+    total_distance_m = sum((a.get('distance') or 0) for a in activities)
+    total_duration_s = sum((a.get('duration') or 0) for a in activities)
+    total_calories = sum((a.get('calories') or 0) for a in activities)
+    total_elevation_m = sum((a.get('elevationGain') or 0) for a in activities)
+
+    total_distance_km = round(total_distance_m / 1000, 2)
+    total_duration_min = round(total_duration_s / 60, 1)
+
+    return {
+        'count':              count,
+        'total_distance_km':  total_distance_km,
+        'total_duration_min': total_duration_min,
+        'total_calories':     round(total_calories),
+        'total_elevation_m':  round(total_elevation_m),
+        'avg_distance_km':    round(total_distance_km / count, 2) if count else 0,
+        'avg_duration_min':   round(total_duration_min / count, 1) if count else 0,
+    }
+
+
+def get_activity_summary(
+    start_date: str,
+    end_date: str,
+    sport_type: str | None = None,
+) -> dict:
+    """
+    Get aggregated training stats for activities in a date range.
+    When sport_type is given, returns totals/averages for that sport. When
+    omitted, returns overall totals plus a per-sport breakdown under 'by_sport'.
+    Args:
+        start_date: Start date YYYY-MM-DD (inclusive)
+        end_date:   End date YYYY-MM-DD (inclusive)
+        sport_type: Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+    """
+    client = get_client()
+    activities = client.get_activities_by_date(
+        startdate=start_date,
+        enddate=end_date,
+        activitytype=sport_type,
+    )
+
+    result = {
+        'period':     f"{start_date} to {end_date}",
+        'sport_type': sport_type,
+    }
+    result.update(_aggregate_activities(activities))
+
+    if sport_type is None:
+        by_sport: dict[str, list[dict]] = {}
+        for a in activities:
+            t = a.get('activityType', {}).get('typeKey', 'unknown')
+            by_sport.setdefault(t, []).append(a)
+        result['by_sport'] = {
+            t: _aggregate_activities(acts) for t, acts in by_sport.items()
+        }
+
+    return result
+
+
 def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> dict:
     """
     Get an aggregated summary of activities for a Monday-to-Sunday week.

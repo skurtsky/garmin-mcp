@@ -2,6 +2,7 @@
 from tools.activities import (
     get_activities,
     get_activity,
+    get_activity_summary,
     get_weekly_summary,
 )
 
@@ -124,6 +125,57 @@ def test_get_weekly_summary_sport_filter(client):
     assert result['sport_type_filter'] == 'running'
     # Same category-filter caveat as test_get_activities_sport_filter above.
     assert all('run' in a['type'] for a in result['activities'])
+
+
+_SUMMARY_TOTAL_KEYS = [
+    'count', 'total_distance_km', 'total_duration_min',
+    'total_calories', 'total_elevation_m',
+    'avg_distance_km', 'avg_duration_min',
+]
+
+
+def test_get_activity_summary_has_required_keys(client, test_date_range_start, test_date):
+    result = get_activity_summary(start_date=test_date_range_start, end_date=test_date)
+    assert result['period'] == f"{test_date_range_start} to {test_date}"
+    assert result['sport_type'] is None
+    for key in _SUMMARY_TOTAL_KEYS:
+        assert key in result, f"Missing key: {key}"
+
+
+def test_get_activity_summary_groups_by_sport_when_unfiltered(
+    client, test_date_range_start, test_date
+):
+    result = get_activity_summary(start_date=test_date_range_start, end_date=test_date)
+    assert 'by_sport' in result
+    assert isinstance(result['by_sport'], dict)
+    # Per-sport counts must sum to the overall count
+    assert sum(s['count'] for s in result['by_sport'].values()) == result['count']
+    for sport in result['by_sport'].values():
+        for key in _SUMMARY_TOTAL_KEYS:
+            assert key in sport, f"Missing per-sport key: {key}"
+
+
+def test_get_activity_summary_sport_filter_omits_breakdown(
+    client, test_date_range_start, test_date
+):
+    result = get_activity_summary(
+        start_date=test_date_range_start, end_date=test_date, sport_type='running'
+    )
+    assert result['sport_type'] == 'running'
+    assert 'by_sport' not in result
+    for key in _SUMMARY_TOTAL_KEYS:
+        assert key in result, f"Missing key: {key}"
+
+
+def test_get_activity_summary_averages_are_consistent(
+    client, test_date_range_start, test_date
+):
+    result = get_activity_summary(start_date=test_date_range_start, end_date=test_date)
+    if result['count']:
+        expected_avg = round(result['total_distance_km'] / result['count'], 2)
+        assert abs(result['avg_distance_km'] - expected_avg) < 0.01
+    else:
+        assert result['avg_distance_km'] == 0
 
 
 def test_get_activity_includes_weather(run_activity_id):
