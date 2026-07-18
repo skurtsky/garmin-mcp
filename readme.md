@@ -22,6 +22,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `recent_activities` | Recent activity list with summary metrics; supports sport type filter and date range |
 | `activity_detail` | Full activity detail with lap splits, structured-workout interval/phase breakdown, HR zones, and weather conditions |
 | `weekly_summary` | Aggregated activity totals for a Monday–Sunday week with per-sport breakdown |
+| `activity_summary` | Aggregated training stats (distance, duration, calories, elevation) over any date range, optionally filtered by sport with a per-sport breakdown |
 | `personal_records` | Personal records for running, cycling, and swimming grouped by sport |
 
 ### Workouts
@@ -171,7 +172,7 @@ garmin-mcp/
 ├── server.py              # FastMCP server — tool definitions and entrypoint
 ├── garmin_client.py       # Authenticated Garmin client singleton
 ├── tools/
-│   ├── activities.py      # get_activities, get_activity, get_weekly_summary
+│   ├── activities.py      # get_activities, get_activity, get_activity_summary, get_weekly_summary
 │   ├── challenges.py      # get_active_goals, get_earned_badges, get_adhoc_challenges
 │   ├── dashboard.py       # build_dashboard_data, render_dashboard_html (/dashboard route)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness

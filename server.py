@@ -13,6 +13,7 @@ from tools.challenges import (
 from tools.activities import (
     get_activities,
     get_activity,
+    get_activity_summary,
     get_weekly_summary,
 )
 from tools.health import (
@@ -94,6 +95,34 @@ def recent_activities(
     """
     return get_activities(limit=limit, sport_type=sport_type,
                           start_date=start_date, end_date=end_date)
+
+
+@mcp.tool()
+def activity_summary(
+    start_date: str,
+    end_date: str,
+    sport_type: Optional[str] = None,
+) -> dict:
+    """
+    Get aggregated training stats over a date range in a single call — answers
+    questions like "how much did I run in 2025?" or "what was my cycling volume
+    in May?". Aggregates count, total & average distance/duration, total
+    calories, and total elevation gain.
+
+    When sport_type is given, the totals cover just that sport. When omitted,
+    the top-level totals cover all sports and a per-sport breakdown is returned
+    under 'by_sport' (keyed by Garmin sport typeKey, each with the same totals/
+    averages).
+
+    Args:
+        start_date: Start date YYYY-MM-DD (inclusive)
+        end_date:   End date YYYY-MM-DD (inclusive)
+        sport_type: Optional filter — 'running', 'road_biking', 'lap_swimming',
+                    etc. Omit for all sports with a per-sport breakdown.
+    """
+    return get_activity_summary(
+        start_date=start_date, end_date=end_date, sport_type=sport_type
+    )
 
 
 @mcp.tool()
