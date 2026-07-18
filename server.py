@@ -15,6 +15,7 @@ from tools.activities import (
     get_activity,
     get_activity_summary,
     get_weekly_summary,
+    get_swim_records,
 )
 from tools.health import (
     get_sleep,
@@ -353,6 +354,28 @@ def weekly_summary(week_offset: int = 0, sport_type: Optional[str] = None) -> di
         sport_type:  Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
     """
     return get_weekly_summary(week_offset=week_offset, sport_type=sport_type)
+
+
+@mcp.tool()
+def swim_records(months: int = 6, top_n: int = 5) -> dict:
+    """
+    Find the longest unbroken swim sets across recent swim activities — the
+    key triathlon metric is continuous distance (a single unbroken set), not
+    total session distance.
+
+    Scans swim activities in the trailing window, treats each swim lap as one
+    continuous set, ranks all sets by distance, and returns the top N with
+    duration, per-100m pace, length count, average SWOLF, stroke, average HR,
+    and the source activity (name, date, id).
+
+    Default 6 months keeps API calls manageable (~10-20 swims). Use months=12
+    for a full-year review or months=3 for a recent trend.
+
+    Args:
+        months: Look back this many months from today (default 6).
+        top_n:  Number of longest sets to return (default 5).
+    """
+    return get_swim_records(months=months, top_n=top_n)
 
 
 @mcp.tool()
