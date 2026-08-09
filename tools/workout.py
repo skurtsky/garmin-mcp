@@ -1,9 +1,11 @@
 # tools/workout.py
 import copy
+import re
 from datetime import date
 from typing import Literal
 
 from garmin_client import get_client
+from tools.exercise_db import validate_exercise
 
 
 _STEP_TYPE_MAP = {
@@ -52,16 +54,20 @@ _TARGET_HEART_RATE = {
 _TARGET_PACE = {"workoutTargetTypeId": 6, "workoutTargetTypeKey": "pace.zone", "displayOrder": 6}
 _TARGET_POWER = {"workoutTargetTypeId": 2, "workoutTargetTypeKey": "power.zone", "displayOrder": 2}
 
-# create_workout only supports these two sport types. Other sport types
-# (strength_training, cardio, ...) can still be viewed via get_workout_detail
-# and get_saved_workouts, but not created — see build_workout_payload.
+# create_workout supports these sport types. Other sport types (cardio,
+# swimming, ...) can still be viewed via get_workout_detail and
+# get_saved_workouts, but not created — see build_workout_payload.
 _SPORT_TYPE_MAP = {
     "running": {"sportTypeId": 1, "sportTypeKey": "running", "displayOrder": 1},
     "cycling": {"sportTypeId": 2, "sportTypeKey": "cycling", "displayOrder": 2},
+    "strength_training": {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5},
 }
 
 _STROKE_TYPE = {"strokeTypeId": 0, "strokeTypeKey": None, "displayOrder": 0}
 _EQUIPMENT_TYPE = {"equipmentTypeId": 0, "equipmentTypeKey": None, "displayOrder": 0}
+_WEIGHT_UNIT_KG = {"unitId": 8, "unitKey": "kilogram", "factor": 1000.0}
+# Garmin's sentinel weightValue meaning "bodyweight / no external load".
+_BODYWEIGHT_SENTINEL = -1.0
 
 
 def mps_to_pace(mps: float | None) -> str | None:
@@ -110,6 +116,37 @@ def pace_to_mps(pace: float | str) -> float:
         raise ValueError("pace must be > 0")
 
     return round(1000.0 / total_seconds_per_km, 3)
+
+
+def parse_wave(description: str | None) -> list[float] | None:
+    """
+    Parse strength "wave" notation into per-set weights.
+
+    A wave description encodes an ascending/varying load across the sets of a
+    single exercise, e.g. "130 - 150 - 160" (three sets) or a single "60".
+    Returns a list of floats, or None if `description` is empty or contains any
+    non-numeric token (i.e. it's free-text, not a wave — e.g. "400m rep").
+    """
+    if not description:
+        return None
+    tokens = [t.strip() for t in re.split(r"[-–—,/]+", description) if t.strip()]
+    if not tokens:
+        return None
+    weights: list[float] = []
+    for tok in tokens:
+        try:
+            weights.append(float(tok))
+        except ValueError:
+            return None
+    return weights
+
+
+def format_wave(weights: list[float]) -> str:
+    """Inverse of parse_wave: render per-set weights as 'a - b - c' notation."""
+    def fmt(w: float) -> str:
+        return str(int(w)) if float(w).is_integer() else str(w)
+
+    return " - ".join(fmt(w) for w in weights)
 
 
 def _iter_months(months_ahead: int) -> list[tuple[int, int]]:
@@ -253,9 +290,19 @@ def _make_executable_step(
     target_value_two,
     description: str | None = None,
     child_step_id: int | None = None,
+    exercise_name: str | None = None,
+    category: str | None = None,
+    weight_value: float | None = None,
+    strength: bool = False,
 ) -> dict:
-    """Build an ExecutableStepDTO dict."""
-    return {
+    """
+    Build an ExecutableStepDTO dict.
+
+    When `strength` is True, the step also carries Garmin's strength fields
+    (exerciseName/category/weightValue/weightUnit). A weight_value of None on a
+    strength step becomes the bodyweight sentinel (-1.0), matching Garmin.
+    """
+    step = {
         "type": "ExecutableStepDTO",
         "stepOrder": step_order,
         "stepType": _STEP_TYPE_MAP[step_type_key],
@@ -276,6 +323,12 @@ def _make_executable_step(
         "strokeType": _STROKE_TYPE,
         "equipmentType": _EQUIPMENT_TYPE,
     }
+    if strength:
+        step["category"] = category
+        step["exerciseName"] = exercise_name
+        step["weightValue"] = weight_value if weight_value is not None else _BODYWEIGHT_SENTINEL
+        step["weightUnit"] = _WEIGHT_UNIT_KG
+    return step
 
 
 def _infer_end_condition(step: dict) -> tuple[dict, object]:
@@ -423,17 +476,189 @@ def _build_repeat_group(step: dict, sport_type: str, step_order: int, child_step
     return repeat_dto, rest_step_order
 
 
+# ── Strength workout building ──────────────────────────────────────────────────
+# Strength steps don't use pace/power/HR targets or distance/time end conditions.
+# Each working/warm-up set is a RepeatGroupDTO (numberOfIterations = sets) wrapping
+# one exercise step (interval- or warmup-typed) plus a rest step, mirroring the
+# running/cycling repeat structure so the read-side decoder can be reused.
+
+# Strength step types map to a Garmin inner step-type for the "work" step.
+_STRENGTH_WORK_STEP_TYPE = {
+    "warmup": "warmup",
+    "cooldown": "cooldown",
+    "repeat": "interval",
+    "interval": "interval",
+}
+
+
+def _resolve_strength_load(step: dict) -> tuple[float | None, str | None]:
+    """
+    Resolve (weight_kg, description) for a strength set from its input fields.
+
+    Accepts either an explicit `weight_kg` + `description` wave string, or a
+    structured `set_weights` list. When only `set_weights` is given, the wave
+    `description` is synthesized from it and the base `weight_kg` defaults to the
+    first set. Returns (None, description) for bodyweight exercises.
+    """
+    weight = step.get("weight_kg")
+    description = step.get("description")
+    set_weights = step.get("set_weights")
+
+    if set_weights is not None:
+        if not isinstance(set_weights, (list, tuple)) or not set_weights:
+            raise ValueError("set_weights must be a non-empty list of numbers")
+        try:
+            set_weights = [float(w) for w in set_weights]
+        except (TypeError, ValueError):
+            raise ValueError("set_weights must contain only numbers")
+        if description is None:
+            description = format_wave(set_weights)
+        if weight is None:
+            weight = set_weights[0]
+
+    return weight, description
+
+
+def _build_strength_exercise_step(step: dict, step_type_key: str, step_order: int, child_step_id: int) -> dict:
+    """Build the exercise ('work') ExecutableStepDTO for a strength set."""
+    canonical_name, category = validate_exercise(step.get("exercise_name"))
+    weight, description = _resolve_strength_load(step)
+    return _make_executable_step(
+        step_order=step_order,
+        step_type_key=step_type_key,
+        end_condition=_END_CONDITION_MAP["lap_button"],
+        end_condition_value=0.0,
+        target_type=_TARGET_NONE,
+        target_value_one=None,
+        target_value_two=None,
+        description=description,
+        child_step_id=child_step_id,
+        exercise_name=canonical_name,
+        category=category,
+        weight_value=weight,
+        strength=True,
+    )
+
+
+def _build_strength_rest_step(step_order: int, child_step_id: int | None) -> dict:
+    """Build a bodyweight rest ExecutableStepDTO for a strength workout."""
+    return _make_executable_step(
+        step_order=step_order,
+        step_type_key="rest",
+        end_condition=_END_CONDITION_MAP["lap_button"],
+        end_condition_value=0.0,
+        target_type=_TARGET_NONE,
+        target_value_one=None,
+        target_value_two=None,
+        description=None,
+        child_step_id=child_step_id,
+        exercise_name=None,
+        category=None,
+        weight_value=None,
+        strength=True,
+    )
+
+
+def _build_strength_repeat_group(step: dict, step_order: int, child_step_id: int) -> tuple[dict, int]:
+    """
+    Build a RepeatGroupDTO for a strength set (warmup or working set).
+    Returns (repeat_group_dto, new_step_order).
+    """
+    sets = step.get("sets")
+    if not isinstance(sets, int) or sets < 1:
+        raise ValueError("strength repeat/warmup step requires sets as a positive integer")
+
+    work_step_type = _STRENGTH_WORK_STEP_TYPE[step["type"]]
+
+    repeat_step_order = step_order + 1
+    exercise_step_order = step_order + 2
+    rest_step_order = step_order + 3
+
+    exercise_inner = _build_strength_exercise_step(step, work_step_type, exercise_step_order, child_step_id)
+    rest_inner = _build_strength_rest_step(rest_step_order, child_step_id)
+
+    repeat_dto = {
+        "type": "RepeatGroupDTO",
+        "stepOrder": repeat_step_order,
+        "childStepId": child_step_id,
+        "stepType": _STEP_TYPE_MAP["repeat"],
+        "numberOfIterations": sets,
+        "endCondition": _END_CONDITION_MAP["iterations"],
+        "endConditionValue": sets,
+        "skipLastRestStep": False,
+        "smartRepeat": False,
+        "workoutSteps": [exercise_inner, rest_inner],
+    }
+    return repeat_dto, rest_step_order
+
+
+def _build_strength_steps(steps: list[dict]) -> list[dict]:
+    """Build the workoutSteps list for a strength_training workout."""
+    workout_steps: list[dict] = []
+    step_order = 0
+    child_step_id = 0
+
+    for step in steps:
+        step_type = step.get("type")
+
+        if step_type == "rest":
+            step_order += 1
+            workout_steps.append(_build_strength_rest_step(step_order, None))
+
+        elif step_type == "interval":
+            # A single set with no repeat wrapper.
+            step_order += 1
+            workout_steps.append(_build_strength_exercise_step(step, "interval", step_order, None))
+
+        elif step_type in ("warmup", "cooldown", "repeat"):
+            child_step_id += 1
+            repeat_dto, step_order = _build_strength_repeat_group(step, step_order, child_step_id)
+            workout_steps.append(repeat_dto)
+
+        else:
+            raise ValueError(
+                f"Unknown strength step type: {step_type!r}. "
+                "Use 'warmup', 'repeat', 'interval', 'cooldown', or 'rest'."
+            )
+
+    return workout_steps
+
+
 def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict:
     """
     Build a Garmin workout JSON payload ready for upload.
 
-    Supports only "running" (pace or heart-rate target) and "cycling" (power
-    target) — other sport types raise ValueError.
+    Supports "running" (pace or heart-rate target), "cycling" (power target),
+    and "strength_training" (exercise + per-set weights) — other sport types
+    raise ValueError.
+
+    Strength steps (sport_type="strength_training"):
+        Each set carries a Garmin exerciseName (validated against the exercise
+        reference — a typo fails fast), a per-set weight, and optional wave
+        notation for ascending loads:
+
+            Working set (one RepeatGroupDTO of `sets` reps):
+                {"type": "repeat", "sets": 3,
+                 "exercise_name": "BARBELL_BACK_SQUAT",  # required, validated
+                 "weight_kg": 58.97,                     # base/first-set load
+                 "description": "130 - 150 - 160",       # optional wave notation
+                 "set_weights": [130, 150, 160]}         # optional structured wave
+            Warm-up set (same shape, distinct step type):
+                {"type": "warmup", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+                 "weight_kg": 22.7, "description": "50 - 50 - 90"}
+            Standalone rest between exercises:
+                {"type": "rest"}
+
+        `description` and `set_weights` are two views of the same wave — give
+        either. If only `set_weights` is given, `description` is synthesized from
+        it and `weight_kg` defaults to the first set. Omit weight for bodyweight
+        exercises. `category` is looked up automatically from `exercise_name`.
 
     Args:
         name: Workout name.
-        sport_type: "running" or "cycling".
-        steps: List of step dicts. Each step must have a "type" field:
+        sport_type: "running", "cycling", or "strength_training".
+        steps: List of step dicts. Each step must have a "type" field.
+            Running/cycling step shapes:
 
             Warmup/cooldown/recovery/rest step (target optional):
                 {"type": "warmup"|"cooldown"|"recovery"|"rest",
@@ -479,28 +704,32 @@ def build_workout_payload(name: str, sport_type: str, steps: list[dict]) -> dict
         raise ValueError(f"Invalid sport_type: {sport_type!r}. Choose from {list(_SPORT_TYPE_MAP)}")
 
     sport_dto = _SPORT_TYPE_MAP[sport_type]
-    workout_steps: list[dict] = []
-    step_order = 0   # flat global counter
-    child_step_id = 0  # increments per RepeatGroupDTO
 
-    for step in steps:
-        step_type = step.get("type")
+    if sport_type == "strength_training":
+        workout_steps = _build_strength_steps(steps)
+    else:
+        workout_steps = []
+        step_order = 0   # flat global counter
+        child_step_id = 0  # increments per RepeatGroupDTO
 
-        if step_type in ("warmup", "cooldown", "recovery", "rest"):
-            step_order += 1
-            workout_steps.append(_build_plain_step(step, sport_type, step_order))
+        for step in steps:
+            step_type = step.get("type")
 
-        elif step_type == "interval":
-            step_order += 1
-            workout_steps.append(_build_single_interval_step(step, sport_type, step_order))
+            if step_type in ("warmup", "cooldown", "recovery", "rest"):
+                step_order += 1
+                workout_steps.append(_build_plain_step(step, sport_type, step_order))
 
-        elif step_type == "repeat":
-            child_step_id += 1
-            repeat_dto, step_order = _build_repeat_group(step, sport_type, step_order, child_step_id)
-            workout_steps.append(repeat_dto)
+            elif step_type == "interval":
+                step_order += 1
+                workout_steps.append(_build_single_interval_step(step, sport_type, step_order))
 
-        else:
-            raise ValueError(f"Unknown step type: {step_type!r}")
+            elif step_type == "repeat":
+                child_step_id += 1
+                repeat_dto, step_order = _build_repeat_group(step, sport_type, step_order, child_step_id)
+                workout_steps.append(repeat_dto)
+
+            else:
+                raise ValueError(f"Unknown step type: {step_type!r}")
 
     return {
         "workoutName": name,
@@ -527,7 +756,7 @@ def _extract_uploaded_workout_id(upload_result: dict) -> int | None:
 
 def create_workout(
     name: str,
-    sport_type: Literal["running", "cycling"],
+    sport_type: Literal["running", "cycling", "strength_training"],
     steps: list[dict],
     schedule_date: str | None = None,
 ) -> dict:
@@ -536,7 +765,8 @@ def create_workout(
 
     Args:
         name: Workout name.
-        sport_type: "running" (pace or HR target) or "cycling" (power target).
+        sport_type: "running" (pace or HR target), "cycling" (power target),
+            or "strength_training" (exercise + per-set weights).
         steps: Workout steps (see build_workout_payload for schema).
         schedule_date: Optional date YYYY-MM-DD to schedule after upload.
     """
@@ -597,9 +827,13 @@ def _decode_target(step: dict) -> dict:
     return {}
 
 
+def _step_type_key(step: dict) -> str | None:
+    return (step.get("stepType") or {}).get("stepTypeKey")
+
+
 def _decode_executable_step(step: dict) -> dict:
     """Decode a single ExecutableStepDTO into the create_workout step-input schema."""
-    out: dict = {"type": (step.get("stepType") or {}).get("stepTypeKey")}
+    out: dict = {"type": _step_type_key(step)}
     if step.get("description"):
         out["description"] = step["description"]
     out.update(_decode_end_condition(step))
@@ -609,19 +843,35 @@ def _decode_executable_step(step: dict) -> dict:
             out["category"] = step["category"]
         if "weightValue" in step:
             out["weight_kg"] = step["weightValue"]
+        # Bug 1: expose the wave notation carried in `description` as structured
+        # per-set weights, instead of leaving it as a string to re-parse.
+        set_weights = parse_wave(step.get("description"))
+        if set_weights is not None:
+            out["set_weights"] = set_weights
     out.update(_decode_target(step))
     return out
 
 
 def _decode_repeat_group(step: dict) -> dict:
-    """Decode a RepeatGroupDTO into the create_workout 'repeat' step-input schema."""
-    inner = step.get("workoutSteps") or []
-    interval = next((s for s in inner if (s.get("stepType") or {}).get("stepTypeKey") == "interval"), None)
-    rest = next((s for s in inner if (s.get("stepType") or {}).get("stepTypeKey") == "rest"), None)
+    """
+    Decode a RepeatGroupDTO into the create_workout step-input schema.
 
-    out: dict = {"type": "repeat", "sets": step.get("numberOfIterations")}
-    if interval is not None:
-        decoded = _decode_executable_step(interval)
+    The inner "work" step may be interval-typed (running/cycling reps, or a
+    strength working set) or warmup/cooldown-typed (a strength warm-up wave).
+    Bug 2: a warm-up wave is a repeat group whose work step is warmup-typed —
+    keying only on "interval" left it an empty shell with no exercise/weight/
+    wave data, so match the first non-rest step and carry its type through.
+    """
+    inner = step.get("workoutSteps") or []
+    rest = next((s for s in inner if _step_type_key(s) == "rest"), None)
+    work = next((s for s in inner if _step_type_key(s) not in (None, "rest")), None)
+
+    work_key = _step_type_key(work) if work is not None else "interval"
+    # interval reps read back as "repeat"; warmup/cooldown keep their own type.
+    out_type = "repeat" if work_key == "interval" else work_key
+    out: dict = {"type": out_type, "sets": step.get("numberOfIterations")}
+    if work is not None:
+        decoded = _decode_executable_step(work)
         decoded.pop("type", None)
         out.update(decoded)
     if rest is not None:

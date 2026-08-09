@@ -3,6 +3,8 @@ from unittest.mock import MagicMock, patch
 
 from tools.workout import (
     pace_to_mps,
+    parse_wave,
+    format_wave,
     get_saved_workouts,
     get_scheduled_workouts,
     get_workout_detail,
@@ -106,7 +108,7 @@ def test_build_payload_warmup_without_target_is_no_target():
 
 
 def test_build_payload_rejects_unsupported_sport_type():
-    for sport_type in ("strength_training", "cardio", "swimming"):
+    for sport_type in ("cardio", "swimming"):
         try:
             build_workout_payload(
                 name="TEST", sport_type=sport_type,
@@ -201,7 +203,7 @@ def test_create_workout_rejects_unsupported_sport_type_without_network_call():
     with patch("tools.workout.get_client") as mock_get_client:
         try:
             create_workout(
-                name="TEST", sport_type="strength_training",
+                name="TEST", sport_type="swimming",
                 steps=[{"type": "interval", "duration_s": 60}],
             )
             assert False, "expected ValueError for unsupported sport_type"
@@ -776,3 +778,258 @@ def test_get_workout_detail_strength_weights():
     assert repeat["exercise_name"] == "BARBELL_BACK_SQUAT"
     assert repeat["weight_kg"] == 100.0
     assert "rest_duration_s" not in repeat
+
+
+# ── Wave-notation parsing ──────────────────────────────────────────────────────
+
+def test_parse_wave_ascending():
+    assert parse_wave("130 - 150 - 160") == [130.0, 150.0, 160.0]
+
+
+def test_parse_wave_single_value():
+    assert parse_wave("60") == [60.0]
+
+
+def test_parse_wave_non_numeric_is_none():
+    assert parse_wave("400m rep") is None
+    assert parse_wave("Tempo interval") is None
+
+
+def test_parse_wave_empty_is_none():
+    assert parse_wave("") is None
+    assert parse_wave(None) is None
+
+
+def test_format_wave_strips_trailing_zeros():
+    assert format_wave([50, 50, 90]) == "50 - 50 - 90"
+    assert format_wave([22.5, 30]) == "22.5 - 30"
+
+
+def test_parse_format_wave_roundtrip():
+    assert format_wave(parse_wave("130 - 150 - 160")) == "130 - 150 - 160"
+
+
+# ── Strength build_workout_payload ─────────────────────────────────────────────
+
+def test_build_payload_strength_warmup_and_working_set():
+    payload = build_workout_payload(
+        name="TEST - Strength",
+        sport_type="strength_training",
+        steps=[
+            {
+                "type": "warmup", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+                "weight_kg": 22.7, "description": "50 - 50 - 90",
+            },
+            {
+                "type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+                "weight_kg": 58.97, "description": "130 - 150 - 160",
+            },
+            {"type": "rest"},
+        ],
+    )
+
+    assert payload["sportType"]["sportTypeKey"] == "strength_training"
+    steps = payload["workoutSegments"][0]["workoutSteps"]
+    assert len(steps) == 3
+
+    # Warm-up is a RepeatGroupDTO whose work step is warmup-typed and carries data
+    warmup_group = steps[0]
+    assert warmup_group["type"] == "RepeatGroupDTO"
+    assert warmup_group["numberOfIterations"] == 3
+    warmup_work = warmup_group["workoutSteps"][0]
+    assert warmup_work["stepType"]["stepTypeKey"] == "warmup"
+    assert warmup_work["exerciseName"] == "BARBELL_BACK_SQUAT"
+    assert warmup_work["category"] == "SQUAT"
+    assert warmup_work["weightValue"] == 22.7
+    assert warmup_work["weightUnit"]["unitKey"] == "kilogram"
+    assert warmup_work["description"] == "50 - 50 - 90"
+
+    # Working set is a RepeatGroupDTO whose work step is interval-typed
+    work_group = steps[1]
+    assert work_group["type"] == "RepeatGroupDTO"
+    work = work_group["workoutSteps"][0]
+    assert work["stepType"]["stepTypeKey"] == "interval"
+    assert work["weightValue"] == 58.97
+    assert work["description"] == "130 - 150 - 160"
+
+    # Standalone rest
+    rest = steps[2]
+    assert rest["type"] == "ExecutableStepDTO"
+    assert rest["stepType"]["stepTypeKey"] == "rest"
+    assert rest["weightValue"] == -1.0
+
+
+def test_build_payload_strength_set_weights_synthesizes_description():
+    payload = build_workout_payload(
+        name="TEST - Strength Set Weights",
+        sport_type="strength_training",
+        steps=[{
+            "type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+            "set_weights": [130, 150, 160],
+        }],
+    )
+    work = payload["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+    # description synthesized from set_weights, base weight defaults to first set
+    assert work["description"] == "130 - 150 - 160"
+    assert work["weightValue"] == 130.0
+
+
+def test_build_payload_strength_bodyweight_defaults_to_sentinel():
+    payload = build_workout_payload(
+        name="TEST - Bodyweight",
+        sport_type="strength_training",
+        steps=[{"type": "repeat", "sets": 3, "exercise_name": "PULL_UP"}],
+    )
+    work = payload["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+    assert work["weightValue"] == -1.0
+    assert work["exerciseName"] == "PULL_UP"
+
+
+def test_build_payload_strength_invalid_exercise_fails_fast():
+    try:
+        build_workout_payload(
+            name="TEST - Bad Exercise",
+            sport_type="strength_training",
+            steps=[{"type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUATT", "weight_kg": 60}],
+        )
+        assert False, "expected ValueError for unknown exercise_name"
+    except ValueError as e:
+        assert "Unknown exercise_name" in str(e)
+
+
+def test_build_payload_strength_normalizes_exercise_name():
+    payload = build_workout_payload(
+        name="TEST - Normalized",
+        sport_type="strength_training",
+        steps=[{"type": "repeat", "sets": 3, "exercise_name": "barbell back squat", "weight_kg": 60}],
+    )
+    work = payload["workoutSegments"][0]["workoutSteps"][0]["workoutSteps"][0]
+    assert work["exerciseName"] == "BARBELL_BACK_SQUAT"
+    assert work["category"] == "SQUAT"
+
+
+def test_build_payload_strength_repeat_requires_positive_sets():
+    try:
+        build_workout_payload(
+            name="TEST - Bad Sets",
+            sport_type="strength_training",
+            steps=[{"type": "repeat", "sets": 0, "exercise_name": "BARBELL_BACK_SQUAT", "weight_kg": 60}],
+        )
+        assert False, "expected ValueError for sets < 1"
+    except ValueError as e:
+        assert "sets" in str(e)
+
+
+def test_create_workout_strength_uploads():
+    mock_client = MagicMock()
+    mock_client.upload_workout.return_value = {"workoutId": 314}
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = create_workout(
+            name="TEST - Strength Create",
+            sport_type="strength_training",
+            steps=[{
+                "type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+                "weight_kg": 58.97, "description": "130 - 150 - 160",
+            }],
+        )
+
+    uploaded_payload = mock_client.upload_workout.call_args[0][0]
+    assert uploaded_payload["sportType"]["sportTypeKey"] == "strength_training"
+    assert result["workout_id"] == 314
+    assert result["sport_type"] == "strength_training"
+
+
+# ── Bug 2: warm-up repeat group must decode with full data ─────────────────────
+
+def test_get_workout_detail_strength_warmup_repeat_group_not_empty_shell():
+    """A warm-up wave is a RepeatGroupDTO whose work step is warmup-typed.
+    It must decode with type=warmup and full exercise/weight/wave data."""
+    warmup_inner = _step(
+        "warmup", 1, _end_condition("lap_button", 0.0),
+        exercise_name="BARBELL_BACK_SQUAT", category="SQUAT", weight_value=22.7,
+        description="50 - 50 - 90",
+    )
+    warmup_rest = _step("rest", 5, _end_condition("lap_button", 0.0))
+
+    working_inner = _step(
+        "interval", 3, _end_condition("lap_button", 0.0),
+        exercise_name="BARBELL_BACK_SQUAT", category="SQUAT", weight_value=58.97,
+        description="130 - 150 - 160",
+    )
+    working_rest = _step("rest", 5, _end_condition("lap_button", 0.0))
+
+    workout = {
+        "workoutId": 1000,
+        "workoutName": "Strength - Wave",
+        "description": None,
+        "sportType": {"sportTypeId": 5, "sportTypeKey": "strength_training", "displayOrder": 5},
+        "workoutSegments": [
+            {"segmentOrder": 1, "workoutSteps": [
+                _repeat_group(3, warmup_inner, warmup_rest),
+                _repeat_group(3, working_inner, working_rest),
+            ]}
+        ],
+    }
+
+    mock_client = MagicMock()
+    mock_client.get_workout_by_id.return_value = workout
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        result = get_workout_detail(1000)
+
+    warmup = result["steps"][0]
+    assert warmup["type"] == "warmup"           # not "repeat"
+    assert warmup["sets"] == 3
+    assert warmup["exercise_name"] == "BARBELL_BACK_SQUAT"  # not an empty shell
+    assert warmup["category"] == "SQUAT"
+    assert warmup["weight_kg"] == 22.7
+    assert warmup["description"] == "50 - 50 - 90"
+    assert warmup["set_weights"] == [50.0, 50.0, 90.0]
+
+    working = result["steps"][1]
+    assert working["type"] == "repeat"
+    assert working["weight_kg"] == 58.97
+    assert working["set_weights"] == [130.0, 150.0, 160.0]
+
+
+# ── Round-trip: create a strength workout, read it back, structure matches ─────
+
+def test_strength_workout_roundtrip():
+    steps = [
+        {
+            "type": "warmup", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+            "weight_kg": 22.7, "description": "50 - 50 - 90",
+        },
+        {
+            "type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+            "weight_kg": 58.97, "description": "130 - 150 - 160",
+        },
+    ]
+
+    payload = build_workout_payload(
+        name="TEST - Roundtrip", sport_type="strength_training", steps=steps
+    )
+
+    # Feed the built payload back through the reader (as Garmin would return it).
+    mock_client = MagicMock()
+    mock_client.get_workout_by_id.return_value = payload
+
+    with patch("tools.workout.get_client", return_value=mock_client):
+        detail = get_workout_detail(123)
+
+    decoded = detail["steps"]
+    assert len(decoded) == 2
+
+    assert decoded[0]["type"] == "warmup"
+    assert decoded[0]["sets"] == 3
+    assert decoded[0]["exercise_name"] == "BARBELL_BACK_SQUAT"
+    assert decoded[0]["weight_kg"] == 22.7
+    assert decoded[0]["description"] == "50 - 50 - 90"
+    assert decoded[0]["set_weights"] == [50.0, 50.0, 90.0]
+
+    assert decoded[1]["type"] == "repeat"
+    assert decoded[1]["sets"] == 3
+    assert decoded[1]["weight_kg"] == 58.97
+    assert decoded[1]["description"] == "130 - 150 - 160"
+    assert decoded[1]["set_weights"] == [130.0, 150.0, 160.0]
