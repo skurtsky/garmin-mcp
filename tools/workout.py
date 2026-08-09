@@ -521,7 +521,11 @@ def _resolve_strength_load(step: dict) -> tuple[float | None, str | None]:
 
 def _build_strength_exercise_step(step: dict, step_type_key: str, step_order: int, child_step_id: int) -> dict:
     """Build the exercise ('work') ExecutableStepDTO for a strength set."""
-    canonical_name, category = validate_exercise(step.get("exercise_name"))
+    canonical_name, default_category = validate_exercise(step.get("exercise_name"))
+    # An explicit category (e.g. from a get_workout_detail round-trip) wins over
+    # the reference default, which matters for exercises listed under more than
+    # one Garmin category.
+    category = step.get("category") or default_category
     weight, description = _resolve_strength_load(step)
     return _make_executable_step(
         step_order=step_order,

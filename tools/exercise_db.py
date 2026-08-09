@@ -7,12 +7,16 @@ identifier, e.g. ``BARBELL_BACK_SQUAT``) and a matching ``category`` (e.g.
 ``SQUAT``). Garmin silently rejects an upload whose exerciseName it doesn't
 recognise, so we validate names up front and fail fast with a clear error.
 
-The reference data lives in ``tools/data/garmin_exercises.json`` — a curated
-subset of the Garmin Exercise Database:
+The reference data lives in ``tools/data/garmin_exercises.json`` — the Garmin
+Exercise Database:
 https://docs.google.com/spreadsheets/d/1OaqIaBhPk4xBnkqVPYvFpj2HZNk_ISX0zHgWfA0WXkQ/edit?gid=971702464
 
-To add exercises, append names under the appropriate category in that JSON file;
-no code change is needed.
+The JSON maps each Garmin exercise category to its list of exerciseName values,
+either at the top level ({"SQUAT": ["BARBELL_BACK_SQUAT", ...], ...}) or nested
+under a "categories" key. To add exercises, append names under the appropriate
+category; no code change is needed. Some exercises appear under more than one
+category — the first one encountered wins as the default, and callers may pass an
+explicit category to override it.
 """
 import json
 from functools import lru_cache
@@ -25,10 +29,17 @@ _DATA_PATH = Path(__file__).resolve().parent / "data" / "garmin_exercises.json"
 def _load_catalog() -> dict[str, str]:
     """Return a {exerciseName: category} lookup built from the JSON reference."""
     raw = json.loads(_DATA_PATH.read_text())
+    # Accept either a nested {"categories": {...}} form or a flat top-level
+    # {category: [names]} mapping. Non-list values (e.g. "_source" metadata) are
+    # ignored so the file can carry documentation keys.
+    source = raw.get("categories") if isinstance(raw.get("categories"), dict) else raw
     lookup: dict[str, str] = {}
-    for category, names in (raw.get("categories") or {}).items():
+    for category, names in source.items():
+        if not isinstance(names, list):
+            continue
         for name in names:
-            lookup[name.upper()] = category
+            # First occurrence wins so duplicates resolve deterministically.
+            lookup.setdefault(str(name).upper(), category)
     return lookup
 
 
