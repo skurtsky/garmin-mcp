@@ -441,22 +441,39 @@ def unschedule_workout(schedule_id: int) -> dict:
 @mcp.tool()
 def create_workout(
     name: str,
-    sport_type: Literal["running", "cycling"],
+    sport_type: Literal["running", "cycling", "strength_training"],
     steps: list,
     schedule_date: Optional[str] = None,
 ) -> dict:
     """
-    Create a workout and optionally schedule it. Only "running" and "cycling"
-    are supported.
+    Create a workout and optionally schedule it. Supports "running", "cycling",
+    and "strength_training".
 
-    Every interval/repeat step MUST carry a target — running takes EITHER a
-    pace range OR an HR range (never both), cycling takes a power range.
-    Untargeted "no effort" steps are only valid for warmup/cooldown/rest.
+    For running/cycling: every interval/repeat step MUST carry a target —
+    running takes EITHER a pace range OR an HR range (never both), cycling takes
+    a power range. Untargeted "no effort" steps are only valid for
+    warmup/cooldown/rest.
 
     For ANY repeated effort (e.g. "6 x 400m" or "5 x 3min"), use ONE "repeat"
     step with "sets" — do NOT emit the same interval step multiple times.
 
-    steps is a list of dicts, each with a "type" field:
+    For strength_training: each set carries a Garmin exercise_name (validated
+    against the exercise reference — a typo fails fast with a clear error), a
+    per-set weight_kg, and optional wave notation for ascending loads. Use
+    "repeat" for working sets and "warmup" for warm-up sets (both take "sets"),
+    and "rest" for standalone rest between exercises:
+
+        {"type": "warmup", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+         "weight_kg": 22.7, "description": "50 - 50 - 90"}
+        {"type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+         "weight_kg": 58.97, "description": "130 - 150 - 160"}
+        {"type": "rest"}
+
+    `description` ("130 - 150 - 160") and `set_weights` ([130, 150, 160]) are two
+    views of the same per-set wave — give either. Omit weight_kg for bodyweight
+    exercises. `category` is derived automatically from `exercise_name`.
+
+    steps is a list of dicts, each with a "type" field (running/cycling shapes):
 
         warmup / cooldown / recovery / rest (target optional):
             {"type": "warmup"|"cooldown"|"recovery"|"rest",
@@ -499,7 +516,7 @@ def create_workout(
 
     Args:
         name: Workout name.
-        sport_type: "running" or "cycling".
+        sport_type: "running", "cycling", or "strength_training".
         steps: List of workout step dicts as described above.
         schedule_date: Optional schedule date in YYYY-MM-DD format.
     """

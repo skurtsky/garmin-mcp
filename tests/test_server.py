@@ -17,10 +17,10 @@ def _get_tool_schema(tool_name: str) -> dict:
     return asyncio.run(_fetch())
 
 
-def test_create_workout_sport_type_is_restricted_to_running_and_cycling():
+def test_create_workout_sport_type_supports_running_cycling_and_strength():
     schema = _get_tool_schema("create_workout")
     sport_type_schema = schema["properties"]["sport_type"]
-    assert sport_type_schema["enum"] == ["running", "cycling"]
+    assert sport_type_schema["enum"] == ["running", "cycling", "strength_training"]
 
 
 def test_create_workout_docstring_documents_repeat_and_targets():
