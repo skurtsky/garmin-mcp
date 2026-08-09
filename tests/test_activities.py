@@ -8,6 +8,8 @@ from tools.activities import (
     _months_ago,
     _fmt_pace_100m,
     _swim_set_from_lap,
+    _extract_laps,
+    _label_pace,
 )
 
 
@@ -266,6 +268,38 @@ def test_get_swim_records_sorted_by_distance_desc(client):
 def test_get_swim_records_respects_top_n(client):
     result = get_swim_records(months=12, top_n=3)
     assert len(result['longest_sets']) <= 3
+
+
+# ── LAP PACE LABELLING (issue #31) ────────────────────────────────────────────
+
+def test_label_pace_appends_unit():
+    assert _label_pace("2:16", "/100m") == "2:16/100m"
+    assert _label_pace("5:30", "/km") == "5:30/km"
+    # None passes through unchanged
+    assert _label_pace(None, "/100m") is None
+
+
+def test_extract_laps_swim_pace_is_per_100m():
+    """Swim lap pace must be reported per-100m with an explicit unit, not the
+    ambiguous per-km value that reads as ~22:00 and gets misinterpreted."""
+    # 100m in 136s -> 2:16/100m (per-km would be ~22:40, the bug in issue #31)
+    laps_data = {'lapDTOs': [{
+        'lapIndex': 1, 'distance': 100, 'duration': 136,
+        'averageSpeed': 100 / 136, 'intensityType': 'ACTIVE',
+    }]}
+    rows = _extract_laps(laps_data, weight_kg=70, sport='lap_swimming')
+    assert rows[0]['avg_pace'] == "2:16/100m"
+
+
+def test_extract_laps_run_pace_is_per_km_labelled():
+    """Non-swim laps keep per-km pace but now carry an explicit '/km' unit."""
+    # 5:00/km == 3.3333 m/s
+    laps_data = {'lapDTOs': [{
+        'lapIndex': 1, 'distance': 1000, 'duration': 300,
+        'averageSpeed': 1000 / 300, 'intensityType': 'ACTIVE',
+    }]}
+    rows = _extract_laps(laps_data, weight_kg=70, sport='running')
+    assert rows[0]['avg_pace'] == "5:00/km"
 
 
 def test_get_activity_includes_weather(run_activity_id):
