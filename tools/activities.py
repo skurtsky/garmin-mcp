@@ -27,6 +27,13 @@ def _fmt_pace_100m(distance_m: float, duration_s: float) -> str | None:
         s = 0
     return f"{m}:{s:02d}"
 
+def _label_pace(pace: str | None, unit: str) -> str | None:
+    """Append an explicit pace unit (e.g. '/km', '/100m') to a MM:SS pace string
+    so downstream consumers can't misread the magnitude. None passes through."""
+    if pace is None:
+        return None
+    return f"{pace}{unit}"
+
 def _months_ago(d: date, months: int) -> date:
     """Return the date `months` calendar months before `d`, clamping the day to
     the last valid day of the target month (e.g. Mar 31 - 1 month -> Feb 28)."""
@@ -118,8 +125,13 @@ def _extract_activity_summary(activity: dict) -> dict:
     return base
 
 
-def _extract_laps(laps_data: dict, weight_kg: float) -> list[dict]:
-    """Extract per-lap data from Garmin splits response."""
+def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[dict]:
+    """Extract per-lap data from Garmin splits response.
+
+    Pace is unit-labelled to avoid ambiguity: swim laps report per-100m pace
+    (e.g. '2:16/100m'), everything else reports per-km pace (e.g. '5:30/km').
+    """
+    is_swim = 'swim' in sport
     rows = []
     interval_counter = 0
     cumulative_secs = 0
@@ -141,6 +153,14 @@ def _extract_laps(laps_data: dict, weight_kg: float) -> list[dict]:
         else:
             interval_label = ''
 
+        if is_swim:
+            avg_pace = _label_pace(_fmt_pace_100m(distance, duration), '/100m')
+            avg_moving_pace = _label_pace(
+                _fmt_pace_100m(distance, moving_duration or duration), '/100m')
+        else:
+            avg_pace = _label_pace(_fmt_pace(avg_speed), '/km')
+            avg_moving_pace = _label_pace(_fmt_pace(avg_moving_speed), '/km')
+
         rows.append({
             'interval':              interval_label,
             'step_type':             intensity.replace('_', ' ').title(),
@@ -148,10 +168,10 @@ def _extract_laps(laps_data: dict, weight_kg: float) -> list[dict]:
             'time':                  _fmt_time(duration),
             'cumulative_time':       _fmt_time(cumulative_secs),
             'distance_km':           round(distance / 1000, 2),
-            'avg_pace':              _fmt_pace(avg_speed),
-            'avg_gap':               _fmt_pace(gap_speed),
+            'avg_pace':              avg_pace,
+            'avg_gap':               _label_pace(_fmt_pace(gap_speed), '/km'),
             'moving_time':           _fmt_time(moving_duration),
-            'avg_moving_pace':       _fmt_pace(avg_moving_speed),
+            'avg_moving_pace':       avg_moving_pace,
             'avg_hr':                lap.get('averageHR'),
             'max_hr':                lap.get('maxHR'),
             'avg_cadence':           round(lap.get('averageRunCadence') or 0),
@@ -212,8 +232,8 @@ def _extract_intervals(typed_splits: dict | None, weight_kg: float) -> list[dict
             'rep':                   rep,
             'distance_km':           round(distance / 1000, 2),
             'time':                  _fmt_time(split.get('duration')),
-            'avg_pace':              _fmt_pace(split.get('averageSpeed') or 0),
-            'avg_gap':               _fmt_pace(split.get('avgGradeAdjustedSpeed') or 0),
+            'avg_pace':              _label_pace(_fmt_pace(split.get('averageSpeed') or 0), '/km'),
+            'avg_gap':               _label_pace(_fmt_pace(split.get('avgGradeAdjustedSpeed') or 0), '/km'),
             'avg_hr':                split.get('averageHR'),
             'max_hr':                split.get('maxHR'),
             'avg_cadence':           round(split.get('averageRunCadence') or 0),
@@ -254,7 +274,7 @@ def _extract_interval_summary(split_summaries: dict | None) -> list[dict]:
             'reps':               summary.get('noOfSplits'),
             'total_distance_km':  round(distance / 1000, 2),
             'total_time':         _fmt_time(summary.get('duration')),
-            'avg_pace':           _fmt_pace(summary.get('averageSpeed') or 0),
+            'avg_pace':           _label_pace(_fmt_pace(summary.get('averageSpeed') or 0), '/km'),
             'avg_hr':             summary.get('averageHR'),
             'max_hr':             summary.get('maxHR'),
             'avg_power_w':        summary.get('averagePower'),
@@ -344,7 +364,7 @@ def get_activity(activity_id: int) -> dict:
         split_summaries_raw = None
 
     summary          = _extract_activity_summary(activity_raw)
-    laps             = _extract_laps(laps_raw, weight_kg=athlete['weight_kg'])
+    laps             = _extract_laps(laps_raw, weight_kg=athlete['weight_kg'], sport=summary['type'])
     hr_zones         = _extract_hr_zones(hr_zones_raw, summary['duration_min'] * 60)
     weather          = _extract_weather(weather_raw)
     intervals        = _extract_intervals(typed_splits_raw, weight_kg=athlete['weight_kg'])
