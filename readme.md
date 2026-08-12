@@ -133,6 +133,41 @@ Optional environment variables:
 | `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Offset from UTC for the "today" date and displayed local time (e.g. `-4`) |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | Browser auto-refresh interval; set `0` to disable |
 
+## Training Plan Viewer
+
+The compiled Claude Coach training plan (a self-contained HTML app with its JSON
+embedded in a `<script type="application/json" id="plan-data">` tag) can be
+hosted from the same container, behind the same `?token=` auth:
+
+| Route | Method | Description |
+|---|---|---|
+| `/training-plan` | `GET` | Serves the active plan HTML verbatim, or a "No plan active" page |
+| `/training-plan/upload` | `GET` | Minimal two-file upload form (HTML + JSON) |
+| `/training-plan/upload` | `POST` | Stores the upload, replacing any existing plan, then redirects to `/training-plan` |
+| `/training-plan/reset` | `POST` | Deletes the stored plan files |
+
+```
+http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
+```
+
+The two files are stored as `plan.html` and `plan.json` in a `training-plan/`
+folder inside the same mounted Azure File Share used for the Garmin tokens
+(`~/.garminconnect`), so a plan survives container restarts and redeploys. Only
+one plan is active at a time and an upload replaces the previous one. Uploads
+are validated before being written (the HTML must be non-empty UTF-8 markup and
+the JSON must parse), so a bad upload leaves the live plan untouched.
+
+Completion and edit state is kept in the browser's localStorage by the plan app
+itself — per-device, no server-side state and no cross-device sync. The stored
+HTML is served unmodified.
+
+Optional environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `TRAINING_PLAN_DIR` | `~/.garminconnect/training-plan` | Where the plan files are stored |
+| `TRAINING_PLAN_MAX_BYTES` | `20971520` | Per-file upload size cap (20 MB) |
+
 ## Testing
 
 ### Run the test suite
@@ -179,6 +214,7 @@ garmin-mcp/
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
+│   ├── training_plan.py   # storage + routes for the hosted plan viewer (/training-plan)
 │   ├── trends.py          # get_performance_predictions, get_performance_trends, get_trends
 │   └── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights
 ├── tests/
@@ -190,6 +226,7 @@ garmin-mcp/
 │   ├── test_health.py
 │   ├── test_performance.py
 │   ├── test_profile.py
+│   ├── test_training_plan.py
 │   ├── test_trends.py
 │   └── test_workout.py
 ├── requirements.txt

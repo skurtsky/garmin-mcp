@@ -214,6 +214,37 @@ az containerapp logs show `
 
 ---
 
+## Publishing a Training Plan
+
+The plan viewer stores its files on the same Azure File Share as the Garmin
+tokens, under `training-plan/`. Uploading through the browser is all that's
+normally needed:
+
+1. Open `DEPLOYED_URL/training-plan/upload?token=YOUR_TOKEN`
+2. Pick the compiled `plan.html` and its `plan.json`, then submit — this
+   replaces any previous plan and redirects to `DEPLOYED_URL/training-plan?token=YOUR_TOKEN`
+
+The plan survives redeploys because it lives on the file share, not in the
+image. To inspect or clear it out of band:
+
+```powershell
+$STORAGE_KEY = az storage account keys list `
+  --account-name garminmcpkurt `
+  --resource-group garmin-mcp-rg `
+  --query "[0].value" -o tsv
+
+az storage file list `
+  --share-name garminconnect `
+  --path training-plan `
+  --account-name garminmcpkurt `
+  --account-key $STORAGE_KEY -o table
+```
+
+Deleting the plan is easier via the app: `POST DEPLOYED_URL/training-plan/reset?token=YOUR_TOKEN`
+(the upload form has a "Delete active plan" button that does this).
+
+---
+
 ## Maintenance Summary
 
 | Task | Trigger | Effort |
@@ -222,4 +253,5 @@ az containerapp logs show `
 | Build & push image | After code changes | 2 commands |
 | Deploy to Azure | After pushing image | 1 command |
 | Refresh Garmin tokens | Auth errors appear | ~5 minutes |
+| Publish a training plan | New plan generated | Upload 2 files in the browser |
 | Check logs | Something broken | 1 command |

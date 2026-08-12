@@ -572,15 +572,17 @@ def update_workout_weights(
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    app = mcp.http_app()
-
-    import uvicorn
-    from starlette.routing import Route
+def build_asgi_app():
+    """The full HTTP surface: bearer-token auth in front of the MCP app plus
+    the server-rendered HTML routes (/dashboard, /training-plan)."""
     from starlette.responses import Response as StarletteResponse
     from starlette.responses import HTMLResponse
 
     from tools.dashboard import build_dashboard_data, render_dashboard_html
+    from tools import training_plan
+
+    app = mcp.http_app()
+    training_plan_app = training_plan.create_app()
 
     # Wrap the app with a simple ASGI auth wrapper
     bearer = BEARER_TOKEN
@@ -608,8 +610,20 @@ if __name__ == "__main__":
             await response(scope, receive, send)
             return
 
+        # Training-plan viewer — serves the uploaded Claude Coach plan app from
+        # the mounted file share, same bearer-token auth.
+        if scope["type"] == "http" and training_plan.owns_path(scope.get("path", "")):
+            await training_plan_app(scope, receive, send)
+            return
+
         await app(scope, receive, send)
+
+    return auth_app
+
+
+if __name__ == "__main__":
+    import uvicorn
 
     port = int(os.environ.get("PORT", 8000))
     logger.info(f"Starting Garmin MCP server on port {port}")
-    uvicorn.run(auth_app, host="0.0.0.0", port=port)
+    uvicorn.run(build_asgi_app(), host="0.0.0.0", port=port)

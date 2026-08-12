@@ -3,6 +3,7 @@ garminconnect==0.3.2
 python-dotenv==1.2.2
 uvicorn==0.44.0
 starlette==1.0.0
+python-multipart==0.0.32
 mcp==1.27.0
 httpx==0.28.1
 pydantic==2.13.2
