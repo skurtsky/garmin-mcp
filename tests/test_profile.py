@@ -1,5 +1,10 @@
 # tests/test_profile.py
-from tools.profile import get_athlete_profile, get_gear
+from tools.profile import (
+    get_athlete_profile,
+    get_gear,
+    get_activity_gear,
+    _activity_gear_item,
+)
 
 def test_get_athlete_profile_returns_dict():
     """Profile should return a dict with expected keys."""
@@ -57,6 +62,41 @@ def test_get_gear_distance_is_non_negative():
     for item in gear:
         if item['distance_km'] is not None:
             assert item['distance_km'] >= 0
+
+
+def test_activity_gear_item_shape():
+    """Raw gear DTO should map to name/uuid/type/distance_km."""
+    item = _activity_gear_item(
+        {'displayName': 'Nike Vaporfly 3', 'uuid': 'abc-123', 'gearTypeName': 'Shoes'},
+        {'totalDistance': 423512.0},
+    )
+    assert item == {
+        'name': 'Nike Vaporfly 3',
+        'uuid': 'abc-123',
+        'type': 'Shoes',
+        'distance_km': 423.51,
+    }
+
+def test_activity_gear_item_falls_back_to_make_model():
+    """Gear without a custom display name should fall back to make/model."""
+    item = _activity_gear_item({'customMakeModel': 'Canyon Ultimate'}, {})
+    assert item['name'] == 'Canyon Ultimate'
+    assert item['distance_km'] == 0
+
+def test_get_activity_gear_returns_list(run_activity_id):
+    """Activity gear should be a list, empty when nothing is assigned."""
+    gear = get_activity_gear(run_activity_id)
+    assert isinstance(gear, list)
+
+def test_get_activity_gear_items_have_required_keys(run_activity_id):
+    """Each activity gear item should carry the expected fields."""
+    gear = get_activity_gear(run_activity_id)
+    if not gear:
+        return  # activity may have no gear assigned
+    for item in gear:
+        for key in ['name', 'uuid', 'type', 'distance_km']:
+            assert key in item, f"Missing key: {key}"
+        assert item['distance_km'] >= 0
 
 
 def test_get_athlete_profile_ftp_is_populated():

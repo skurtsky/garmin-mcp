@@ -2,7 +2,7 @@
 import calendar
 from collections import Counter
 from garmin_client import get_client
-from tools.profile import get_athlete_profile
+from tools.profile import get_athlete_profile, get_activity_gear
 from datetime import date, timedelta
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
@@ -504,6 +504,9 @@ def get_activity(activity_id: int) -> dict:
     a 'sub_activities' list with per-leg detail — swim, T1, bike, T2, run —
     each with its own discipline metrics and laps.
 
+    The 'gear' list holds any shoes/bike linked to the activity, with the
+    cumulative distance logged on each item.
+
     Args:
         activity_id: Garmin activity ID
     """
@@ -529,6 +532,8 @@ def get_activity(activity_id: int) -> dict:
     except Exception:
         split_summaries_raw = None
 
+    gear             = get_activity_gear(activity_id)
+
     summary          = _extract_activity_summary(activity_raw)
     laps             = _extract_laps(laps_raw, weight_kg=athlete['weight_kg'], sport=summary['type'])
     hr_zones         = _extract_hr_zones(hr_zones_raw, summary['duration_min'] * 60)
@@ -543,6 +548,7 @@ def get_activity(activity_id: int) -> dict:
         'interval_summary': interval_summary,
         'hr_zones':         hr_zones,
         'weather':          weather,
+        'gear':             gear,
     }
 
     if _is_multisport(activity_raw):

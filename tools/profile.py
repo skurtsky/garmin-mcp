@@ -80,3 +80,42 @@ def get_gear() -> list[dict]:
         })
 
     return items
+
+
+def _activity_gear_item(g: dict, stats: dict) -> dict:
+    """Shape one gear entry attached to an activity: name, uuid, type and
+    cumulative distance across all activities it's been used for."""
+    total_distance = stats.get('totalDistance') or 0  # metres
+
+    return {
+        'name':        g.get('displayName') or g.get('customMakeModel'),
+        'uuid':        g.get('uuid'),
+        'type':        g.get('gearTypeName'),
+        'distance_km': round(total_distance / 1000, 2),
+    }
+
+
+def get_activity_gear(activity_id: int) -> list[dict]:
+    """
+    Fetch the gear (shoes, bike, …) linked to a single activity.
+
+    Returns an empty list when nothing is assigned — gear is optional on
+    Garmin, and a failure here shouldn't take down the activity it belongs to.
+    """
+    client = get_client()
+
+    try:
+        gear_raw = client.get_activity_gear(activity_id) or []
+    except Exception:
+        return []
+
+    items = []
+    for g in gear_raw:
+        uuid = g.get('uuid')
+        try:
+            stats = (client.get_gear_stats(uuid) or {}) if uuid else {}
+        except Exception:
+            stats = {}
+        items.append(_activity_gear_item(g, stats))
+
+    return items
