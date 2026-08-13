@@ -30,6 +30,8 @@ from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
+from tools.navbar import inject_nav, render_nav_html
+
 logger = logging.getLogger(__name__)
 
 PLAN_HTML_NAME = "plan.html"
@@ -178,10 +180,11 @@ _STYLE = """
 }
 * { box-sizing: border-box; }
 body {
-  margin:0; padding:2rem 1.5rem; background:var(--bg); color:var(--fg); line-height:1.5;
+  margin:0; padding:0; background:var(--bg); color:var(--fg); line-height:1.5;
   font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
-main { max-width:640px; margin:0 auto; }
+/* Padding lives on main, not body, so the nav bar spans the full width. */
+main { max-width:640px; margin:0 auto; padding:2rem 1.5rem; }
 h1 { font-size:1.4rem; margin:0 0 .35rem; }
 .meta { color:var(--muted); font-size:.85rem; margin-bottom:1.5rem; }
 .card {
@@ -216,14 +219,16 @@ def _url(path: str, token: str | None) -> str:
     return f"{path}?{urlencode({'token': token})}" if token else path
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, token: str | None = None) -> str:
     return (
         "<!doctype html>"
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
-        f"</head><body><main>{body}</main></body></html>"
+        "</head><body>"
+        f'{render_nav_html("training-plan", token)}'
+        f"<main>{body}</main></body></html>"
     )
 
 
@@ -238,7 +243,7 @@ def render_no_plan_html(token: str | None = None) -> str:
         f'<a class="btn" href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
         "</div>"
     )
-    return _page("No plan active", body)
+    return _page("No plan active", body, token)
 
 
 def render_upload_form_html(token: str | None = None, error: str | None = None) -> str:
@@ -278,7 +283,7 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
         "</div>"
         f'<div class="links"><a href="{_e(_url("/training-plan", token))}">View plan</a>{reset}</div>'
     )
-    return _page("Upload training plan", body)
+    return _page("Upload training plan", body, token)
 
 
 def render_reset_html(removed: list[str], token: str | None = None) -> str:
@@ -296,7 +301,7 @@ def render_reset_html(removed: list[str], token: str | None = None) -> str:
         f'<a href="{_e(_url("/training-plan", token))}">View plan</a>'
         "</div>"
     )
-    return _page("Plan reset", body)
+    return _page("Plan reset", body, token)
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
@@ -307,12 +312,16 @@ _NO_STORE = {"Cache-Control": "no-store"}
 
 
 async def serve_plan(request):
-    """GET /training-plan — the stored HTML verbatim, or the placeholder page."""
+    """GET /training-plan — the stored plan, or the placeholder page.
+
+    The plan HTML is stored verbatim; the site nav bar is injected into its
+    ``<body>`` on the way out so the uploaded file never has to know about it.
+    """
     token = request.query_params.get("token")
     page = read_plan_html()
     if page is None:
         return HTMLResponse(render_no_plan_html(token), headers=_NO_STORE)
-    return HTMLResponse(page, headers=_NO_STORE)
+    return HTMLResponse(inject_nav(page, "training-plan", token), headers=_NO_STORE)
 
 
 async def serve_upload_form(request):
