@@ -10,6 +10,12 @@ from tools.activities import (
     _swim_set_from_lap,
     _extract_laps,
     _label_pace,
+    _is_transition,
+    _discipline_label,
+    _child_activity_ids,
+    _is_multisport,
+    _name_sub_activities,
+    _extract_sub_activity,
 )
 
 
@@ -300,6 +306,173 @@ def test_extract_laps_run_pace_is_per_km_labelled():
     }]}
     rows = _extract_laps(laps_data, weight_kg=70, sport='running')
     assert rows[0]['avg_pace'] == "5:00/km"
+
+
+# ── MULTISPORT SUB-ACTIVITIES (issue #37) ─────────────────────────────────────
+
+def test_is_transition_matches_both_garmin_spellings():
+    assert _is_transition('transition_v2')
+    assert _is_transition('transition')
+    assert not _is_transition('running')
+    assert not _is_transition('')
+
+
+def test_discipline_label_maps_sports_to_short_names():
+    assert _discipline_label('open_water_swimming') == 'Swim'
+    assert _discipline_label('lap_swimming') == 'Swim'
+    assert _discipline_label('road_biking') == 'Bike'
+    assert _discipline_label('indoor_cycling') == 'Bike'
+    assert _discipline_label('running') == 'Run'
+    assert _discipline_label('trail_running') == 'Run'
+    # Unknown sports fall back to a title-cased version of the type key
+    assert _discipline_label('inline_skating') == 'Inline Skating'
+
+
+def test_child_activity_ids_reads_metadata_dto():
+    activity = {'metadataDTO': {'childIds': [1, 2, 3]}}
+    assert _child_activity_ids(activity) == [1, 2, 3]
+
+
+def test_child_activity_ids_handles_alternate_shapes():
+    # Top-level list, string IDs, and dict entries all normalise to ints
+    assert _child_activity_ids({'childIds': ['10', '11']}) == [10, 11]
+    assert _child_activity_ids(
+        {'metadataDTO': {'childIds': [{'activityId': 7}, {'activityId': 8}]}}
+    ) == [7, 8]
+    # Unparseable entries are dropped rather than blowing up
+    assert _child_activity_ids({'childIds': [1, None, 'nope', 2]}) == [1, 2]
+    assert _child_activity_ids({}) == []
+
+
+def test_is_multisport_detection():
+    assert _is_multisport({'isMultiSportParent': True})
+    assert _is_multisport({'activityTypeDTO': {'typeKey': 'multi_sport'}})
+    assert _is_multisport({'metadataDTO': {'childIds': [1, 2]}})
+    # A plain run is not multisport
+    assert not _is_multisport({
+        'activityTypeDTO': {'typeKey': 'running'},
+        'metadataDTO': {'childIds': []},
+    })
+
+
+def test_name_sub_activities_triathlon_order():
+    sports = ['open_water_swimming', 'transition_v2', 'road_biking',
+              'transition_v2', 'running']
+    assert _name_sub_activities(sports) == ['Swim', 'T1', 'Bike', 'T2', 'Run']
+
+
+def test_name_sub_activities_numbers_repeated_disciplines():
+    """A duathlon has two runs — they must be distinguishable."""
+    sports = ['running', 'transition_v2', 'road_biking', 'transition_v2', 'running']
+    assert _name_sub_activities(sports) == ['Run 1', 'T1', 'Bike', 'T2', 'Run 2']
+
+
+def _child(type_key, **summary):
+    return {'activityId': 99, 'activityTypeDTO': {'typeKey': type_key},
+            'summaryDTO': summary}
+
+
+def test_extract_sub_activity_transition_is_timing_only():
+    sub = _extract_sub_activity(
+        _child('transition_v2', distance=31.44, duration=110.848, averageHR=127.0),
+        laps_raw=None, weight_kg=70, name='T2',
+    )
+    assert sub['name'] == 'T2'
+    assert sub['type'] == 'transition_v2'
+    assert sub['duration_s'] == 110.8
+    assert sub['avg_hr'] == 127.0
+    # No discipline metrics or laps on a transition
+    for key in ('pace_per_km', 'pace_per_100m', 'avg_power', 'laps'):
+        assert key not in sub
+
+
+def test_extract_sub_activity_swim_reports_per_100m_pace():
+    # 750m in 840s -> 1:52/100m
+    sub = _extract_sub_activity(
+        _child('open_water_swimming', distance=750, duration=840, averageHR=155.0),
+        laps_raw=None, weight_kg=70, name='Swim',
+    )
+    assert sub['pace_per_100m'] == '1:52'
+    assert sub['distance_m'] == 750
+    assert sub['laps'] == []
+
+
+def test_extract_sub_activity_bike_reports_power_and_speed():
+    sub = _extract_sub_activity(
+        _child('road_biking', distance=20000, duration=2400, averageSpeed=8.3333,
+               averagePower=195, normalizedPower=210),
+        laps_raw=None, weight_kg=70, name='Bike',
+    )
+    assert sub['distance_km'] == 20.0
+    assert sub['avg_speed_kmh'] == 30.0
+    assert sub['avg_power'] == 195
+    assert sub['normalized_power'] == 210
+
+
+def test_extract_sub_activity_run_reports_per_km_pace():
+    # 4:24/km == 3.7879 m/s
+    sub = _extract_sub_activity(
+        _child('running', distance=5000, duration=1320, averageSpeed=5000 / 1320,
+               averageRunCadence=178.4),
+        laps_raw=None, weight_kg=70, name='Run',
+    )
+    assert sub['pace_per_km'] == '4:24'
+    assert sub['distance_km'] == 5.0
+    assert sub['avg_cadence'] == 178
+
+
+def test_extract_sub_activity_includes_laps_when_splits_given():
+    laps_raw = {'lapDTOs': [{'lapIndex': 1, 'distance': 1000, 'duration': 300,
+                             'averageSpeed': 1000 / 300, 'intensityType': 'ACTIVE'}]}
+    sub = _extract_sub_activity(
+        _child('running', distance=1000, duration=300, averageSpeed=1000 / 300),
+        laps_raw=laps_raw, weight_kg=70, name='Run',
+    )
+    assert len(sub['laps']) == 1
+    assert sub['laps'][0]['avg_pace'] == '5:00/km'
+
+
+def test_get_activity_multisport_has_sub_activities(multisport_activity_id):
+    """A sprint triathlon breaks out as swim / T1 / bike / T2 / run."""
+    result = get_activity(multisport_activity_id)
+    assert result['summary']['type'] == 'multi_sport'
+    subs = result['sub_activities']
+    assert [s['name'] for s in subs] == ['Swim', 'T1', 'Bike', 'T2', 'Run']
+    assert [s['type'] for s in subs] == [
+        'open_water_swimming', 'transition_v2', 'road_biking',
+        'transition_v2', 'running',
+    ]
+    for sub in subs:
+        assert sub['activity_id'] is not None
+        assert sub['duration_s'] > 0
+
+
+def test_get_activity_multisport_legs_have_discipline_metrics(multisport_activity_id):
+    subs = get_activity(multisport_activity_id)['sub_activities']
+    swim, bike, run = subs[0], subs[2], subs[4]
+
+    assert swim['pace_per_100m'] is not None
+    assert swim['distance_m'] > 0
+
+    assert bike['avg_power'] is not None
+    assert bike['avg_speed_kmh'] > 0
+    assert len(bike['laps']) > 0
+
+    assert run['pace_per_km'] is not None
+    assert run['distance_km'] > 0
+    assert len(run['laps']) > 0
+
+
+def test_get_activity_multisport_legs_sum_to_parent(multisport_activity_id):
+    """Leg durations should account for the whole race, within rounding."""
+    result = get_activity(multisport_activity_id)
+    leg_total_min = sum(s['duration_s'] for s in result['sub_activities']) / 60
+    assert abs(leg_total_min - result['summary']['duration_min']) < 1
+
+
+def test_get_activity_non_multisport_has_no_sub_activities(run_activity_id):
+    """Behaviour for ordinary activities is unchanged — no sub_activities key."""
+    assert 'sub_activities' not in get_activity(run_activity_id)
 
 
 def test_get_activity_includes_weather(run_activity_id):

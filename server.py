@@ -135,6 +135,11 @@ def activity_detail(activity_id: int) -> dict:
     or power-by-rep analysis of interval workouts, empty for non-workout
     activities), and HR time-in-zones.
 
+    For a multisport activity (triathlon, duathlon, …) the result also
+    includes 'sub_activities': the swim / T1 / bike / T2 / run legs, each
+    with its own discipline metrics (swim pace per 100m, bike power and
+    speed, run pace) and lap splits.
+
     Args:
         activity_id: Garmin activity ID (get from recent_activities)
     """
