@@ -141,7 +141,10 @@ def activity_detail(activity_id: int) -> dict:
     speed, run pace) and lap splits.
 
     'gear' lists the shoes/bike linked to the activity (name, uuid, type and
-    cumulative distance), and is empty when no gear was assigned.
+    cumulative distance), and is empty when no gear was assigned. For a
+    multisport activity each leg carries its own 'gear' — the bike on the
+    bike leg, the shoes on the run — and the top-level list is the union
+    across all legs.
 
     Args:
         activity_id: Garmin activity ID (get from recent_activities)

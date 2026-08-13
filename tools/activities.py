@@ -458,6 +458,25 @@ def _extract_sub_activity(activity: dict, laps_raw: dict | None,
     return sub
 
 
+def _merge_gear(parent_gear: list[dict], subs: list[dict]) -> list[dict]:
+    """Union of the parent's gear and every leg's, deduped by uuid, in order.
+
+    Garmin hangs gear off the individual legs of a multisport activity, so the
+    parent's own list comes back empty — roll the legs up so the top level
+    still answers "what did I wear for this race?".
+    """
+    merged = list(parent_gear)
+    seen = {g.get('uuid') for g in merged}
+
+    for sub in subs:
+        for g in sub.get('gear') or []:
+            if g.get('uuid') not in seen:
+                seen.add(g.get('uuid'))
+                merged.append(g)
+
+    return merged
+
+
 def _fetch_sub_activities(child_ids: list[int], weight_kg: float) -> list[dict]:
     """Fetch and extract each leg of a multisport activity, in race order.
 
@@ -480,13 +499,20 @@ def _fetch_sub_activities(child_ids: list[int], weight_kg: float) -> list[dict]:
     for child, sport, name in zip(children, sports, names):
         child_id = child.get('activityId')
         laps_raw = None
-        # Transitions have a single meaningless lap — skip the extra request.
+        gear = []
+        # Transitions have a single meaningless lap and never carry gear —
+        # skip both requests for them.
         if child_id is not None and not _is_transition(sport):
             try:
                 laps_raw = client.get_activity_splits(child_id)
             except Exception:
                 laps_raw = None
-        subs.append(_extract_sub_activity(child, laps_raw, weight_kg, name))
+            gear = get_activity_gear(child_id)
+
+        sub = _extract_sub_activity(child, laps_raw, weight_kg, name)
+        if not _is_transition(sport):
+            sub['gear'] = gear
+        subs.append(sub)
 
     return subs
 
@@ -505,7 +531,9 @@ def get_activity(activity_id: int) -> dict:
     each with its own discipline metrics and laps.
 
     The 'gear' list holds any shoes/bike linked to the activity, with the
-    cumulative distance logged on each item.
+    cumulative distance logged on each item. Multisport gear is attached to
+    the individual legs, so each leg carries its own 'gear' and the top-level
+    list is the union across them.
 
     Args:
         activity_id: Garmin activity ID
@@ -554,6 +582,7 @@ def get_activity(activity_id: int) -> dict:
     if _is_multisport(activity_raw):
         result['sub_activities'] = _fetch_sub_activities(
             _child_activity_ids(activity_raw), weight_kg=athlete['weight_kg'])
+        result['gear'] = _merge_gear(gear, result['sub_activities'])
 
     return result
 
