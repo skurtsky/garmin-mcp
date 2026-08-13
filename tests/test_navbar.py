@@ -55,8 +55,10 @@ def test_nav_token_is_url_encoded():
 def test_nav_styles_are_scoped_to_the_nav_id():
     """Injected into pages this repo doesn't own — it must not restyle them.
 
-    The one deliberate exception is the mobile ``body { padding-bottom }`` rule
-    that keeps the fixed bottom tab bar from covering the end of the page.
+    The one deliberate exception is ``body`` padding, which reserves the room
+    the fixed bar would otherwise cover — once for the top clearance on
+    desktop, once more inside the mobile query to move that clearance to the
+    bottom (where the bar relocates).
     """
     nav = navbar.render_nav_html("dashboard", "t0k")
     style = nav[nav.index("<style>") + len("<style>"): nav.index("</style>")]
@@ -67,7 +69,22 @@ def test_nav_styles_are_scoped_to_the_nav_id():
         if "{" in line and not line.strip().startswith(("@", "/*"))
     ]
     unscoped = [s for s in selectors if not s.startswith("#gm-nav")]
-    assert unscoped == ["body"]
+    assert unscoped == ["body", "body"]
+
+
+def test_nav_is_removed_from_normal_flow():
+    """Must never be an in-flow child of a host <body>.
+
+    An in-flow first child would be treated as an extra item by a host page
+    that styles its own <body> as a flex or grid container (e.g. a sidebar
+    layout) — squeezing in and corrupting that layout. Fixed positioning keeps
+    #gm-nav out of the flow entirely so it can never be miscounted this way.
+    """
+    nav = navbar.render_nav_html("dashboard", "t0k")
+    style = nav[nav.index("<style>") + len("<style>"): nav.index("</style>")]
+    base_rule = style[style.index("#gm-nav {"): style.index("#gm-nav .gm-nav__brand")]
+
+    assert "position: fixed" in base_rule
 
 
 def test_inject_nav_goes_inside_the_body_tag():
