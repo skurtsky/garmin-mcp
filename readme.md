@@ -66,6 +66,12 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `earned_badges` | Earned challenge/achievement badges with points, category, and date earned |
 | `adhoc_challenges` | Ad-hoc / community challenges with date range, personal ranking, and player count |
 
+### Reports
+
+| Tool | Description |
+|---|---|
+| `upload_weekly_summary` | Publish a weekly training report (full HTML) for a Monday-started week, readable at `/weekly-summary` |
+
 ## Setup
 
 **1. Clone and install**
@@ -168,6 +174,51 @@ Optional environment variables:
 | `TRAINING_PLAN_DIR` | `~/.garminconnect/training-plan` | Where the plan files are stored |
 | `TRAINING_PLAN_MAX_BYTES` | `20971520` | Per-file upload size cap (20 MB) |
 
+## Weekly Training Reports
+
+Weekly training reports are generated elsewhere (Claude Cowork) and pushed in
+with the `upload_weekly_summary` MCP tool, then read in the browser behind the
+same `?token=` auth:
+
+```python
+upload_weekly_summary(
+    week_start_date="2026-08-03",  # Monday of the training week
+    html_content="<!doctype html>…",  # the full styled report
+)
+# → {"url": "/weekly-summary/20260803", "week": "2026-08-03"}
+```
+
+`week_start_date` must be a Monday — any other weekday is rejected (with the
+correct Monday named in the error) so a week can never end up with two files.
+Uploading the same week again overwrites it, which makes regeneration safe.
+
+| Route | Method | Description |
+|---|---|---|
+| `/weekly-summary` | `GET` | Serves the most recent report, or a placeholder when none exist |
+| `/weekly-summary/{YYYYMMDD}` | `GET` | Serves one week's report (e.g. `/weekly-summary/20260803`) |
+| `/weekly-summary/list` | `GET` | JSON array of the available weeks, newest first |
+
+```
+http://localhost:8000/weekly-summary?token=YOUR_TOKEN
+```
+
+Each report is stored verbatim as `{YYYYMMDD}.html` in a `weekly-summaries/`
+folder inside the same mounted Azure File Share used for the Garmin tokens
+(`~/.garminconnect`), so reports survive container restarts and redeploys.
+Nothing is auto-deleted — a year of reports is a few MB.
+
+A navigation header (previous / next week, a dropdown of every week, and a link
+back to the dashboard) is injected server-side when a report is served, so the
+uploaded HTML doesn't need to know which other weeks exist. The `/list` route
+returns the same week metadata as JSON for building navigation elsewhere.
+
+Optional environment variables:
+
+| Variable | Default | Description |
+|---|---|---|
+| `WEEKLY_SUMMARY_DIR` | `~/.garminconnect/weekly-summaries` | Where the reports are stored |
+| `WEEKLY_SUMMARY_MAX_BYTES` | `20971520` | Per-report size cap (20 MB) |
+
 ## Testing
 
 ### Run the test suite
@@ -216,6 +267,7 @@ garmin-mcp/
 │   ├── profile.py         # get_athlete_profile, get_gear
 │   ├── training_plan.py   # storage + routes for the hosted plan viewer (/training-plan)
 │   ├── trends.py          # get_performance_predictions, get_performance_trends, get_trends
+│   ├── weekly_summaries.py # storage + routes for the weekly reports (/weekly-summary)
 │   └── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights
 ├── tests/
 │   ├── conftest.py        # Shared fixtures
@@ -228,6 +280,7 @@ garmin-mcp/
 │   ├── test_profile.py
 │   ├── test_training_plan.py
 │   ├── test_trends.py
+│   ├── test_weekly_summaries.py
 │   └── test_workout.py
 ├── requirements.txt
 ├── requirements-dev.txt

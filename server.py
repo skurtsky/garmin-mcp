@@ -34,6 +34,7 @@ from tools.performance import (
     get_running_tolerance,
     get_personal_records,
 )
+from tools.weekly_summaries import save_summary as save_weekly_summary
 from tools.workout import (
     get_scheduled_workouts as get_scheduled_workouts_impl,
     get_saved_workouts as get_saved_workouts_impl,
@@ -368,6 +369,33 @@ def weekly_summary(week_offset: int = 0, sport_type: Optional[str] = None) -> di
 
 
 @mcp.tool()
+def upload_weekly_summary(week_start_date: str, html_content: str) -> dict:
+    """
+    Publish a weekly training report so it can be read in the browser at
+    /weekly-summary, alongside the dashboard.
+
+    The report is a complete, self-contained styled HTML page (inline CSS/JS —
+    external files are not hosted). It is stored as-is under the Monday of the
+    training week it covers; previous/next-week navigation is added by the
+    server when the page is served, so the HTML should not include its own.
+
+    Uploading the same week again overwrites that week's report, so a report
+    can be regenerated freely. Older weeks are kept indefinitely.
+
+    Args:
+        week_start_date: Monday of the training week, YYYY-MM-DD. Must be a
+                         Monday — any other weekday is rejected.
+        html_content:    The full HTML report.
+
+    Returns:
+        {"url": "/weekly-summary/YYYYMMDD", "week": "YYYY-MM-DD"} — append the
+        usual ?token= to the URL to open it.
+    """
+    return save_weekly_summary(week_start_date=week_start_date,
+                               html_content=html_content)
+
+
+@mcp.tool()
 def swim_records(months: int = 6, top_n: int = 5) -> dict:
     """
     Find the longest unbroken swim sets across recent swim activities — the
@@ -585,15 +613,18 @@ def update_workout_weights(
 
 def build_asgi_app():
     """The full HTTP surface: bearer-token auth in front of the MCP app plus
-    the server-rendered HTML routes (/dashboard, /training-plan)."""
+    the server-rendered HTML routes (/dashboard, /training-plan,
+    /weekly-summary)."""
     from starlette.responses import Response as StarletteResponse
     from starlette.responses import HTMLResponse
 
     from tools.dashboard import build_dashboard_data, render_dashboard_html
     from tools import training_plan
+    from tools import weekly_summaries
 
     app = mcp.http_app()
     training_plan_app = training_plan.create_app()
+    weekly_summary_app = weekly_summaries.create_app()
 
     # Wrap the app with a simple ASGI auth wrapper
     bearer = BEARER_TOKEN
@@ -625,6 +656,12 @@ def build_asgi_app():
         # the mounted file share, same bearer-token auth.
         if scope["type"] == "http" and training_plan.owns_path(scope.get("path", "")):
             await training_plan_app(scope, receive, send)
+            return
+
+        # Weekly training reports — uploaded via the upload_weekly_summary MCP
+        # tool, served from the same file share with server-injected navigation.
+        if scope["type"] == "http" and weekly_summaries.owns_path(scope.get("path", "")):
+            await weekly_summary_app(scope, receive, send)
             return
 
         await app(scope, receive, send)
