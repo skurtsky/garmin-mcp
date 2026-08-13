@@ -16,6 +16,7 @@ from tools.activities import (
     _is_multisport,
     _name_sub_activities,
     _extract_sub_activity,
+    _merge_gear,
 )
 
 
@@ -470,6 +471,55 @@ def test_get_activity_multisport_legs_have_discipline_metrics(multisport_activit
     assert run['distance_km'] > 0
     assert len(run['laps']) > 0
 
+
+def test_merge_gear_rolls_up_legs_and_dedupes():
+    """Leg gear should roll up to the parent, deduped by uuid, order preserved."""
+    subs = [
+        {'gear': [{'name': 'Wetsuit', 'uuid': 'w1'}]},
+        {},  # transition — no gear key at all
+        {'gear': [{'name': 'Canyon Endurace', 'uuid': 'b1'}]},
+        {'gear': []},
+        {'gear': [{'name': 'Novablast 5', 'uuid': 's1'},
+                  {'name': 'Canyon Endurace', 'uuid': 'b1'}]},
+    ]
+    merged = _merge_gear([], subs)
+    assert [g['uuid'] for g in merged] == ['w1', 'b1', 's1']
+
+def test_merge_gear_keeps_parent_gear_first():
+    """Gear already on the parent stays, and isn't duplicated by a leg."""
+    parent = [{'name': 'Novablast 5', 'uuid': 's1'}]
+    merged = _merge_gear(parent, [{'gear': [{'name': 'Novablast 5', 'uuid': 's1'},
+                                            {'name': 'Wetsuit', 'uuid': 'w1'}]}])
+    assert [g['uuid'] for g in merged] == ['s1', 'w1']
+
+def test_get_activity_multisport_legs_have_gear(multisport_activity_id):
+    """Gear hangs off the legs, not the multisport parent — each leg gets its own."""
+    result = get_activity(multisport_activity_id)
+    subs = result['sub_activities']
+    swim, t1, bike, t2, run = subs
+
+    # Transitions never carry gear and shouldn't pay for the extra request.
+    assert 'gear' not in t1
+    assert 'gear' not in t2
+
+    for leg in (swim, bike, run):
+        assert isinstance(leg['gear'], list)
+        for item in leg['gear']:
+            assert set(item) == {'name', 'uuid', 'type', 'distance_km'}
+
+    # The run leg has shoes assigned — the case that motivated the roll-up.
+    assert run['gear'], "expected shoes on the run leg"
+    assert any(g['type'] == 'Shoes' for g in run['gear'])
+
+def test_get_activity_multisport_parent_gear_is_union_of_legs(multisport_activity_id):
+    """Top-level gear should cover every leg's gear, deduped."""
+    result = get_activity(multisport_activity_id)
+    parent_uuids = [g['uuid'] for g in result['gear']]
+
+    assert len(parent_uuids) == len(set(parent_uuids)), "duplicate gear at top level"
+    for leg in result['sub_activities']:
+        for g in leg.get('gear') or []:
+            assert g['uuid'] in parent_uuids, f"{g['name']} missing from top-level gear"
 
 def test_get_activity_multisport_legs_sum_to_parent(multisport_activity_id):
     """Leg durations should account for the whole race, within rounding."""
