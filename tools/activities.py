@@ -1,5 +1,6 @@
 # tools/activities.py
 import calendar
+from collections import Counter
 from garmin_client import get_client
 from tools.profile import get_athlete_profile
 from datetime import date, timedelta
@@ -329,6 +330,167 @@ def _extract_weather(weather_raw: dict | None) -> dict | None:
     }
 
 
+# ── MULTISPORT ────────────────────────────────────────────────────────────────
+
+def _is_transition(sport: str) -> bool:
+    """True for a multisport transition leg (Garmin uses 'transition_v2', and
+    'transition' on older activities)."""
+    return sport.startswith('transition')
+
+
+def _discipline_label(sport: str) -> str:
+    """Short human label for a sub-activity sport ('road_biking' -> 'Bike')."""
+    if 'swim' in sport:
+        return 'Swim'
+    if 'bik' in sport or 'cycl' in sport:
+        return 'Bike'
+    if 'run' in sport:
+        return 'Run'
+    return sport.replace('_', ' ').title() or 'Unknown'
+
+
+def _child_activity_ids(activity: dict) -> list[int]:
+    """Ordered child activity IDs of a multisport parent (empty when there are
+    none). Garmin nests them under metadataDTO.childIds."""
+    meta = activity.get('metadataDTO') or {}
+    raw = meta.get('childIds') or activity.get('childIds') or []
+    ids = []
+    for child in raw:
+        if isinstance(child, dict):
+            child = child.get('activityId')
+        try:
+            ids.append(int(child))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _is_multisport(activity: dict) -> bool:
+    """True when the activity is a multisport parent (triathlon, duathlon, …)."""
+    return bool(
+        activity.get('isMultiSportParent')
+        or (activity.get('activityTypeDTO') or {}).get('typeKey') == 'multi_sport'
+        or _child_activity_ids(activity)
+    )
+
+
+def _name_sub_activities(sports: list[str]) -> list[str]:
+    """Assign a display name to each leg, in order: transitions become T1/T2/…,
+    disciplines get their short label, numbered only when the same discipline
+    appears more than once (e.g. a duathlon's 'Run 1' and 'Run 2')."""
+    labels = [None if _is_transition(s) else _discipline_label(s) for s in sports]
+    counts = Counter(l for l in labels if l is not None)
+
+    names = []
+    transitions = 0
+    seen: Counter[str] = Counter()
+    for label in labels:
+        if label is None:
+            transitions += 1
+            names.append(f"T{transitions}")
+        elif counts[label] > 1:
+            seen[label] += 1
+            names.append(f"{label} {seen[label]}")
+        else:
+            names.append(label)
+    return names
+
+
+def _extract_sub_activity(activity: dict, laps_raw: dict | None,
+                          weight_kg: float, name: str) -> dict:
+    """Extract a discipline-aware summary for one leg of a multisport activity.
+
+    Transitions carry only timing data; swim/bike/run legs additionally get the
+    pace or power metrics that matter for that discipline, plus their laps.
+    """
+    summary = activity.get('summaryDTO') or {}
+    sport = (activity.get('activityTypeDTO') or {}).get('typeKey') or ''
+    distance_m = summary.get('distance') or 0
+    duration_s = summary.get('duration') or 0
+
+    sub = {
+        'activity_id': activity.get('activityId'),
+        'type':        sport,
+        'name':        name,
+        'start_time':  summary.get('startTimeLocal'),
+        'duration_s':  round(duration_s, 1),
+        'distance_m':  round(distance_m, 1),
+        'avg_hr':      summary.get('averageHR'),
+        'max_hr':      summary.get('maxHR'),
+        'calories':    summary.get('calories'),
+    }
+
+    if _is_transition(sport):
+        return sub
+
+    sub.update({
+        'distance_km':       round(distance_m / 1000, 2),
+        'moving_duration_s': round(summary.get('movingDuration') or 0, 1),
+        'elevation_gain_m':  summary.get('elevationGain'),
+    })
+
+    if 'swim' in sport:
+        sub.update({
+            'pace_per_100m':      _fmt_pace_100m(distance_m, duration_s),
+            'avg_swolf':          summary.get('averageSWOLF'),
+            'avg_stroke_cadence': summary.get('averageSwimCadence'),
+            'total_strokes':      summary.get('totalNumberOfStrokes'),
+        })
+    elif 'bik' in sport or 'cycl' in sport:
+        sub.update({
+            'avg_speed_kmh':    round((summary.get('averageSpeed') or 0) * 3.6, 1),
+            'avg_power':        summary.get('averagePower'),
+            'normalized_power': summary.get('normalizedPower'),
+            'avg_cadence':      summary.get('averageBikeCadence'),
+        })
+    else:
+        cadence = summary.get('averageRunCadence')
+        sub.update({
+            'pace_per_km':          _fmt_pace(summary.get('averageSpeed') or 0),
+            'grade_adjusted_pace':  _fmt_pace(summary.get('avgGradeAdjustedSpeed') or 0),
+            'avg_power':            summary.get('averagePower'),
+            'normalized_power':     summary.get('normalizedPower'),
+            'avg_cadence':          round(cadence) if cadence else None,
+        })
+
+    has_laps = bool((laps_raw or {}).get('lapDTOs'))
+    sub['laps'] = _extract_laps(laps_raw, weight_kg, sport) if has_laps else []
+    return sub
+
+
+def _fetch_sub_activities(child_ids: list[int], weight_kg: float) -> list[dict]:
+    """Fetch and extract each leg of a multisport activity, in race order.
+
+    A child that can't be fetched is skipped rather than failing the whole
+    activity — a partial breakdown beats none.
+    """
+    client = get_client()
+
+    children = []
+    for child_id in child_ids:
+        try:
+            children.append(client.get_activity(child_id))
+        except Exception:
+            continue
+
+    sports = [(c.get('activityTypeDTO') or {}).get('typeKey') or '' for c in children]
+    names = _name_sub_activities(sports)
+
+    subs = []
+    for child, sport, name in zip(children, sports, names):
+        child_id = child.get('activityId')
+        laps_raw = None
+        # Transitions have a single meaningless lap — skip the extra request.
+        if child_id is not None and not _is_transition(sport):
+            try:
+                laps_raw = client.get_activity_splits(child_id)
+            except Exception:
+                laps_raw = None
+        subs.append(_extract_sub_activity(child, laps_raw, weight_kg, name))
+
+    return subs
+
+
 # ── PUBLIC TOOL FUNCTIONS ─────────────────────────────────────────────────────
 
 def get_activity(activity_id: int) -> dict:
@@ -337,6 +499,10 @@ def get_activity(activity_id: int) -> dict:
     workout interval/phase breakdown (warmup/active/recovery/rest/cooldown,
     for activities with a targeted workout), HR zones, and weather conditions
     at the time of the activity.
+
+    For a multisport activity (triathlon, duathlon, …) the result also carries
+    a 'sub_activities' list with per-leg detail — swim, T1, bike, T2, run —
+    each with its own discipline metrics and laps.
 
     Args:
         activity_id: Garmin activity ID
@@ -370,7 +536,7 @@ def get_activity(activity_id: int) -> dict:
     intervals        = _extract_intervals(typed_splits_raw, weight_kg=athlete['weight_kg'])
     interval_summary = _extract_interval_summary(split_summaries_raw)
 
-    return {
+    result = {
         'summary':          summary,
         'laps':             laps,
         'intervals':        intervals,
@@ -378,6 +544,12 @@ def get_activity(activity_id: int) -> dict:
         'hr_zones':         hr_zones,
         'weather':          weather,
     }
+
+    if _is_multisport(activity_raw):
+        result['sub_activities'] = _fetch_sub_activities(
+            _child_activity_ids(activity_raw), weight_kg=athlete['weight_kg'])
+
+    return result
 
 def _activity_summary_from_list(a: dict) -> dict:
     """Extract compact summary fields from a Garmin activities-list entry."""

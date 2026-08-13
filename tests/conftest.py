@@ -10,6 +10,7 @@ load_dotenv()
 RUN_ACTIVITY_ID     = 22545458432  # Ottawa - 5 x 1K @ 5K effort
 CYCLING_ACTIVITY_ID = 22492461814  # Road Cycling - Plantagenet-Bourget 100K
 SWIM_ACTIVITY_ID    = 22516481045  # Pool Swim
+MULTISPORT_ACTIVITY_ID = 23901177014  # Lac Meech Sprint Triathlon (swim/T1/bike/T2/run)
 TEST_DATE           = "2026-04-16"  # Date of run activity
 
 @pytest.fixture(scope="session")
@@ -28,6 +29,10 @@ def cycling_activity_id():
 @pytest.fixture(scope="session")
 def swim_activity_id():
     return SWIM_ACTIVITY_ID
+
+@pytest.fixture(scope="session")
+def multisport_activity_id():
+    return MULTISPORT_ACTIVITY_ID
 
 @pytest.fixture(scope="session")
 def test_date():
