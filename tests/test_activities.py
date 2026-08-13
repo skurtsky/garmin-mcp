@@ -45,6 +45,14 @@ def test_get_activity_returns_expected_structure(run_activity_id):
     assert 'intervals' in result
     assert 'interval_summary' in result
     assert 'hr_zones' in result
+    assert 'gear' in result
+
+def test_get_activity_gear_is_a_list(run_activity_id):
+    """Gear is optional on Garmin — always a list, never missing."""
+    result = get_activity(run_activity_id)
+    assert isinstance(result['gear'], list)
+    for item in result['gear']:
+        assert set(item) == {'name', 'uuid', 'type', 'distance_km'}
 
 def test_get_activity_summary_has_run_fields(run_activity_id):
     result = get_activity(run_activity_id)

@@ -140,6 +140,9 @@ def activity_detail(activity_id: int) -> dict:
     with its own discipline metrics (swim pace per 100m, bike power and
     speed, run pace) and lap splits.
 
+    'gear' lists the shoes/bike linked to the activity (name, uuid, type and
+    cumulative distance), and is empty when no gear was assigned.
+
     Args:
         activity_id: Garmin activity ID (get from recent_activities)
     """
