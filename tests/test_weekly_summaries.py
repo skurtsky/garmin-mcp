@@ -169,7 +169,6 @@ def test_nav_links_previous_and_next_weeks():
 
     assert 'href="/weekly-summary/20260803?token=t0k"' in nav  # previous
     assert 'href="/weekly-summary/20260817?token=t0k"' in nav  # next
-    assert 'href="/dashboard?token=t0k"' in nav
     # Every week is offered in the dropdown, with the current one selected.
     assert nav.count("<option") == 3
     assert '<option value="/weekly-summary/20260810?token=t0k" selected>' in nav
@@ -194,7 +193,6 @@ def test_nav_omits_the_token_when_there_is_none():
     nav = ws.render_nav_html("20260803", ws.list_weeks())
 
     assert "token=" not in nav
-    assert 'href="/dashboard"' in nav
 
 
 def test_inject_nav_puts_the_header_inside_body_without_touching_the_report():
@@ -206,6 +204,26 @@ def test_inject_nav_puts_the_header_inside_body_without_touching_the_report():
     assert page.index("gm-week-nav") > page.index('<body class="report">')
     assert page.index("gm-week-nav") < page.index("<h1>Weekly summary</h1>")
     assert page.endswith("</body></html>")
+
+
+def test_inject_nav_adds_the_site_nav_above_the_week_switcher():
+    ws.save_summary(WEEK_A, REPORT)
+    page = ws.inject_nav(REPORT, "20260803", ws.list_weeks(), "t0k")
+
+    assert 'id="gm-nav"' in page
+    assert page.index('id="gm-nav"') < page.index("gm-week-nav")
+    # The site nav marks the weekly summary as the current page and keeps auth.
+    assert 'href="/training-plan?token=t0k"' in page
+    assert 'href="/dashboard?token=t0k"' in page
+
+
+def test_inject_nav_does_not_double_up_the_site_nav():
+    ws.save_summary(WEEK_A, REPORT)
+    weeks = ws.list_weeks()
+    once = ws.inject_nav(REPORT, "20260803", weeks, "t0k")
+    twice = ws.inject_nav(once, "20260803", weeks, "t0k")
+
+    assert twice.count('id="gm-nav"') == 1
 
 
 def test_inject_nav_prepends_when_the_report_has_no_body_tag():

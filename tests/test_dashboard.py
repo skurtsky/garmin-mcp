@@ -208,3 +208,21 @@ def test_build_dashboard_data_captures_section_errors(monkeypatch):
     assert data["sleep"] == {"sleep_score": 80}   # unaffected section still populated
     # The whole thing still renders without raising.
     assert dashboard.render_dashboard_html(data).startswith("<!doctype html>")
+
+
+def test_dashboard_carries_the_site_nav_with_the_token():
+    html = dashboard.render_dashboard_html(SAMPLE, "t0k")
+
+    assert 'id="gm-nav"' in html
+    assert html.index('id="gm-nav"') < html.index("<header>")
+    assert 'href="/training-plan?token=t0k"' in html
+    assert 'href="/weekly-summary?token=t0k"' in html
+    # Dashboard is the page we're on, so it's the highlighted link.
+    assert 'href="/dashboard?token=t0k" aria-current="page"' in html
+
+
+def test_dashboard_nav_without_a_token_links_plainly():
+    html = dashboard.render_dashboard_html(SAMPLE)
+
+    assert 'href="/training-plan"' in html
+    assert "token=" not in html

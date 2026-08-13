@@ -13,6 +13,8 @@ import os
 import html
 from datetime import datetime, timedelta, timezone
 
+from tools.navbar import render_nav_html
+
 # Auto-refresh the browser page this often (seconds). 0 disables refresh.
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 
@@ -553,10 +555,13 @@ _STYLE = """
 :root[data-theme="light"] {%LIGHT%}
 * { box-sizing: border-box; }
 body {
-  margin: 0; padding: 1.5rem;
+  margin: 0; padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   background: var(--bg); color: var(--fg); line-height: 1.4;
 }
+/* Page padding lives here, not on body, so the injected nav bar spans the
+   full width of the window. */
+.page { padding: 1.5rem; }
 header { max-width: 1100px; margin: 0 auto 1.25rem; position: relative; }
 header h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
 header .meta { color: var(--muted); font-size: .85rem; }
@@ -634,8 +639,12 @@ _THEME_TOGGLE_JS = """
 """
 
 
-def render_dashboard_html(data: dict) -> str:
-    """Render the dashboard data dict into a complete HTML document."""
+def render_dashboard_html(data: dict, token: str | None = None) -> str:
+    """Render the dashboard data dict into a complete HTML document.
+
+    ``token`` is the ``?token=`` bearer auth the request came in with; it is
+    threaded into the site nav links so navigating away doesn't drop auth.
+    """
     cards = "".join([
         _readiness_card(data),
         _body_battery_card(data),
@@ -678,6 +687,8 @@ def render_dashboard_html(data: dict) -> str:
         "if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
+        + render_nav_html("dashboard", token)
+        + '<div class="page">'
         "<header>"
         '<button id="theme-toggle" type="button" aria-label="Toggle dark mode" '
         'title="Toggle light / dark">\U0001F313</button>'
@@ -691,6 +702,7 @@ def render_dashboard_html(data: dict) -> str:
         "<footer>Data fetched live from Garmin Connect on each page load."
         + (f" Auto-refresh every {REFRESH_SECONDS}s." if REFRESH_SECONDS > 0 else "")
         + "</footer>"
+        "</div>"
         f"<script>{_THEME_TOGGLE_JS}</script>"
         "</body></html>"
     )

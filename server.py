@@ -615,6 +615,8 @@ def build_asgi_app():
     """The full HTTP surface: bearer-token auth in front of the MCP app plus
     the server-rendered HTML routes (/dashboard, /training-plan,
     /weekly-summary)."""
+    from urllib.parse import parse_qs
+
     from starlette.responses import Response as StarletteResponse
     from starlette.responses import HTMLResponse
 
@@ -644,7 +646,12 @@ def build_asgi_app():
         # each request.
         if scope["type"] == "http" and scope.get("path") == "/dashboard":
             try:
-                page = render_dashboard_html(build_dashboard_data())
+                # The token is threaded into the nav links so navigating to the
+                # training plan or the weekly reports keeps the ?token= auth.
+                token = parse_qs(scope.get("query_string", b"").decode()).get(
+                    "token", [None]
+                )[0]
+                page = render_dashboard_html(build_dashboard_data(), token)
                 response = HTMLResponse(page)
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Dashboard render failed")

@@ -116,6 +116,19 @@ python server.py
 The server starts on `http://0.0.0.0:8000` by default. Set the `PORT` environment
 variable to override.
 
+## Site Navigation
+
+The three hosted pages — `/dashboard`, `/training-plan` and `/weekly-summary` —
+share a navigation bar so they aren't dead ends: a horizontal bar across the top
+on desktop, a bottom tab bar on mobile, with the current page highlighted and
+the `?token=` carried into every link.
+
+The bar is rendered by `tools/navbar.py` and injected server-side at request
+time (never baked into the uploaded plan or report files, so re-uploading picks
+up the current nav automatically). Its CSS is scoped under a `#gm-nav` wrapper
+so it can't collide with the dashboard styles, the Svelte plan app, or a
+report's own styling.
+
 ## Dashboard
 
 A server-rendered health dashboard is available at `/dashboard` — the same
@@ -147,7 +160,7 @@ hosted from the same container, behind the same `?token=` auth:
 
 | Route | Method | Description |
 |---|---|---|
-| `/training-plan` | `GET` | Serves the active plan HTML verbatim, or a "No plan active" page |
+| `/training-plan` | `GET` | Serves the active plan HTML (with the site nav injected), or a "No plan active" page |
 | `/training-plan/upload` | `GET` | Minimal two-file upload form (HTML + JSON) |
 | `/training-plan/upload` | `POST` | Stores the upload, replacing any existing plan, then redirects to `/training-plan` |
 | `/training-plan/reset` | `POST` | Deletes the stored plan files |
@@ -165,7 +178,8 @@ the JSON must parse), so a bad upload leaves the live plan untouched.
 
 Completion and edit state is kept in the browser's localStorage by the plan app
 itself — per-device, no server-side state and no cross-device sync. The stored
-HTML is served unmodified.
+HTML is served as uploaded, with only the shared site nav bar injected into its
+`<body>`.
 
 Optional environment variables:
 
@@ -207,8 +221,8 @@ folder inside the same mounted Azure File Share used for the Garmin tokens
 (`~/.garminconnect`), so reports survive container restarts and redeploys.
 Nothing is auto-deleted — a year of reports is a few MB.
 
-A navigation header (previous / next week, a dropdown of every week, and a link
-back to the dashboard) is injected server-side when a report is served, so the
+A week switcher (previous / next week plus a dropdown of every week) is injected
+server-side when a report is served — below the shared site nav bar — so the
 uploaded HTML doesn't need to know which other weeks exist. The `/list` route
 returns the same week metadata as JSON for building navigation elsewhere.
 
@@ -263,6 +277,7 @@ garmin-mcp/
 │   ├── challenges.py      # get_active_goals, get_earned_badges, get_adhoc_challenges
 │   ├── dashboard.py       # build_dashboard_data, render_dashboard_html (/dashboard route)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
+│   ├── navbar.py          # shared site nav bar injected into every hosted page
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
 │   ├── training_plan.py   # storage + routes for the hosted plan viewer (/training-plan)
@@ -276,6 +291,7 @@ garmin-mcp/
 │   ├── test_client.py
 │   ├── test_dashboard.py
 │   ├── test_health.py
+│   ├── test_navbar.py
 │   ├── test_performance.py
 │   ├── test_profile.py
 │   ├── test_training_plan.py

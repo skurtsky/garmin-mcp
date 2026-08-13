@@ -33,6 +33,8 @@ from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Route
 
+from tools import navbar
+
 logger = logging.getLogger(__name__)
 
 PATH_PREFIX = "/weekly-summary"
@@ -234,8 +236,6 @@ _NAV_STYLE = """
 .gm-week-nav a:hover { border-color: #5aa9e6; }
 .gm-week-nav select { color: #e6e8eb; max-width: 60vw; }
 .gm-week-nav .gm-week-nav__off { color: #8b93a1; border-color: #232833; opacity: .55; }
-.gm-week-nav .gm-week-nav__home { margin-left: auto; }
-@media (max-width: 640px) { .gm-week-nav .gm-week-nav__home { margin-left: 0; } }
 """
 
 _STYLE = """
@@ -249,10 +249,11 @@ _STYLE = """
 }
 * { box-sizing: border-box; }
 body {
-  margin:0; padding:2rem 1.5rem; background:var(--bg); color:var(--fg); line-height:1.5;
+  margin:0; padding:0; background:var(--bg); color:var(--fg); line-height:1.5;
   font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
-main { max-width:640px; margin:0 auto; }
+/* Padding lives on main, not body, so the nav bar spans the full width. */
+main { max-width:640px; margin:0 auto; padding:2rem 1.5rem; }
 h1 { font-size:1.4rem; margin:0 0 .35rem; }
 .meta { color:var(--muted); font-size:.85rem; margin-bottom:1.5rem; }
 .card {
@@ -276,14 +277,16 @@ def _url(path: str, token: str | None) -> str:
     return f"{path}?{urlencode({'token': token})}" if token else path
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, token: str | None = None) -> str:
     return (
         "<!doctype html>"
         '<html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
-        f"</head><body><main>{body}</main></body></html>"
+        "</head><body>"
+        f'{navbar.render_nav_html("weekly-summary", token)}'
+        f"<main>{body}</main></body></html>"
     )
 
 
@@ -335,19 +338,22 @@ def render_nav_html(current_id: str, weeks: list[dict], token: str | None = None
         f'{arrow(older, "← Previous week", "gm-week-nav__prev")}'
         f"{select}"
         f'{arrow(newer, "Next week →", "gm-week-nav__next")}'
-        f'<a class="gm-week-nav__home" href="{_e(_url("/dashboard", token))}">Dashboard</a>'
         "</nav>"
     )
 
 
 def inject_nav(page: str, current_id: str, weeks: list[dict],
                token: str | None = None) -> str:
-    """Put the nav header at the top of a stored report's ``<body>``.
+    """Put the site nav and the week switcher at the top of a report's ``<body>``.
 
     The report itself is left untouched otherwise; when it has no ``<body>``
-    tag (a fragment rather than a full document) the nav is simply prepended.
+    tag (a fragment rather than a full document) the navs are simply prepended.
     """
-    nav = render_nav_html(current_id, weeks, token)
+    site_nav = (
+        "" if f'id="{navbar.NAV_ID}"' in page
+        else navbar.render_nav_html("weekly-summary", token)
+    )
+    nav = site_nav + render_nav_html(current_id, weeks, token)
     match = _BODY_TAG_RE.search(page)
     if match:
         return page[: match.end()] + nav + page[match.end():]
@@ -364,9 +370,8 @@ def render_no_summaries_html(token: str | None = None) -> str:
         "the <code>upload_weekly_summary</code> MCP tool. The first upload "
         "shows up here.</p>"
         "</div>"
-        f'<div class="links"><a href="{_e(_url("/dashboard", token))}">Dashboard</a></div>'
     )
-    return _page("No weekly reports", body)
+    return _page("No weekly reports", body, token)
 
 
 def render_missing_week_html(identifier: str, weeks: list[dict],
@@ -389,10 +394,9 @@ def render_missing_week_html(identifier: str, weeks: list[dict],
         f"{available}"
         f'<div class="links">'
         f'<a href="{_e(_url(PATH_PREFIX, token))}">Latest report</a>'
-        f'<a href="{_e(_url("/dashboard", token))}">Dashboard</a>'
         "</div>"
     )
-    return _page("No report for that week", body)
+    return _page("No report for that week", body, token)
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────

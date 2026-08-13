@@ -10,7 +10,7 @@ import json
 import pytest
 from starlette.testclient import TestClient
 
-from tools import training_plan
+from tools import navbar, training_plan
 
 
 PLAN_HTML = (
@@ -129,14 +129,25 @@ def test_get_plan_without_upload_returns_no_plan_page(client):
     assert r.headers["cache-control"] == "no-store"
 
 
-def test_get_plan_serves_stored_html_unchanged(client):
+def test_get_plan_serves_stored_html_with_the_nav_injected(client):
     training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
 
     r = client.get("/training-plan", params={"token": "t0k"})
 
     assert r.status_code == 200
-    assert r.text == PLAN_HTML
     assert r.headers["content-type"].startswith("text/html")
+    # The plan itself is untouched — only the nav bar is added inside <body>.
+    assert '<script type="application/json" id="plan-data">{"weeks": 12}</script>' in r.text
+    assert "<div id=app></div>" in r.text
+    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == PLAN_HTML
+    assert 'href="/weekly-summary?token=t0k"' in r.text
+
+
+def test_no_plan_page_carries_the_site_nav(client):
+    r = client.get("/training-plan", params={"token": "t0k"})
+
+    assert 'id="gm-nav"' in r.text
+    assert 'href="/dashboard?token=t0k"' in r.text
 
 
 def test_upload_form_has_two_file_inputs_and_carries_token(client):
@@ -173,7 +184,7 @@ def test_post_upload_redirect_lands_on_the_plan(client):
                     files=_upload_files())
 
     assert r.status_code == 200
-    assert r.text == PLAN_HTML
+    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == PLAN_HTML
 
 
 def test_post_upload_with_invalid_json_returns_form_with_error(client):
