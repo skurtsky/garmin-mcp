@@ -295,17 +295,16 @@ def client(monkeypatch):
     return TestClient(gear_tracker.create_app())
 
 
-def test_gear_page_renders(client):
-    resp = client.get(gear_tracker.PAGE_PATH)
-    assert resp.status_code == 200
-    assert "Gear tracker" in resp.text
-    assert "Canyon Ultimate" in resp.text
-    assert "Nike Vaporfly" in resp.text
+def test_gear_page_redirects_to_dashboard_gear_tab(client):
+    resp = client.get(gear_tracker.PAGE_PATH, follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/dashboard?tab=gear"
 
 
-def test_gear_page_shows_error_banner(client):
-    resp = client.get(gear_tracker.PAGE_PATH, params={"error": "Something went wrong"})
-    assert "Something went wrong" in resp.text
+def test_gear_page_redirect_preserves_token(client):
+    resp = client.get(gear_tracker.PAGE_PATH, params={"token": "t0k"}, follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/dashboard?tab=gear&token=t0k"
 
 
 def test_get_components_api_returns_json(client):
@@ -328,12 +327,12 @@ def test_post_component_json_creates(client):
     assert resp.json()["maintenance_interval_km"] == 350
 
 
-def test_post_component_form_redirects_to_gear_page(client):
+def test_post_component_form_redirects_to_dashboard_gear_tab(client):
     resp = client.post(f"{gear_tracker.API_PREFIX}/components", data={
         "bike_uuid": "bike-1", "name": "Tires",
     }, follow_redirects=False)
     assert resp.status_code == 303
-    assert resp.headers["location"].startswith(gear_tracker.PAGE_PATH)
+    assert resp.headers["location"] == "/dashboard?tab=gear"
     assert gear_tracker.find_component("bike-1", "Tires") is not None
 
 
@@ -394,7 +393,17 @@ def test_post_maintenance_redirect_preserves_token(client):
         follow_redirects=False,
     )
     assert resp.status_code == 303
-    assert "token=t0k" in resp.headers["location"]
+    assert resp.headers["location"] == "/dashboard?tab=gear&token=t0k"
+
+
+def test_dashboard_gear_url():
+    assert gear_tracker._dashboard_gear_url(None) == "/dashboard?tab=gear"
+    assert gear_tracker._dashboard_gear_url("t0k") == "/dashboard?tab=gear&token=t0k"
+
+
+def test_error_redirect_url():
+    assert gear_tracker._error_redirect_url(None, "boom") == "/dashboard?tab=gear&error=boom"
+    assert gear_tracker._error_redirect_url("t0k", "boom") == "/dashboard?tab=gear&error=boom&token=t0k"
 
 
 def test_owns_path():

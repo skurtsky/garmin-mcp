@@ -35,7 +35,7 @@ PAGES = (
     ("dashboard", "Dashboard", "/dashboard", "\U0001F4CA"),
     ("training-plan", "Training Plan", "/training-plan", "\U0001F5D3"),
     ("weekly-summary", "Weekly Summary", "/weekly-summary", "\U0001F4C8"),
-    ("gear", "Gear", "/dashboard/gear", "\U0001F527"),
+    ("gear", "Gear", "/dashboard?tab=gear", "\U0001F527"),
 )
 
 BRAND = "Garmin MCP"
@@ -112,8 +112,15 @@ def _e(value) -> str:
 
 
 def _url(path: str, token: str | None) -> str:
-    """A route URL carrying the bearer token, when one was supplied."""
-    return f"{path}?{urlencode({'token': token})}" if token else path
+    """A route URL carrying the bearer token, when one was supplied.
+
+    Appended with ``&`` rather than ``?`` when ``path`` already carries a
+    query string (the Gear entry links to ``/dashboard?tab=gear``).
+    """
+    if not token:
+        return path
+    sep = "&" if "?" in path else "?"
+    return f"{path}{sep}{urlencode({'token': token})}"
 
 
 def render_nav_html(active: str | None = None, token: str | None = None) -> str:
