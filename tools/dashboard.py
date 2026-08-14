@@ -1208,6 +1208,11 @@ def _weekly_report_url(token: str | None) -> str:
     return f"/weekly-summary?{urlencode({'token': token})}" if token else "/weekly-summary"
 
 
+def _gear_tracker_url(token: str | None) -> str:
+    """/dashboard/gear, carrying the bearer token when one was supplied."""
+    return f"/dashboard/gear?{urlencode({'token': token})}" if token else "/dashboard/gear"
+
+
 # ── CHART INTERACTIVITY (vanilla JS, no external libraries) ────────────────
 # Reads data off the markup emitted above: `data-points` (JSON [{x,y,d,v}, ...]
 # in viewBox coordinates) on line/area charts, and `data-date`/`data-value`
@@ -1377,6 +1382,7 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
 
   <a class="footer-link" href="{_e(_weekly_report_url(token))}">Latest weekly report &rarr;</a>
+  <a class="footer-link" href="{_e(_gear_tracker_url(token))}">Gear tracker &rarr;</a>
 
   <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px 16px;pointer-events:none">
     <div style="pointer-events:auto;display:flex;gap:2px;padding:6px;border-radius:999px;width:min(420px,100%);

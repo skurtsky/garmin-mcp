@@ -35,6 +35,7 @@ PAGES = (
     ("dashboard", "Dashboard", "/dashboard", "\U0001F4CA"),
     ("training-plan", "Training Plan", "/training-plan", "\U0001F5D3"),
     ("weekly-summary", "Weekly Summary", "/weekly-summary", "\U0001F4C8"),
+    ("gear", "Gear", "/dashboard/gear", "\U0001F527"),
 )
 
 BRAND = "Garmin MCP"

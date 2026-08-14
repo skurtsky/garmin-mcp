@@ -45,8 +45,9 @@ def get_athlete_profile() -> dict:
 def get_gear() -> list[dict]:
     """
     Fetch the athlete's registered gear (shoes, bikes, etc.) with name,
-    model, activity type, total distance and activity count, max distance
-    threshold, and current status.
+    model, activity type, total distance/time and activity count, max
+    distance threshold, current status, and its uuid (stable identifier for
+    associating gear with e.g. bike component maintenance records).
     """
     client = get_client()
     device_info = client.get_device_last_used() or {}
@@ -66,13 +67,16 @@ def get_gear() -> list[dict]:
         model = g.get('customMakeModel') if g.get('displayName') else None
         max_meters = g.get('maximumMeters') or 0
         total_distance = stats.get('totalDistance') or 0  # metres
+        total_duration = stats.get('totalDuration')  # seconds, when Garmin reports it
 
         items.append({
             'name':             name,
             'model':            model,
+            'uuid':             uuid,
             'activity_type':    g.get('gearTypeName'),
             'status':           g.get('gearStatusName'),
             'distance_km':      round(total_distance / 1000, 2),
+            'duration_min':     round(total_duration / 60, 1) if total_duration else None,
             'total_activities': stats.get('totalActivities'),
             'max_distance_km':  round(max_meters / 1000, 2) if max_meters else None,
             'date_begin':       g.get('dateBegin'),
