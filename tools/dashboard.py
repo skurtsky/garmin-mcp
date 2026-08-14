@@ -1220,6 +1220,8 @@ _CHART_JS = """
   if (!tip) return;
   var tipDate = tip.querySelector('.tt-date');
   var tipVal = tip.querySelector('.tt-val');
+  var activeBar = null;
+  var activeLine = null;
 
   function pointFromEvent(e) {
     if (e.touches && e.touches.length) return e.touches[0];
@@ -1227,20 +1229,31 @@ _CHART_JS = """
     return e;
   }
 
-  function showTip(clientX, clientY, dateText, valueText) {
+  function showTip(clientX, clientY, dateText, valueText, above) {
     tipDate.textContent = dateText;
     tipVal.textContent = valueText;
     tip.style.display = 'block';
     var pad = 14;
-    var x = clientX + pad, y = clientY + pad;
     var tw = tip.offsetWidth, th = tip.offsetHeight;
-    if (x + tw > window.innerWidth) x = clientX - tw - pad;
-    if (y + th > window.innerHeight) y = clientY - th - pad;
-    tip.style.left = Math.max(4, x) + 'px';
+    var x = clientX - tw / 2;
+    var y = above ? clientY - th - pad : clientY + pad;
+    if (above && y < 4) y = clientY + pad;
+    if (!above && y + th > window.innerHeight) y = clientY - th - pad;
+    if (x + tw > window.innerWidth) x = window.innerWidth - tw - 4;
+    if (x < 4) x = 4;
+    tip.style.left = x + 'px';
     tip.style.top = Math.max(4, y) + 'px';
   }
 
-  function hideTip() { tip.style.display = 'none'; }
+  function hideAll() {
+    tip.style.display = 'none';
+    if (activeLine) {
+      activeLine.crosshair.style.opacity = 0;
+      activeLine.dot.style.opacity = 0;
+      activeLine = null;
+    }
+    activeBar = null;
+  }
 
   document.querySelectorAll('svg.js-linechart').forEach(function (svg) {
     var pts;
@@ -1272,22 +1285,23 @@ _CHART_JS = """
       dot.setAttribute('cx', pt.x);
       dot.setAttribute('cy', pt.y);
       dot.style.opacity = 1;
-      showTip(p.clientX, p.clientY, pt.d, pt.v);
+      activeBar = null;
+      activeLine = { crosshair: crosshair, dot: dot };
+      showTip(p.clientX, p.clientY, pt.d, pt.v, true);
     }
 
     hit.addEventListener('mousemove', update);
     hit.addEventListener('mousedown', update);
-    hit.addEventListener('mouseleave', function () {
-      crosshair.style.opacity = 0;
-      dot.style.opacity = 0;
-      hideTip();
-    });
+    hit.addEventListener('mouseleave', hideAll);
     hit.addEventListener('touchstart', function (e) { e.preventDefault(); update(e); }, { passive: false });
     hit.addEventListener('touchmove', function (e) { e.preventDefault(); update(e); }, { passive: false });
   });
 
   document.querySelectorAll('.js-bar').forEach(function (bar) {
     function activate(e) {
+      if (activeBar === bar) { hideAll(); return; }
+      hideAll();
+      activeBar = bar;
       var p = pointFromEvent(e);
       showTip(p.clientX, p.clientY, bar.getAttribute('data-date') || '', bar.getAttribute('data-value') || '');
     }
@@ -1296,8 +1310,10 @@ _CHART_JS = """
   });
 
   document.addEventListener('click', function (e) {
-    if (!e.target.closest('.js-linechart') && !e.target.closest('.js-bar')) hideTip();
+    if (!e.target.closest('.js-linechart') && !e.target.closest('.js-bar')) hideAll();
   });
+
+  window.addEventListener('scroll', hideAll, { passive: true, capture: true });
 })();
 """
 
