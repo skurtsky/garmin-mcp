@@ -12,9 +12,11 @@ from tools import dashboard
 
 @pytest.fixture(autouse=True)
 def gear_db(tmp_path, monkeypatch):
-    """render_dashboard_html's Gear panel reads the maintenance log straight
-    from tools.gear_tracker (list_maintenance_log) — redirect it at a tmp
-    file so these tests stay fully offline, matching every other test here."""
+    """build_dashboard_data() calls tools.gear_tracker.build_gear_status,
+    which hits the gear-tracker database — redirect it at a tmp file so
+    these tests stay fully offline, matching every other test here.
+    (render_dashboard_html itself is a pure function of its data dict and
+    doesn't touch gear_tracker — see issue #58.)"""
     monkeypatch.setenv("GEAR_TRACKER_DB_PATH", str(tmp_path / "gear-tracker.db"))
 
 
@@ -165,6 +167,24 @@ def test_render_gear_panel_shows_overview_and_components():
     assert "Chain" in html
     assert "380" in html  # distance since service
     assert "400" in html  # maintenance interval
+
+
+def test_render_gear_panel_shows_maintenance_log_from_data():
+    """The log comes from gear_status["maintenance_log"] (populated by
+    build_gear_status), not a live gear_tracker call — the gear_db fixture
+    points at an empty database, so this would show nothing if the panel
+    still queried it directly (issue #58)."""
+    data = {**SAMPLE, "gear_status": {
+        **SAMPLE["gear_status"],
+        "maintenance_log": [
+            {"id": 1, "component_id": 1, "date": "2026-07-10", "action": "lubed",
+             "distance_at_service_km": 5400.0, "notes": "squeaky",
+             "component_name": "Chain", "bike_name": "Canyon Ultimate", "bike_uuid": "bike-1"},
+        ],
+    }}
+    html = dashboard.render_dashboard_html(data)
+    assert "Lubed" in html
+    assert "squeaky" in html
 
 
 def test_render_gear_panel_forms_carry_token():

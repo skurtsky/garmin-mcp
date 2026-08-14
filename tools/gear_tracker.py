@@ -24,7 +24,12 @@ never a value stored directly.
 
 Storage lives on the same Azure File Share already mounted for the Garmin
 OAuth tokens (``~/.garminconnect``), under ``gear-tracker.db``.
-``GEAR_TRACKER_DB_PATH`` overrides the location (used by tests).
+``GEAR_TRACKER_DB_PATH`` overrides the location (used by tests). SQLite's
+locking is unreliable on network file shares like this one (see issue #58),
+so rather than a fresh ``sqlite3.connect()`` per call, the process keeps a
+single connection open (:func:`_get_conn`) and serializes access to it —
+cutting both the per-call schema-check/lock-acquire overhead and the number
+of times the file's lock is actually taken.
 
 Viewing lives in the dashboard's Gear tab (tools/dashboard.py, ``/dashboard``
 — its ``tp-gear`` panel calls :func:`build_gear_status`, styled to match the
@@ -48,6 +53,7 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from datetime import date, datetime, timezone
 from urllib.parse import urlencode
 
@@ -132,16 +138,44 @@ def db_path() -> str:
     return os.environ.get("GEAR_TRACKER_DB_PATH") or DEFAULT_DB_PATH
 
 
-def _connect() -> sqlite3.Connection:
+# gear-tracker.db lives on a network file share (see module docstring), and
+# SQLite's own locking is unreliable there. Every open/close cycle is a fresh
+# lock acquisition against that filesystem, so rather than each function
+# opening (and schema-checking, and closing) its own connection, the process
+# keeps a single connection open and serializes all access to it through
+# _conn_lock (issue #58). It's reopened only if the configured path changes,
+# which happens in tests via GEAR_TRACKER_DB_PATH.
+_conn_lock = threading.RLock()
+_conn: sqlite3.Connection | None = None
+_conn_path: str | None = None
+
+
+def _get_conn() -> sqlite3.Connection:
+    """The process-wide connection, opened lazily and reused thereafter.
+
+    Callers must hold ``_conn_lock`` for the duration of their use of the
+    returned connection — a single ``sqlite3.Connection`` isn't safe for
+    concurrent use from multiple threads.
+    """
+    global _conn, _conn_path
     path = db_path()
+    if _conn is not None and _conn_path == path:
+        return _conn
+    if _conn is not None:
+        try:
+            _conn.close()
+        except sqlite3.Error:
+            pass
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     _ensure_schema(conn)
-    return conn
+    _conn = conn
+    _conn_path = path
+    return _conn
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
@@ -204,8 +238,8 @@ def _row_to_log(row: sqlite3.Row) -> dict:
 
 def list_components(bike_uuid: str | None = None) -> list[dict]:
     """Every tracked component, optionally scoped to one bike."""
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         if bike_uuid:
             rows = conn.execute(
                 "SELECT * FROM components WHERE bike_uuid = ? ORDER BY name",
@@ -216,32 +250,26 @@ def list_components(bike_uuid: str | None = None) -> list[dict]:
                 "SELECT * FROM components ORDER BY bike_name, name"
             ).fetchall()
         return [_row_to_component(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def get_component(component_id: int) -> dict | None:
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM components WHERE id = ?", (component_id,)
         ).fetchone()
         return _row_to_component(row) if row else None
-    finally:
-        conn.close()
 
 
 def find_component(bike_uuid: str, name: str) -> dict | None:
     """Look up a tracked component by bike + name, case-insensitively."""
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         row = conn.execute(
             "SELECT * FROM components WHERE bike_uuid = ? AND lower(name) = lower(?)",
             (bike_uuid, name),
         ).fetchone()
         return _row_to_component(row) if row else None
-    finally:
-        conn.close()
 
 
 def upsert_component(
@@ -273,8 +301,8 @@ def upsert_component(
     name = name.strip()
     install_date = _validate_date(install_date or date.today().isoformat(), "install_date")
 
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         existing = None
         if component_id is not None:
             existing = conn.execute(
@@ -316,8 +344,6 @@ def upsert_component(
         conn.commit()
         row = conn.execute("SELECT * FROM components WHERE id = ?", (new_id,)).fetchone()
         return _row_to_component(row)
-    finally:
-        conn.close()
 
 
 def log_maintenance_entry(
@@ -332,8 +358,8 @@ def log_maintenance_entry(
         raise ValueError("action is required.")
     date_ = _validate_date(date_ or date.today().isoformat())
 
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         component = conn.execute(
             "SELECT * FROM components WHERE id = ?", (component_id,)
         ).fetchone()
@@ -356,14 +382,12 @@ def log_maintenance_entry(
             (cur.lastrowid,),
         ).fetchone()
         return _row_to_log(row)
-    finally:
-        conn.close()
 
 
 def list_maintenance_log(component_id: int | None = None, limit: int = 200) -> list[dict]:
     """Maintenance log entries, newest first, optionally scoped to one component."""
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         query = """SELECT m.*, c.name AS component_name, c.bike_name AS bike_name, c.bike_uuid AS bike_uuid
                     FROM maintenance_log m JOIN components c ON c.id = m.component_id"""
         params: tuple = ()
@@ -373,8 +397,6 @@ def list_maintenance_log(component_id: int | None = None, limit: int = 200) -> l
         query += " ORDER BY m.date DESC, m.id DESC LIMIT ?"
         rows = conn.execute(query, params + (limit,)).fetchall()
         return [_row_to_log(r) for r in rows]
-    finally:
-        conn.close()
 
 
 def _last_service(conn: sqlite3.Connection, component_id: int) -> sqlite3.Row | None:
@@ -443,10 +465,16 @@ def _component_with_status(conn: sqlite3.Connection, component: dict,
     }
 
 
-def build_gear_status(gear_name: str | None = None) -> dict:
+def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict:
     """The full gear-tracker view: every piece of gear from Garmin, each
     bike's tracked components with live maintenance status computed against
-    that bike's current cumulative distance.
+    that bike's current cumulative distance, plus the maintenance log
+    (newest first, up to ``log_limit`` entries).
+
+    The log is included here — rather than left to a separate
+    :func:`list_maintenance_log` call — so a single call covers everything
+    the dashboard's Gear tab needs in one round trip against the database
+    (issue #58).
     """
     from tools.profile import get_gear
 
@@ -455,8 +483,8 @@ def build_gear_status(gear_name: str | None = None) -> dict:
         all_gear = [g for g in all_gear
                     if (g.get("name") or "").strip().lower() == gear_name.strip().lower()]
 
-    conn = _connect()
-    try:
+    with _conn_lock:
+        conn = _get_conn()
         items = []
         for g in all_gear:
             gear_type = (g.get("activity_type") or "").lower()
@@ -491,9 +519,14 @@ def build_gear_status(gear_name: str | None = None) -> dict:
                 "components": components,
             })
 
-        return {"gear": items}
-    finally:
-        conn.close()
+        log_rows = conn.execute(
+            """SELECT m.*, c.name AS component_name, c.bike_name AS bike_name, c.bike_uuid AS bike_uuid
+               FROM maintenance_log m JOIN components c ON c.id = m.component_id
+               ORDER BY m.date DESC, m.id DESC LIMIT ?""",
+            (log_limit,),
+        ).fetchall()
+
+        return {"gear": items, "maintenance_log": [_row_to_log(r) for r in log_rows]}
 
 
 # ── MCP TOOL FUNCTIONS ───────────────────────────────────────────────────────
@@ -557,7 +590,8 @@ def get_maintenance_status(gear_name: str | None = None) -> dict:
     """
     Get bike component maintenance status — last serviced date, distance
     since service, maintenance interval, and a status ("green"/"yellow"/
-    "red"/"unknown") for every tracked component.
+    "red"/"unknown") for every tracked component, plus the recent
+    maintenance log.
 
     Args:
         gear_name: Optional exact gear name to scope to one bike (see the
