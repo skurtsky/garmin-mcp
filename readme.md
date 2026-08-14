@@ -118,16 +118,19 @@ variable to override.
 
 ## Site Navigation
 
-The three hosted pages — `/dashboard`, `/training-plan` and `/weekly-summary` —
-share a navigation bar so they aren't dead ends: a horizontal bar across the top
-on desktop, a bottom tab bar on mobile, with the current page highlighted and
-the `?token=` carried into every link.
+`/training-plan` and `/weekly-summary` share a navigation bar so they aren't
+dead ends: a horizontal bar across the top on desktop, a bottom tab bar on
+mobile, with the current page highlighted and the `?token=` carried into every
+link.
 
 The bar is rendered by `tools/navbar.py` and injected server-side at request
 time (never baked into the uploaded plan or report files, so re-uploading picks
 up the current nav automatically). Its CSS is scoped under a `#gm-nav` wrapper
-so it can't collide with the dashboard styles, the Svelte plan app, or a
-report's own styling.
+so it can't collide with the Svelte plan app or a report's own styling.
+
+`/dashboard` (below) has its own self-contained design with its own tab bar and
+doesn't use this shared nav — link to it, or bookmark it, from wherever's
+convenient.
 
 ## Dashboard
 
@@ -140,10 +143,23 @@ query param:
 http://localhost:8000/dashboard?token=YOUR_TOKEN
 ```
 
-It's a single self-contained HTML page (inline CSS, no build step) that fetches
-fresh data server-side on each load and shows body battery, last night's sleep,
-heart rate, stress, training readiness, the last 5 activities, and this week's
-training load. The page auto-refreshes periodically.
+It's a single self-contained HTML page (inline CSS, no external requests, no
+client-side JavaScript — tab/filter switching is pure CSS via `:checked` radio
+inputs) that fetches fresh data server-side on each load. Four tabs:
+
+- **Today** — training readiness (score, level, contributing factors), body
+  battery, steps vs. goal, resting HR with a 14-day sparkline, HRV status,
+  last night's sleep (stages + stats), this week's load by day, and today's
+  activities.
+- **Trends** — acute:chronic training-load ratio, and HRV / resting HR /
+  sleep score / acute load / stress / steps sparkline cards over a 7d/14d/30d
+  toggle, plus a 14-day daily-steps chart.
+- **Activity** — this week's totals and a by-sport time split, plus a
+  scrollable recent-activities list with per-activity pace/speed/HR/load on
+  expand.
+- **Fitness** — VO₂max (run/bike), thresholds (LTHR/LT pace/FTP/weight),
+  approximate heart-rate zones derived from LTHR, and personal records
+  grouped by sport with a filter.
 
 Optional environment variables:
 
@@ -151,6 +167,8 @@ Optional environment variables:
 |---|---|---|
 | `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Offset from UTC for the "today" date and displayed local time (e.g. `-4`) |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | Browser auto-refresh interval; set `0` to disable |
+| `DASHBOARD_TREND_PERIOD` | `1m` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window |
+| `DASHBOARD_STEP_GOAL` | `10000` | Fallback daily step goal used when there's no active Garmin step goal |
 
 ## Training Plan Viewer
 

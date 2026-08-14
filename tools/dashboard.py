@@ -1,27 +1,39 @@
 # tools/dashboard.py
-"""Server-rendered health dashboard.
+"""Server-rendered health dashboard — "Nocturne" design.
 
 Gathers a live overview from the Garmin client and renders it as a single,
-self-contained HTML page (inline CSS/JS, no build step). Each request pulls
-fresh data server-side.
+self-contained HTML page (inline CSS, no JS, no build step, no external
+requests — the Phosphor icon font is embedded as a subsetted base64 woff2).
+Each request pulls fresh data server-side.
+
+The four tabs (Today / Trends / Activity / Fitness) are all rendered into the
+page on every load; switching tabs, the trend range (7d/14d/30d), and the
+personal-records sport filter are pure CSS (`:checked` radio inputs driving
+sibling visibility) — there is no client-side JavaScript.
 
 The data-gathering entrypoint (`build_dashboard_data`) lazily imports the
 underlying tool functions so that `render_dashboard_html` — a pure function of
 a data dict — can be imported and exercised without a live Garmin session.
 """
-import os
+import base64
 import html
-from datetime import datetime, timedelta, timezone
-
-from tools.navbar import render_nav_html
+import os
+from datetime import date, datetime, timedelta, timezone
 
 # Auto-refresh the browser page this often (seconds). 0 disables refresh.
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 
-# 7-day sparklines (RHR / HRV / sleep score) require a per-day trend fetch, which
-# adds a handful of Garmin calls to each page load. On by default; set to "0" for
-# a leaner, faster dashboard.
-SPARKLINES_ENABLED = os.environ.get("DASHBOARD_SPARKLINES", "1") not in ("0", "false", "no", "")
+# The Trends tab's range toggle (7d/14d/30d) is backed by one get_trends() call
+# fetched at this period; each extra day costs a handful of per-day Garmin
+# lookups per metric, so this is the knob for trading trend depth for a faster
+# page load. Any of get_trends' periods works; only ranges <= the fetched
+# window actually show a toggle button.
+TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "1m")
+
+# Fallback daily step goal when the athlete has no active Garmin step goal.
+DEFAULT_STEP_GOAL = int(os.environ.get("DASHBOARD_STEP_GOAL", "10000"))
+
+_TREND_METRICS = ["rhr", "hrv", "sleep_score", "stress", "steps", "training_load"]
 
 
 def _tz_offset_hours() -> float:
@@ -69,14 +81,17 @@ def build_dashboard_data() -> dict:
     # Imported lazily so render_dashboard_html stays importable without a
     # configured Garmin client.
     from tools.health import (
-        get_sleep,
-        get_daily_readiness,
         get_daily_health,
-        get_training_status,
+        get_daily_readiness,
+        get_sleep,
         get_training_readiness,
+        get_training_status,
     )
     from tools.activities import get_activities, get_weekly_summary
     from tools.trends import get_trends
+    from tools.performance import get_personal_records
+    from tools.profile import get_athlete_profile
+    from tools.challenges import get_active_goals
 
     now = _local_now()
     today = now.date().isoformat()
@@ -86,45 +101,35 @@ def build_dashboard_data() -> dict:
     sleep, sleep_err = _safe(get_sleep, today)
     training, training_err = _safe(get_training_readiness, today)
     training_status, training_status_err = _safe(get_training_status, today)
-    activities, activities_err = _safe(get_activities, limit=5)
+    activities, activities_err = _safe(get_activities, limit=20)
     week, week_err = _safe(get_weekly_summary)
+    trends, trends_err = _safe(get_trends, period=TREND_PERIOD, metrics=_TREND_METRICS)
+    personal_records, personal_records_err = _safe(get_personal_records)
+    active_goals, active_goals_err = _safe(get_active_goals)
+    athlete, athlete_err = _safe(get_athlete_profile)
     last_sync, last_sync_err = _safe(_fetch_last_sync)
-
-    if SPARKLINES_ENABLED:
-        trends, trends_err = _safe(
-            get_trends, period="7d", metrics=["rhr", "hrv", "sleep_score"]
-        )
-    else:
-        trends, trends_err = None, None
 
     return {
         "date": today,
         "generated_at": now.strftime("%Y-%m-%d %H:%M"),
         "tz_offset_hours": _tz_offset_hours(),
-        "readiness": readiness,
-        "readiness_err": readiness_err,
-        "health": health,
-        "health_err": health_err,
-        "sleep": sleep,
-        "sleep_err": sleep_err,
-        "training": training,
-        "training_err": training_err,
-        "training_status": training_status,
-        "training_status_err": training_status_err,
-        "activities": activities,
-        "activities_err": activities_err,
-        "week": week,
-        "week_err": week_err,
-        "trends": trends,
-        "trends_err": trends_err,
-        "last_sync": last_sync,
-        "last_sync_err": last_sync_err,
+        "readiness": readiness, "readiness_err": readiness_err,
+        "health": health, "health_err": health_err,
+        "sleep": sleep, "sleep_err": sleep_err,
+        "training": training, "training_err": training_err,
+        "training_status": training_status, "training_status_err": training_status_err,
+        "activities": activities, "activities_err": activities_err,
+        "week": week, "week_err": week_err,
+        "trends": trends, "trends_err": trends_err,
+        "personal_records": personal_records, "personal_records_err": personal_records_err,
+        "active_goals": active_goals, "active_goals_err": active_goals_err,
+        "athlete": athlete, "athlete_err": athlete_err,
+        "last_sync": last_sync, "last_sync_err": last_sync_err,
     }
 
 
-# ── RENDERING ─────────────────────────────────────────────────────────────────
+# ── FORMATTING HELPERS ──────────────────────────────────────────────────────
 
-# Known Garmin enum strings that don't read well under a generic transform.
 _ENUM_LABELS = {
     "GOOD_SLEEP_LAST_NIGHT": "Good sleep last night",
     "DAY_STRESSFUL_AND_INTENSIVE_EXERCISE": "Stressful day with intensive exercise",
@@ -146,40 +151,10 @@ def _humanize(value):
     if text in _ENUM_LABELS:
         return _ENUM_LABELS[text]
     letters = text.replace("_", "")
-    # Sentence-case enum-like values: underscore_separated, a single bare token
-    # (e.g. "good" / "READY"), or an ALL-CAPS word. Multi-word phrases that are
-    # already human-readable ("Good to train") are left untouched.
     if "_" in text or " " not in text or (letters.isalpha() and letters.isupper()):
         spaced = text.replace("_", " ").strip()
         return spaced[:1].upper() + spaced[1:].lower()
     return text
-
-
-def _label(value) -> str:
-    """Human-readable, HTML-escaped enum label ('' when missing)."""
-    human = _humanize(value)
-    return html.escape(human) if human else ""
-
-
-# Emoji per sport type for the Recent Activities list.
-_SPORT_ICONS = {
-    "running": "\U0001F3C3", "trail_running": "\U0001F3C3",
-    "treadmill_running": "\U0001F3C3", "track_running": "\U0001F3C3",
-    "indoor_running": "\U0001F3C3",
-    "road_biking": "\U0001F6B4", "cycling": "\U0001F6B4",
-    "indoor_cycling": "\U0001F6B4", "mountain_biking": "\U0001F6B4",
-    "gravel_cycling": "\U0001F6B4", "virtual_ride": "\U0001F6B4",
-    "lap_swimming": "\U0001F3CA", "open_water_swimming": "\U0001F3CA",
-    "swimming": "\U0001F3CA",
-    "walking": "\U0001F6B6", "hiking": "\U0001F97E",
-    "strength_training": "\U0001F3CB️", "yoga": "\U0001F9D8",
-    "cardio": "\U0001F938", "rowing": "\U0001F6A3", "indoor_rowing": "\U0001F6A3",
-    "elliptical": "\U0001F3CB️", "multi_sport": "\U0001F501",
-}
-
-
-def _sport_icon(sport) -> str:
-    return _SPORT_ICONS.get(str(sport or "").lower(), "\U0001F3C5")
 
 
 def _e(value) -> str:
@@ -189,6 +164,12 @@ def _e(value) -> str:
     return html.escape(str(value))
 
 
+def _label(value) -> str:
+    """Human-readable, HTML-escaped enum label ('—' when missing)."""
+    human = _humanize(value)
+    return html.escape(human) if human else "&mdash;"
+
+
 def _num(value, suffix: str = "") -> str:
     """Render a numeric value with an optional suffix, or an em dash if missing."""
     if value is None:
@@ -196,484 +177,1019 @@ def _num(value, suffix: str = "") -> str:
     return f"{_e(value)}{html.escape(suffix)}"
 
 
-def _metric(label: str, value: str, sub: str = "") -> str:
-    sub_html = f'<div class="metric-sub">{sub}</div>' if sub else ""
+def _trim(value: float, decimals: int = 2) -> str:
+    """Fixed-point formatting with trailing zeros trimmed (19.20 -> 19.2)."""
+    s = f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
+def _fmt_km(v):
+    if v is None:
+        return "&mdash;"
+    return f"{_trim(v)} km"
+
+
+def _fmt_dur(minutes):
+    """Minutes as 'Xh YY' (>=60) or 'YY min'."""
+    if minutes is None:
+        return "&mdash;"
+    total = round(minutes)
+    h, m = divmod(total, 60)
+    return f"{h}h{m:02d}" if h else f"{m} min"
+
+
+def _fmt_hm_clock(hours: float):
+    """Decimal hours as '<span>H<sub>h</sub>MM</span>' style pieces -> (h, mm)."""
+    if hours is None:
+        return None, None
+    total_min = round(hours * 60)
+    h, m = divmod(total_min, 60)
+    return h, m
+
+
+def _pace_per_km(duration_min, distance_km):
+    if not duration_min or not distance_km:
+        return None
+    secs = duration_min * 60 / distance_km
+    m, s = divmod(int(round(secs)), 60)
+    return f"{m}:{s:02d} /km"
+
+
+def _speed_kmh(duration_min, distance_km):
+    if not duration_min or not distance_km:
+        return None
+    kmh = distance_km / (duration_min / 60)
+    return f"{_trim(kmh, 1)} km/h"
+
+
+def _pace_per_100m(duration_min, distance_km):
+    if not duration_min or not distance_km:
+        return None
+    total_m = distance_km * 1000
+    if total_m <= 0:
+        return None
+    secs = duration_min * 60 / (total_m / 100)
+    m, s = divmod(int(round(secs)), 60)
+    return f"{m}:{s:02d} /100m"
+
+
+def _short_date(iso_date):
+    """'2026-08-13...' -> '13 Aug'."""
+    if not iso_date:
+        return None
+    try:
+        d = date.fromisoformat(str(iso_date)[:10])
+        return f"{d.day} {d.strftime('%b')}"
+    except ValueError:
+        return None
+
+
+def _month_year(value):
+    """A date-ish string -> 'Aug 2026'; passthrough on parse failure."""
+    if not value:
+        return "&mdash;"
+    text = str(value)[:10]
+    try:
+        d = date.fromisoformat(text)
+        return d.strftime("%b %Y")
+    except ValueError:
+        return _e(text)
+
+
+# ── SPORT ICON / TINT ───────────────────────────────────────────────────────
+# (Phosphor glyph, tint colour) per Garmin activity typeKey. The glyph is a
+# PUA codepoint into the embedded subsetted Phosphor font (see _ICON_CSS).
+
+_RUN = ""
+_BIKE = ""
+_SWIM = ""
+_WALK = ""
+_MOUNTAIN = ""
+_BARBELL = ""
+_LOTUS = ""
+_BOAT = ""
+_MEDAL = ""
+_PULSE = ""
+
+_SPORT_STYLE = {
+    "running": (_RUN, "#e2734a"), "trail_running": (_RUN, "#e2734a"),
+    "treadmill_running": (_RUN, "#e2734a"), "track_running": (_RUN, "#e2734a"),
+    "indoor_running": (_RUN, "#e2734a"),
+    "road_biking": (_BIKE, "#4fae72"), "cycling": (_BIKE, "#4fae72"),
+    "indoor_cycling": (_BIKE, "#4fae72"), "mountain_biking": (_BIKE, "#4fae72"),
+    "gravel_cycling": (_BIKE, "#4fae72"), "virtual_ride": (_BIKE, "#4fae72"),
+    "lap_swimming": (_SWIM, "#4aa7d8"), "open_water_swimming": (_SWIM, "#4aa7d8"),
+    "swimming": (_SWIM, "#4aa7d8"),
+    "walking": (_WALK, "#9397ab"), "hiking": (_MOUNTAIN, "#9397ab"),
+    "strength_training": (_BARBELL, "#a07fe0"), "yoga": (_LOTUS, "#7fc9b0"),
+    "cardio": (_PULSE, "#d9a441"), "rowing": (_BOAT, "#4aa7d8"),
+    "indoor_rowing": (_BOAT, "#4aa7d8"), "elliptical": (_PULSE, "#d9a441"),
+    "multi_sport": (_MEDAL, "var(--color-accent)"),
+}
+_DEFAULT_SPORT_STYLE = (_PULSE, "var(--color-neutral-500)")
+
+
+def _sport_style(sport):
+    return _SPORT_STYLE.get(str(sport or "").lower(), _DEFAULT_SPORT_STYLE)
+
+
+def _sport_label(sport):
+    return html.escape(str(sport or "activity").replace("_", " ").title())
+
+
+def _activity_detail(a: dict) -> list[tuple[str, str]]:
+    """(label, value) detail pairs for one activity — pace/speed matched to sport."""
+    sport = str(a.get("type") or "").lower()
+    dur, dist = a.get("duration_min"), a.get("distance_km")
+    detail = []
+    if sport in ("lap_swimming", "open_water_swimming", "swimming"):
+        pace = _pace_per_100m(dur, dist)
+        if pace:
+            detail.append(("Pace", pace))
+    elif sport in ("road_biking", "cycling", "indoor_cycling", "mountain_biking",
+                   "gravel_cycling", "virtual_ride"):
+        speed = _speed_kmh(dur, dist)
+        if speed:
+            detail.append(("Speed", speed))
+    elif dist:
+        pace = _pace_per_km(dur, dist)
+        if pace:
+            detail.append(("Pace", pace))
+    if a.get("avg_hr") is not None:
+        detail.append(("Avg HR", _num(a.get("avg_hr"))))
+    if a.get("training_load") is not None:
+        detail.append(("Load", _num(round(a.get("training_load")))))
+    return detail
+
+
+def _activity_big_stat(a: dict) -> tuple[str, str]:
+    """(headline, sub) for an activity row — distance for most sports, duration
+    for sports Garmin doesn't report distance for (strength, yoga, ...)."""
+    if a.get("distance_km"):
+        return _fmt_km(a["distance_km"]), _fmt_dur(a.get("duration_min"))
+    return _fmt_dur(a.get("duration_min")), _sport_label(a.get("type"))
+
+
+# ── SPARKLINE / CHART GEOMETRY ──────────────────────────────────────────────
+
+def _fill_gaps(vals: list):
+    """Forward/back-fill None gaps in a numeric series so a path stays continuous.
+    Returns None if every value is missing."""
+    present = [v for v in vals if v is not None]
+    if not present:
+        return None
+    filled, last = [], present[0]
+    for v in vals:
+        if v is not None:
+            last = v
+        filled.append(last)
+    return filled
+
+
+def _spark(vals: list, w: int = 300, h: int = 78, p: int = 9):
+    """Line/area SVG path geometry for a numeric series. Mirrors the design's
+    JS spark() helper. Returns None if there's nothing to draw."""
+    filled = _fill_gaps(vals)
+    if filled is None or len(filled) < 2:
+        return None
+    vmin, vmax = min(filled), max(filled)
+    span = (vmax - vmin) or 1
+    n = len(filled)
+
+    def sx(i):
+        return w / 2 if n == 1 else p + i * (w - 2 * p) / (n - 1)
+
+    def sy(v):
+        return h - p - ((v - vmin) / span) * (h - 2 * p)
+
+    pts = [(sx(i), sy(v)) for i, v in enumerate(filled)]
+    line = " ".join(f"{'L' if i else 'M'}{x:.1f} {y:.1f}" for i, (x, y) in enumerate(pts))
+    area = f"{line} L{pts[-1][0]:.1f} {h} L{pts[0][0]:.1f} {h} Z"
+    avg = sum(filled) / n
+    return {
+        "line": line, "area": area, "min": vmin, "max": vmax, "avg": avg,
+        "avgY": round(sy(avg), 1), "last": filled[-1], "first": filled[0],
+    }
+
+
+def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
+           big: bool = False, stroke: str | None = None, fill: str | None = None):
+    """A Trends-tab metric card's display values, sliced to the trailing `days`."""
+    daily = (series or {}).get("daily") or []
+    vals = [p.get("value") for p in daily[-days:]]
+    s = _spark(vals)
+    if s is None:
+        return None
+    delta = s["last"] - s["first"]
+    good = delta <= 0 if lower_better else delta >= 0
+    f = (lambda v: f"{round(v):,}") if big else (lambda v: str(round(v)))
+    return {
+        "label": label, "unit": unit,
+        "value": f(s["last"]), "avg": f(s["avg"]), "lo": f(s["min"]), "hi": f(s["max"]),
+        "delta": f"{'+' if delta > 0 else ''}{f(delta)}",
+        "avgY": s["avgY"], "line": s["line"], "area": s["area"],
+        "stroke": stroke or "var(--color-accent)", "fill": fill or "url(#gArea)",
+        "deltaColor": "#7fc9b0" if good else "#cf8a80",
+    }
+
+
+# ── ICON FONT (Phosphor, subsetted to the glyphs this page uses) ───────────
+
+_PHOSPHOR_WOFF2_B64 = (
+    "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"
+)
+
+_ICON_CSS = (
+    "@font-face{font-family:'PhosphorSub';font-weight:400;font-style:normal;"
+    f"src:url(data:font/woff2;base64,{_PHOSPHOR_WOFF2_B64}) format('woff2')}}"
+    ".ph{font-family:'PhosphorSub';font-style:normal;speak:never;font-variant:normal;"
+    "text-transform:none;line-height:1;-webkit-font-smoothing:antialiased}"
+)
+
+
+# ── DASHBOARD DATA SHAPING (build_dashboard_data() -> display-ready values) ─
+
+_READINESS_COLORS = {
+    "PRIME": "#4fae72", "HIGH": "#4fae72", "GOOD": "#4fae72",
+    "MODERATE": "#d9a441", "FAIR": "#d9a441", "LOW": "#cf5a4e", "POOR": "#cf5a4e",
+}
+
+
+def _readiness_color(level):
+    return _READINESS_COLORS.get(str(level or "").upper(), "var(--color-accent)")
+
+
+def _step_goal(data: dict) -> int:
+    for g in (data.get("active_goals") or []):
+        name = f"{g.get('goal_category') or ''} {g.get('goal_type_name') or ''}".lower()
+        if "step" in name and g.get("target_value"):
+            return int(g["target_value"])
+    return DEFAULT_STEP_GOAL
+
+
+def _acwr_gauge_pct(acwr):
+    if acwr is None:
+        return None
+    lo, hi = 0.5, 1.8
+    return round(max(0.0, min(1.0, (acwr - lo) / (hi - lo))) * 100, 1)
+
+
+# ── CSS ──────────────────────────────────────────────────────────────────────
+
+_STYLE = """
+:root {
+  color-scheme: dark;
+  --color-bg: #161826; --color-surface: #232532; --color-text: #e9e9ed;
+  --color-accent: #9184d9; --color-accent-2: #a7a1db;
+  --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
+  --color-neutral-100: #f3f5fe; --color-neutral-200: #e4e7f5; --color-neutral-300: #cfd3e5;
+  --color-neutral-400: #b2b6ca; --color-neutral-500: #9397ab; --color-neutral-600: #75798c;
+  --color-neutral-700: #595d6c; --color-neutral-800: #3f424d; --color-neutral-900: #292b31;
+  --color-accent-100: #f5f4ff; --color-accent-200: #e7e5fe; --color-accent-300: #d2cefd;
+  --color-accent-400: #b5abfc; --color-accent-500: #968ae0; --color-accent-600: #796cbf;
+  --color-accent-700: #5d5294; --color-accent-800: #423a6a; --color-accent-900: #2b2741;
+  --font-heading: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --radius-md: 8px;
+  --shadow-sm: 0 0 0 1px #3f424d;
+  --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0,0,0,0.55);
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--color-bg); color:var(--color-text); font-family:var(--font-body);
+       font-size:15px; line-height:1.5; }
+h1,h2,h3,h4 { font-family:var(--font-heading); font-weight:500; margin:0; }
+.card { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:var(--radius-md);
+        background:var(--color-surface); }
+.muted { color:var(--color-neutral-500); }
+.kicker { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
+.section-title { font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+                  color:var(--color-neutral-500); margin-bottom:8px; }
+.err { color:#cf8a80; font-size:12px; padding:12px; }
+
+/* ── icon-only radio → pill toggle (tabs / range / PR filter) ── */
+input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:none; }
+.pillbar { display:inline-flex; gap:4px; padding:3px; border-radius:999px;
+           border:1px solid var(--color-divider); }
+.pillbar label { border:0; cursor:pointer; font:inherit; font-size:11px; padding:5px 13px;
+                 border-radius:999px; color:var(--color-neutral-500); display:inline-flex;
+                 align-items:center; gap:5px; }
+.tabpanel, .range-set, .pr-group { display:none; }
+#tab-today:checked ~ .tabpanels .tp-today,
+#tab-trends:checked ~ .tabpanels .tp-trends,
+#tab-activity:checked ~ .tabpanels .tp-activity,
+#tab-you:checked ~ .tabpanels .tp-you { display:flex; }
+#range-7:checked ~ .range-body .rs-7,
+#range-14:checked ~ .range-body .rs-14,
+#range-30:checked ~ .range-body .rs-30 { display:grid; }
+#prf-all:checked ~ .pr-body .pr-group,
+#prf-run:checked ~ .pr-body .pr-group.pr-running,
+#prf-bike:checked ~ .pr-body .pr-group.pr-cycling,
+#prf-swim:checked ~ .pr-body .pr-group.pr-swimming { display:block; }
+#range-7:checked ~ .rangebar label[for=range-7],
+#range-14:checked ~ .rangebar label[for=range-14],
+#range-30:checked ~ .rangebar label[for=range-30],
+#prf-all:checked ~ .prbar label[for=prf-all],
+#prf-run:checked ~ .prbar label[for=prf-run],
+#prf-bike:checked ~ .prbar label[for=prf-bike],
+#prf-swim:checked ~ .prbar label[for=prf-swim] {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent-200);
+}
+.botnav label { flex:1; border:0; cursor:pointer; font:inherit; color:var(--color-neutral-500);
+                border-radius:999px; padding:8px 0; display:flex; flex-direction:column;
+                align-items:center; gap:2px; }
+.botnav label i { font-size:19px; }
+.botnav label span { font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+#tab-today:checked ~ .botnav label[for=tab-today],
+#tab-trends:checked ~ .botnav label[for=tab-trends],
+#tab-activity:checked ~ .botnav label[for=tab-activity],
+#tab-you:checked ~ .botnav label[for=tab-you] {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent-200);
+}
+
+/* ── activity expand ── */
+details.actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
+                   box-shadow:var(--shadow-sm); }
+details.actcard[open] { box-shadow:0 0 0 1px var(--color-accent-700); }
+details.actcard summary { cursor:pointer; list-style:none; }
+details.actcard summary::-webkit-details-marker { display:none; }
+""" + _ICON_CSS
+
+
+# ── PANEL: TODAY ─────────────────────────────────────────────────────────────
+
+def _factor_bar(label, pct):
+    pct = 0 if pct is None else pct
+    color = "#4fae72" if pct >= 80 else ("#d9a441" if pct >= 60 else "#cf5a4e")
     return (
-        '<div class="metric">'
-        f'<div class="metric-value">{value}</div>'
-        f'<div class="metric-label">{html.escape(label)}</div>'
-        f"{sub_html}"
+        '<div style="display:grid;grid-template-columns:78px 1fr 26px;align-items:center;gap:9px">'
+        f'<div style="font-size:11px;color:var(--color-neutral-400)">{html.escape(label)}</div>'
+        '<div style="height:5px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">'
+        f'<div style="height:100%;border-radius:999px;width:{pct}%;background:{color}"></div></div>'
+        f'<div style="font-size:11px;text-align:right;color:var(--color-neutral-500)">{_num(round(pct) if pct else None, "%")}</div>'
         "</div>"
     )
 
 
-def _card(title: str, emoji: str, body: str, error: str | None = None) -> str:
-    if error:
-        body = f'<div class="error">Unavailable — {_e(error)}</div>'
+def _panel_today(data: dict) -> str:
+    training = (data.get("training") or {}).get("readiness") or {}
+    readiness = data.get("readiness") or {}
+    health = data.get("health") or {}
+    sleep = data.get("sleep") or {}
+    week = data.get("week") or {}
+    activities = data.get("activities") or []
+    today = data.get("date")
+
+    if not training and not readiness and data.get("training_err") and data.get("readiness_err"):
+        hero = f'<div class="card err">Training readiness unavailable — {_e(data.get("training_err"))}</div>'
+    else:
+        score = training.get("score")
+        level = training.get("level")
+        color = _readiness_color(level)
+        pct = (score / 100 * 326.7) if score is not None else 0
+        factors = [
+            ("Sleep", training.get("sleep_score_factor_percent")),
+            ("Recovery", training.get("recovery_time_factor_percent")),
+            ("Load balance", training.get("acwr_factor_percent")),
+            ("HRV", training.get("hrv_factor_percent")),
+            ("Stress history", training.get("stress_history_factor_percent")),
+        ]
+        factor_rows = "".join(_factor_bar(l, v) for l, v in factors if v is not None)
+        hero = f"""
+        <div class="card" style="padding:16px;box-shadow:var(--shadow-sm);
+            background:linear-gradient(160deg, color-mix(in srgb, var(--color-accent) 10%, var(--color-surface)), var(--color-surface) 62%);
+            display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:18px;align-items:center">
+          <div style="display:flex;align-items:center;gap:16px">
+            <div style="position:relative;flex:0 0 auto">
+              <svg width="124" height="124" viewBox="0 0 124 124" style="display:block;transform:rotate(-90deg)">
+                <circle cx="62" cy="62" r="52" fill="none" stroke="var(--color-neutral-800)" stroke-width="9"></circle>
+                <circle cx="62" cy="62" r="52" fill="none" stroke="{color}" stroke-width="9" stroke-linecap="round" stroke-dasharray="{pct:.1f} 326.7"></circle>
+              </svg>
+              <div style="position:absolute;inset:0;display:grid;place-items:center;text-align:center">
+                <div><div style="font-family:var(--font-heading);font-size:38px;line-height:1">{_num(score)}</div>
+                <div style="font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--color-neutral-500)">ready</div></div>
+              </div>
+            </div>
+            <div style="min-width:0">
+              <div style="font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-accent-300)">Training readiness</div>
+              <div style="font-family:var(--font-heading);font-size:22px;margin:3px 0 5px;color:{color}">{_label(level)}</div>
+              <div style="font-size:12px;color:var(--color-neutral-400);line-height:1.4">{_label(training.get("feedback_short")) or "&mdash;"}</div>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:9px">{factor_rows or '<div class="muted" style="font-size:12px">No factor data.</div>'}</div>
+        </div>"""
+
+    bb = readiness.get("body_battery") or {}
+    daily_stats = readiness.get("daily_stats") or {}
+    hrv = readiness.get("hrv") or {}
+    hr = health.get("heart_rate") or {}
+
+    bb_pct = 0
+    if bb.get("current_level") is not None and bb.get("highest"):
+        bb_pct = max(2, round(bb["current_level"] / max(bb["highest"], 1) * 100))
+    step_goal = _step_goal(data)
+    steps = daily_stats.get("total_steps")
+    step_frac = min(1, (steps or 0) / step_goal) if step_goal else 0
+    step_dash = round(step_frac * 169.6, 1)
+    step_color = "#4fae72" if steps and steps >= step_goal else "var(--color-accent)"
+    step_over = f'{"+" if steps and steps >= step_goal else ""}{round((steps / step_goal - 1) * 100)}% of goal' if steps and step_goal else "&mdash;"
+    active_min = round(daily_stats["active_seconds"] / 60) if daily_stats.get("active_seconds") else None
+
+    rhr_series = ((data.get("trends") or {}).get("metrics") or {}).get("rhr") or {}
+    rhr_spark = _spark([p.get("value") for p in (rhr_series.get("daily") or [])[-14:]], 300, 60, 7)
+    rhr_svg = ""
+    if rhr_spark:
+        rhr_svg = (f'<svg viewBox="0 0 300 60" preserveAspectRatio="none" style="width:100%;height:44px;display:block">'
+                   f'<path d="{rhr_spark["area"]}" fill="url(#gRhr)"></path>'
+                   f'<path d="{rhr_spark["line"]}" fill="none" stroke="#cf5a4e" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path></svg>')
+
+    hrv_val = hrv.get("last_night_avg")
+    hrv_lo, hrv_hi = hrv.get("baseline_low"), hrv.get("baseline_high")
+    hrv_marker = 50.0
+    if hrv_val is not None and hrv_lo is not None and hrv_hi is not None and hrv_hi > hrv_lo:
+        hrv_marker = max(4, min(96, (hrv_val - hrv_lo) / (hrv_hi - hrv_lo) * 100))
+
+    quick_cards = f"""
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:12px">
+      <div class="card" style="padding:14px;gap:10px">
+        <div class="kicker">Body battery</div>
+        <div style="display:flex;align-items:flex-end;gap:12px">
+          <div style="width:26px;height:64px;border-radius:8px;background:var(--color-neutral-800);
+              display:flex;flex-direction:column;justify-content:flex-end;overflow:hidden">
+            <div style="height:{bb_pct}%;background:linear-gradient(#5b8fd8,#3b5bb5)"></div></div>
+          <div><div style="font-family:var(--font-heading);font-size:30px;line-height:1">{_num(bb.get("current_level"))}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">peak {_num(bb.get("highest"))}</div></div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px 10px;font-size:10px;color:var(--color-neutral-500)">
+          <span style="white-space:nowrap"><i class="ph">&#xe08e;</i> {_num(bb.get("charged"))} charged</span>
+          <span style="white-space:nowrap"><i class="ph">&#xe03e;</i> {_num(bb.get("drained"))} drained</span>
+        </div>
+      </div>
+      <div class="card" style="padding:14px;gap:10px">
+        <div class="kicker">Steps</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="position:relative;flex:0 0 auto">
+            <svg width="64" height="64" viewBox="0 0 64 64" style="display:block;transform:rotate(-90deg)">
+              <circle cx="32" cy="32" r="27" fill="none" stroke="var(--color-neutral-800)" stroke-width="6"></circle>
+              <circle cx="32" cy="32" r="27" fill="none" stroke="{step_color}" stroke-width="6" stroke-linecap="round" stroke-dasharray="{step_dash} 169.6"></circle>
+            </svg>
+            <div style="position:absolute;inset:0;display:grid;place-items:center;color:{step_color};font-size:18px"><i class="ph">&#xea88;</i></div>
+          </div>
+          <div><div style="font-family:var(--font-heading);font-size:24px;line-height:1">{_num(steps)}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">goal {step_goal:,}</div></div>
+        </div>
+        <div style="font-size:10px;color:{step_color}">{step_over}{f" · {active_min} active minutes" if active_min is not None else ""}</div>
+      </div>
+      <div class="card" style="padding:14px;gap:8px">
+        <div class="kicker">Resting HR</div>
+        <div style="display:flex;align-items:baseline;gap:6px">
+          <div style="font-family:var(--font-heading);font-size:30px;line-height:1">{_num(hr.get("resting_hr") or daily_stats.get("resting_hr"))}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">bpm · 7d {_num(hr.get("seven_day_avg_resting_hr") or daily_stats.get("resting_hr_7day_avg"))}</div>
+        </div>
+        {rhr_svg}
+      </div>
+      <div class="card" style="padding:14px;gap:8px">
+        <div class="kicker">HRV status</div>
+        <div style="display:flex;align-items:baseline;gap:6px">
+          <div style="font-family:var(--font-heading);font-size:30px;line-height:1">{_num(hrv_val)}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">ms</div>
+        </div>
+        <div style="position:relative;height:26px;margin-top:2px">
+          <div style="position:absolute;left:0;right:0;top:11px;height:4px;border-radius:999px;background:var(--color-neutral-800)"></div>
+          <div style="position:absolute;left:20%;width:55%;top:11px;height:4px;border-radius:999px;background:color-mix(in srgb, #4fae72 55%, transparent)"></div>
+          <div style="position:absolute;left:{hrv_marker:.0f}%;top:5px;width:2px;height:16px;border-radius:2px;background:#7fc9b0"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
+          <span>{_num(hrv_lo)}</span><span style="color:#7fc9b0">{_label(hrv.get("status"))}</span><span>{_num(hrv_hi)}</span>
+        </div>
+      </div>
+    </div>"""
+
+    total_sleep_h, total_sleep_m = _fmt_hm_clock(sleep.get("total_sleep_hrs"))
+    need_h, need_m = _fmt_hm_clock(sleep.get("sleep_need_hrs"))
+    need_txt = f"of {need_h}h{need_m:02d} need" if need_h is not None else ""
+    stages = [
+        ("Deep", sleep.get("deep_sleep_hrs"), sleep.get("deep_pct"), "#2f4a9e"),
+        ("Light", sleep.get("light_sleep_hrs"), sleep.get("light_pct"), "#6f9ce8"),
+        ("REM", sleep.get("rem_sleep_hrs"), sleep.get("rem_pct"), "#a07fe0"),
+        ("Awake", sleep.get("awake_hrs"), None, "#d9a441"),
+    ]
+    stage_bars, stage_legend = "", ""
+    for label, hrs, pct, color in stages:
+        if hrs is None:
+            continue
+        pct = pct if pct is not None else 0
+        h, m = _fmt_hm_clock(hrs)
+        stage_bars += (f'<div style="width:{max(pct,3)}%;background:{color};position:relative">'
+                       f'<div style="position:absolute;inset:auto 0 4px 0;text-align:center;font-size:9px;color:#e9e9ed">{round(pct)}%</div></div>')
+        stage_legend += (f'<span><span style="display:inline-block;width:7px;height:7px;border-radius:2px;background:{color};margin-right:4px"></span>'
+                         f'{label} {h}h{m:02d}</span>')
+    sleep_stats = [("Avg HR", _num(sleep.get("avg_hr"))), ("HRV", _num(sleep.get("avg_hrv"), " ms")),
+                   ("Respiration", _num(sleep.get("avg_respiration"))), ("Awakenings", _num(sleep.get("awake_count")))]
+    sleep_stats_html = "".join(
+        f'<div><div style="font-size:10px;color:var(--color-neutral-500)">{k}</div>'
+        f'<div style="font-family:var(--font-heading);font-size:17px">{v}</div></div>'
+        for k, v in sleep_stats
+    )
+    sleep_card = f"""
+    <div>
+      <div class="section-title">Last night</div>
+      <div class="card" style="padding:16px;gap:14px">
+        <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div style="display:flex;align-items:baseline;gap:8px">
+            <div style="font-family:var(--font-heading);font-size:34px;line-height:1">{total_sleep_h if total_sleep_h is not None else "&mdash;"}<span style="font-size:17px;color:var(--color-neutral-500)">h</span>{f"{total_sleep_m:02d}" if total_sleep_m is not None else ""}</div>
+            <div style="font-size:11px;color:var(--color-neutral-500)">{need_txt}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="font-size:11px;color:var(--color-neutral-400)">Score</div>
+            <div style="font-family:var(--font-heading);font-size:20px;color:#6f9ce8">{_num(sleep.get("sleep_score"))}</div>
+          </div>
+        </div>
+        <div style="display:flex;height:34px;gap:2px">{stage_bars or '<div class="muted" style="font-size:12px">No sleep data.</div>'}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:10px;color:var(--color-neutral-500)">{stage_legend}</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:10px;
+            border-top:1px solid var(--color-divider);padding-top:12px">{sleep_stats_html}</div>
+      </div>
+    </div>"""
+
+    week_activities = week.get("activities") or []
+    load_by_wd = [0.0] * 7
+    for a in week_activities:
+        try:
+            wd = date.fromisoformat(str(a.get("date"))[:10]).weekday()
+            load_by_wd[wd] += a.get("training_load") or 0
+        except ValueError:
+            continue
+    max_load = max(load_by_wd) or 1
+    today_wd = date.fromisoformat(today).weekday() if today else -1
+    wd_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    week_bars = "".join(
+        f'<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;height:100%">'
+        f'<div style="width:100%;border-radius:5px 5px 2px 2px;height:{max(round(v/max_load*100),3) if v else 3}px;'
+        f'background:{"var(--color-accent)" if i==today_wd else ("var(--color-accent-700)" if v else "var(--color-neutral-800)")};min-height:3px"></div>'
+        f'<div style="font-size:10px;color:{"var(--color-accent-200)" if i==today_wd else "var(--color-neutral-600)"}">{wd}</div></div>'
+        for i, (wd, v) in enumerate(zip(wd_labels, load_by_wd))
+    )
+    week_card = f"""
+    <div>
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+        <div class="section-title" style="margin-bottom:0">This week's load</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)">{_num(week.get("total_training_load"))} · {_num(week.get("total_activities"))} days</div>
+      </div>
+      <div class="card" style="padding:14px">
+        <div style="display:flex;align-items:flex-end;gap:6px;height:92px">{week_bars or '<div class="muted" style="font-size:12px">No activity this week.</div>'}</div>
+      </div>
+    </div>""" if week else ""
+
+    today_acts = [a for a in activities if str(a.get("date") or "")[:10] == today][:3]
+    act_rows = "".join(_activity_row_compact(a) for a in today_acts)
+    today_acts_card = f"""
+    <div>
+      <div class="section-title">Today &middot; {len(today_acts)} {'activity' if len(today_acts)==1 else 'activities'}</div>
+      <div style="display:flex;flex-direction:column;gap:8px">{act_rows or '<div class="muted" style="font-size:13px">No activities logged yet today.</div>'}</div>
+    </div>""" if today_acts or activities is not None else ""
+
     return (
-        '<section class="card">'
-        f'<h2><span class="emoji">{emoji}</span>{html.escape(title)}</h2>'
-        f'<div class="card-body">{body}</div>'
+        '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:22px">'
+        f"{hero}{quick_cards}{sleep_card}{week_card}{today_acts_card}"
         "</section>"
     )
 
 
-def _acwr_indicator(acwr):
-    """(arrow_html, word) for an acute:chronic workload ratio.
-
-    ACWR compares acute (7-day) to chronic (28-day) load, so it reads
-    directly as whether training load is building or tapering.
-    """
-    if acwr is None:
-        return "", ""
-    if acwr >= 1.1:
-        word = "ramping" if acwr >= 1.5 else "building"
-        return '<span class="trend-up">▲</span>', word
-    if acwr <= 0.8:
-        return '<span class="trend-down">▼</span>', "tapering"
-    return '<span class="trend-flat">▬</span>', "steady"
-
-
-def _delta_badge(delta, good_up: bool) -> str:
-    """A small ▲/▼ delta badge, coloured by whether the move is favourable."""
-    if delta is None:
-        return ""
-    if delta == 0:
-        return '<span class="delta flat">→ 0</span>'
-    up = delta > 0
-    cls = "good" if up == good_up else "bad"
-    arrow = "▲" if up else "▼"
-    return f'<span class="delta {cls}">{arrow} {abs(delta):g}</span>'
+def _activity_row_compact(a: dict) -> str:
+    icon, tint = _sport_style(a.get("type"))
+    big, sub = _activity_big_stat(a)
+    return f"""
+    <div class="card" style="padding:12px;flex-direction:row;align-items:center;gap:12px">
+      <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
+          background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
+        <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
+      </div>
+    </div>"""
 
 
-def _sparkline_svg(points: list, color: str, width: int = 140, height: int = 32) -> str:
-    """Inline SVG polyline sparkline from a list of {date, value} points.
+# ── PANEL: TRENDS ────────────────────────────────────────────────────────────
 
-    None values are skipped (the line connects the present points); a dot marks
-    the latest reading. color is a fixed literal supplied by the caller.
-    """
-    present = [(i, p.get("value")) for i, p in enumerate(points)
-               if p.get("value") is not None]
-    if len(present) < 2:
-        return '<span class="empty">&mdash;</span>'
-    ys = [v for _, v in present]
-    vmin, vmax = min(ys), max(ys)
-    span = (vmax - vmin) or 1
-    n = (len(points) - 1) or 1
-    pad = 4
+_CHART_SPECS = [
+    ("hrv", "HRV", "ms", False, False, "#7fc9b0", "url(#gHrv)"),
+    ("rhr", "Resting HR", "bpm", True, False, "#cf5a4e", "url(#gRhr)"),
+    ("sleep_score", "Sleep score", "/100", False, False, "#6f9ce8", "url(#gSleep)"),
+    ("training_load", "Acute load", "", False, True, "var(--color-accent)", "url(#gArea)"),
+    ("stress", "Stress", "avg", True, False, "#d9a441", "url(#gStress)"),
+    ("steps", "Steps", "", False, True, "#4fae72", "url(#gSteps)"),
+]
 
-    def px(i):
-        return pad + (i / n) * (width - 2 * pad)
 
-    def py(v):
-        return pad + (1 - (v - vmin) / span) * (height - 2 * pad)
+def _chart_card_html(c: dict) -> str:
+    return f"""
+    <div class="card" style="padding:13px;gap:7px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+        <div class="kicker">{html.escape(c["label"])}</div>
+        <div style="font-size:11px;color:{c["deltaColor"]}">{c["delta"]}</div>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:5px">
+        <div style="font-family:var(--font-heading);font-size:26px;line-height:1">{c["value"]}</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)">{html.escape(c["unit"])}</div>
+      </div>
+      <svg viewBox="0 0 300 78" preserveAspectRatio="none" style="width:100%;height:66px;display:block">
+        <path d="{c["area"]}" fill="{c["fill"]}"></path>
+        <line x1="0" x2="300" y1="{c["avgY"]}" y2="{c["avgY"]}" stroke="var(--color-neutral-700)" stroke-width="1" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"></line>
+        <path d="{c["line"]}" fill="none" stroke="{c["stroke"]}" stroke-width="1.7" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
+        <span>{c["lo"]}</span><span>avg {c["avg"]}</span><span>{c["hi"]}</span>
+      </div>
+    </div>"""
 
-    pts = " ".join(f"{px(i):.1f},{py(v):.1f}" for i, v in present)
-    lx, lv = present[-1]
-    dot = f'<circle cx="{px(lx):.1f}" cy="{py(lv):.1f}" r="2.5" fill="{color}"/>'
-    return (
-        f'<svg class="spark" viewBox="0 0 {width} {height}" '
-        f'preserveAspectRatio="none" role="img" aria-hidden="true">'
-        f'<polyline points="{pts}" fill="none" stroke="{color}" '
-        f'stroke-width="1.75" stroke-linejoin="round" stroke-linecap="round"/>'
-        f"{dot}</svg>"
+
+def _panel_trends(data: dict) -> str:
+    trends = data.get("trends")
+    if not trends:
+        err = data.get("trends_err") or "no data"
+        return f'<section class="panel tabpanel tp-trends"><div class="err">Trends unavailable — {_e(err)}</div></section>'
+
+    metrics = trends.get("metrics") or {}
+    available_days = trends.get("days") or 30
+    ranges = [r for r in (7, 14, 30) if r <= available_days] or [available_days]
+    default_range = max(ranges)
+
+    range_pills = "".join(
+        f'<label for="range-{r}">{r}d</label>' for r in ranges
     )
+    range_inputs = "".join(
+        f'<input class="hide" type="radio" name="range" id="range-{r}"{" checked" if r == default_range else ""}>'
+        for r in ranges
+    )
+    range_sets = ""
+    for r in ranges:
+        cards = "".join(
+            _chart_card_html(chart) for chart in (
+                _chart(metrics.get(key), label, unit, lower_better, r, big=big, stroke=stroke, fill=fill)
+                for key, label, unit, lower_better, big, stroke, fill in _CHART_SPECS
+            ) if chart is not None
+        )
+        range_sets += (
+            f'<div class="range-set rs-{r}" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">'
+            f"{cards}</div>"
+        )
+
+    ts = data.get("training_status") or {}
+    acwr = ts.get("acwr")
+    acwr_pct = _acwr_gauge_pct(acwr)
+    acwr_color = "#4fae72" if acwr_pct is not None and 26 <= acwr_pct <= 66 else ("#d9a441" if acwr_pct is not None else "var(--color-neutral-500)")
+    acwr_card = ""
+    if acwr is not None:
+        acwr_card = f"""
+        <div class="card" style="padding:16px;gap:12px">
+          <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <div><div class="kicker">Acute : chronic load</div>
+              <div style="display:flex;align-items:baseline;gap:8px;margin-top:3px">
+                <div style="font-family:var(--font-heading);font-size:30px;line-height:1;color:{acwr_color}">{acwr:.2f}</div>
+                <div style="font-size:12px;color:{acwr_color}">{_label(ts.get("acwr_status"))}</div>
+              </div>
+            </div>
+          </div>
+          <div style="position:relative;height:30px">
+            <div style="position:absolute;inset:12px 0 auto 0;height:7px;border-radius:999px;display:flex;overflow:hidden">
+              <div style="width:26%;background:#5b8fd8"></div><div style="width:14%;background:#7fc9b0"></div>
+              <div style="width:26%;background:#4fae72"></div><div style="width:14%;background:#d9a441"></div>
+              <div style="width:20%;background:#cf5a4e"></div>
+            </div>
+            <div style="position:absolute;left:{acwr_pct:.1f}%;top:4px;width:3px;height:23px;border-radius:2px;
+                background:var(--color-neutral-100);box-shadow:0 0 0 2px var(--color-surface)"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
+            <span>Detraining</span><span>0.8</span><span>Optimal</span><span>1.3</span><span>High risk</span>
+          </div>
+        </div>"""
+
+    step_series = metrics.get("steps") or {}
+    step_daily = (step_series.get("daily") or [])[-14:]
+    step_goal = _step_goal(data)
+    step_vals = [p.get("value") or 0 for p in step_daily]
+    smax = max(step_vals) if step_vals else 1
+    step_bars = "".join(
+        f'<div style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end">'
+        f'<div title="{_e(p.get("date"))} · {_e(p.get("value"))}" style="width:100%;border-radius:3px;'
+        f'height:{max(4, (p.get("value") or 0) / (smax or 1) * 100):.1f}%;'
+        f'background:{"#4fae72" if (p.get("value") or 0) >= step_goal else "var(--color-neutral-700)"}"></div></div>'
+        for p in step_daily
+    )
+    steps_card = ""
+    if step_daily:
+        steps_card = f"""
+        <div class="card" style="padding:14px;gap:12px">
+          <div style="display:flex;justify-content:space-between;align-items:baseline">
+            <div class="kicker">Daily steps</div><div style="font-size:11px;color:var(--color-neutral-500)">goal {step_goal:,}</div>
+          </div>
+          <div style="display:flex;align-items:flex-end;gap:3px;height:110px">{step_bars}</div>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
+            <span>{_e(_short_date(step_daily[0].get("date")))}</span><span>{_e(_short_date(step_daily[-1].get("date")))}</span>
+          </div>
+        </div>"""
+
+    return f"""
+    <section class="panel tabpanel tp-trends" style="flex-direction:column;gap:16px">
+      {range_inputs}
+      <div class="rangebar" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="font-family:var(--font-heading);font-size:20px">Trends</div>
+        <div class="pillbar">{range_pills}</div>
+      </div>
+      {acwr_card}
+      <div class="range-body">{range_sets}</div>
+      {steps_card}
+    </section>"""
+
+
+# ── PANEL: ACTIVITY ──────────────────────────────────────────────────────────
+
+def _panel_activity(data: dict) -> str:
+    week = data.get("week")
+    activities = data.get("activities")
+    if not week and not activities:
+        err = data.get("week_err") or data.get("activities_err") or "no data"
+        return f'<section class="panel tabpanel tp-activity"><div class="err">Activity data unavailable — {_e(err)}</div></section>'
+
+    week = week or {}
+    by_type = week.get("by_type") or {}
+    total_dur = week.get("total_duration_min") or 0
+    palette = ["#4fae72", "#d9a441", "#e2734a", "#4aa7d8", "#a07fe0", "#9397ab", "#7fc9b0", "#e0736f"]
+    split = []
+    for i, (t, v) in enumerate(sorted(by_type.items(), key=lambda kv: -(kv[1].get("duration_min") or 0))):
+        pct = (v.get("duration_min") or 0) / total_dur * 100 if total_dur else 0
+        split.append((f"{_sport_label(t)} {_fmt_dur(v.get('duration_min'))}", pct, palette[i % len(palette)]))
+    split_bars = "".join(f'<div title="{html.escape(t)}" style="width:{p:.1f}%;background:{c}"></div>' for t, p, c in split)
+    split_legend = "".join(
+        f'<span style="display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:2px;background:{c}"></span>{html.escape(t)}</span>'
+        for t, p, c in split
+    )
+
+    totals_card = f"""
+    <div class="card" style="padding:16px;gap:14px">
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:12px">
+        <div><div class="kicker">Distance</div><div style="font-family:var(--font-heading);font-size:24px">{_trim(week.get("total_distance_km") or 0)}<span style="font-size:12px;color:var(--color-neutral-500)"> km</span></div></div>
+        <div><div class="kicker">Time</div><div style="font-family:var(--font-heading);font-size:24px">{_fmt_dur(week.get("total_duration_min"))}</div></div>
+        <div><div class="kicker">Load</div><div style="font-family:var(--font-heading);font-size:24px">{_num(round(week.get("total_training_load")) if week.get("total_training_load") is not None else None)}</div></div>
+        <div><div class="kicker">Sessions</div><div style="font-family:var(--font-heading);font-size:24px">{_num(week.get("total_activities"))}</div></div>
+      </div>
+      <div style="display:flex;height:10px;gap:2px;border-radius:999px;overflow:hidden">{split_bars or ''}</div>
+      <div style="display:flex;flex-wrap:wrap;gap:10px 14px;font-size:10px;color:var(--color-neutral-500)">{split_legend}</div>
+    </div>"""
+
+    max_load = max((a.get("training_load") or 0) for a in activities) or 1 if activities else 1
+    act_cards = "".join(_activity_row_expandable(a, max_load) for a in (activities or []))
+
+    return f"""
+    <section class="panel tabpanel tp-activity" style="flex-direction:column;gap:16px">
+      <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
+      {totals_card}
+      <div style="display:flex;flex-direction:column;gap:8px">{act_cards or '<div class="muted" style="font-size:13px">No recent activities.</div>'}</div>
+    </section>"""
+
+
+def _activity_row_expandable(a: dict, max_load: float) -> str:
+    icon, tint = _sport_style(a.get("type"))
+    big, sub = _activity_big_stat(a)
+    load = a.get("training_load") or 0
+    load_w = max(2, round(load / max_load * 100))
+    detail = _activity_detail(a)
+    detail_html = "".join(
+        f'<div><div style="font-size:10px;color:var(--color-neutral-500)">{html.escape(k)}</div>'
+        f'<div style="font-family:var(--font-heading);font-size:15px">{v}</div></div>'
+        for k, v in detail
+    )
+    return f"""
+    <details class="actcard">
+      <summary>
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
+              background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
+            <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
+          </div>
+          <div style="text-align:right;flex:0 0 auto">
+            <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
+            <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
+          </div>
+        </div>
+        <div style="margin-top:10px;height:3px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">
+          <div style="height:100%;width:{load_w}%;background:{tint};border-radius:999px"></div>
+        </div>
+      </summary>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:10px;margin-top:12px;
+          border-top:1px solid var(--color-divider);padding-top:10px">{detail_html or '<div class="muted" style="font-size:12px">No additional detail.</div>'}</div>
+    </details>"""
+
+
+# ── PANEL: FITNESS ───────────────────────────────────────────────────────────
+
+def _panel_fitness(data: dict) -> str:
+    ts = data.get("training_status") or {}
+    athlete = data.get("athlete") or {}
+    records = data.get("personal_records")
+
+    vo2 = ts.get("vo2max") or {}
+    run_v2, bike_v2 = vo2.get("running"), vo2.get("cycling")
+    run_pos = max(0, min(100, ((run_v2 or 30) - 30) / 40 * 100))
+    bike_pos = max(0, min(100, ((bike_v2 or 30) - 30) / 40 * 100))
+    vo2_card = f"""
+    <div class="card" style="padding:16px;gap:12px">
+      <div class="kicker">VO&#8322; max</div>
+      <div style="display:flex;gap:22px;align-items:flex-end">
+        <div><div style="font-family:var(--font-heading);font-size:32px;line-height:1">{_num(run_v2)}</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)"><i class="ph">{_RUN}</i> run</div></div>
+        <div><div style="font-family:var(--font-heading);font-size:32px;line-height:1">{_num(bike_v2)}</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)"><i class="ph">{_BIKE}</i> bike</div></div>
+      </div>
+      <div style="position:relative;height:22px">
+        <div style="position:absolute;left:0;right:0;top:9px;height:5px;border-radius:999px;
+            background:linear-gradient(90deg,var(--color-neutral-800),var(--color-accent-700),var(--color-accent))"></div>
+        <div style="position:absolute;left:{run_pos:.0f}%;top:3px;width:2px;height:17px;background:var(--color-neutral-200);border-radius:2px"></div>
+        <div style="position:absolute;left:{bike_pos:.0f}%;top:3px;width:2px;height:17px;background:var(--color-accent-300);border-radius:2px"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)"><span>30</span><span>70</span></div>
+    </div>"""
+
+    thresholds = [
+        ("LTHR", _num(athlete.get("lactate_threshold_hr"))),
+        ("LT pace", f"{athlete['lactate_threshold_pace']:.2f} /km" if athlete.get("lactate_threshold_pace") else "&mdash;"),
+        ("FTP", _num(athlete.get("ftp"), " W")),
+        ("Weight", _num(athlete.get("weight_kg"), " kg")),
+    ]
+    thresholds_html = "".join(
+        f'<div><div style="font-family:var(--font-heading);font-size:21px">{v}</div>'
+        f'<div style="font-size:10px;color:var(--color-neutral-500)">{k}</div></div>'
+        for k, v in thresholds
+    )
+    thresholds_card = f"""
+    <div class="card" style="padding:16px;gap:10px">
+      <div class="kicker">Thresholds</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:12px">{thresholds_html}</div>
+    </div>"""
+
+    lthr = athlete.get("lactate_threshold_hr")
+    zones_card = ""
+    if lthr:
+        bounds = [0, 0.80, 0.90, 0.95, 1.00, 1.10]
+        widths = [30, 48, 66, 84, 100]
+        zone_rows = ""
+        for i in range(5):
+            lo_bpm = round(lthr * bounds[i]) if i > 0 else None
+            hi_bpm = round(lthr * bounds[i + 1]) if i < 4 else None
+            rng = f"< {round(lthr * bounds[1])}" if i == 0 else (f"{lo_bpm}+" if i == 4 else f"{lo_bpm}–{hi_bpm}")
+            color = ["#9397ab", "#5b8fd8", "#4fae72", "#d9a441", "#cf5a4e"][i]
+            zone_rows += (
+                f'<div style="display:grid;grid-template-columns:56px 1fr 62px;align-items:center;gap:10px">'
+                f'<div style="font-size:11px;color:var(--color-neutral-400)">Z{i+1}</div>'
+                f'<div style="height:8px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">'
+                f'<div style="height:100%;width:{widths[i]}%;background:{color};border-radius:999px"></div></div>'
+                f'<div style="font-size:11px;text-align:right;color:var(--color-neutral-500)">{rng}</div></div>'
+            )
+        zones_card = f"""
+        <div>
+          <div class="section-title">Heart-rate zones</div>
+          <div class="card" style="padding:14px;gap:8px">{zone_rows}</div>
+        </div>"""
+
+    pr_html = ""
+    if records:
+        sport_meta = {"running": ("Running", _RUN), "cycling": ("Cycling", _BIKE), "swimming": ("Swimming", _SWIM)}
+        groups_html = ""
+        for cat, (label, icon) in sport_meta.items():
+            items = records.get(cat) or []
+            if not items:
+                continue
+            item_cards = "".join(
+                f'<div class="card" style="padding:12px;gap:4px">'
+                f'<div style="font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--color-neutral-500)">{_e(p.get("label"))}</div>'
+                f'<div style="font-family:var(--font-heading);font-size:21px;line-height:1.1">{_e(p.get("value_formatted"))}</div>'
+                f'<div style="font-size:10px;color:var(--color-neutral-600)">{_month_year(p.get("date"))}</div></div>'
+                for p in items
+            )
+            groups_html += f"""
+            <div class="pr-group pr-{cat}">
+              <div style="display:flex;align-items:center;gap:7px;margin-bottom:7px;color:var(--color-accent-300)">
+                <i class="ph" style="font-size:15px">{icon}</i>
+                <span style="font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--color-neutral-400)">{label}</span>
+                <span style="flex:1;height:1px;background:linear-gradient(90deg,var(--color-divider),transparent)"></span>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">{item_cards}</div>
+            </div>"""
+        pr_html = f"""
+        <div>
+          <input class="hide" type="radio" name="prf" id="prf-all" checked><input class="hide" type="radio" name="prf" id="prf-run">
+          <input class="hide" type="radio" name="prf" id="prf-bike"><input class="hide" type="radio" name="prf" id="prf-swim">
+          <div class="prbar" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+            <div class="section-title" style="margin-bottom:0">Personal records</div>
+            <div class="pillbar">
+              <label for="prf-all"><i class="ph" style="font-size:13px">&#xe67e;</i>All</label>
+              <label for="prf-run"><i class="ph" style="font-size:13px">{_RUN}</i>Run</label>
+              <label for="prf-bike"><i class="ph" style="font-size:13px">{_BIKE}</i>Bike</label>
+              <label for="prf-swim"><i class="ph" style="font-size:13px">{_SWIM}</i>Swim</label>
+            </div>
+          </div>
+          <div class="pr-body" style="display:flex;flex-direction:column;gap:14px">{groups_html}</div>
+        </div>"""
+
+    return f"""
+    <section class="panel tabpanel tp-you" style="flex-direction:column;gap:16px">
+      <div style="font-family:var(--font-heading);font-size:20px">Fitness</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">{vo2_card}{thresholds_card}</div>
+      {zones_card}
+      {pr_html}
+    </section>"""
+
+
+# ── ASSEMBLY ─────────────────────────────────────────────────────────────────
+
+_SVG_DEFS = """
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <linearGradient id="gArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--color-accent)" stop-opacity="0.34"></stop><stop offset="1" stop-color="var(--color-accent)" stop-opacity="0"></stop></linearGradient>
+  <linearGradient id="gRhr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cf5a4e" stop-opacity="0.34"></stop><stop offset="1" stop-color="#cf5a4e" stop-opacity="0"></stop></linearGradient>
+  <linearGradient id="gHrv" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7fc9b0" stop-opacity="0.34"></stop><stop offset="1" stop-color="#7fc9b0" stop-opacity="0"></stop></linearGradient>
+  <linearGradient id="gSleep" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#6f9ce8" stop-opacity="0.34"></stop><stop offset="1" stop-color="#6f9ce8" stop-opacity="0"></stop></linearGradient>
+  <linearGradient id="gStress" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d9a441" stop-opacity="0.34"></stop><stop offset="1" stop-color="#d9a441" stop-opacity="0"></stop></linearGradient>
+  <linearGradient id="gSteps" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4fae72" stop-opacity="0.34"></stop><stop offset="1" stop-color="#4fae72" stop-opacity="0"></stop></linearGradient>
+</defs></svg>"""
 
 
 def _fmt_sync_time(value):
-    """Format a Garmin device last-sync timestamp for display.
-
-    Accepts either an epoch-millis integer or an ISO-ish string; returns a
-    trimmed 'YYYY-MM-DD HH:MM' style string, or None when unavailable.
-    """
     if value is None:
         return None
     if isinstance(value, (int, float)):
         try:
-            dt = (datetime.fromtimestamp(value / 1000, tz=timezone.utc)
-                  + timedelta(hours=_tz_offset_hours()))
-            return dt.strftime("%Y-%m-%d %H:%M")
+            dt = (datetime.fromtimestamp(value / 1000, tz=timezone.utc) + timedelta(hours=_tz_offset_hours()))
+            return dt.strftime("%H:%M")
         except (ValueError, OverflowError, OSError):
             return str(value)
-    return str(value).replace("T", " ").split(".")[0]
-
-
-def _body_battery_card(data: dict) -> str:
-    d = data.get("readiness")
-    if not d:
-        return _card("Body Battery", "\U0001F50B", "", data.get("readiness_err") or "no data")
-    bb = d.get("body_battery", {})
-    body = (
-        '<div class="metrics">'
-        + _metric("Current", _num(bb.get("current_level")))
-        + _metric("Charged", _num(bb.get("charged")))
-        + _metric("Drained", _num(bb.get("drained")))
-        + _metric("High / Low", f'{_num(bb.get("highest"))} / {_num(bb.get("lowest"))}')
-        + "</div>"
-    )
-    if bb.get("feedback"):
-        body += f'<div class="feedback">{_label(bb.get("feedback"))}</div>'
-    return _card("Body Battery", "\U0001F50B", body)
-
-
-def _sleep_card(data: dict) -> str:
-    d = data.get("sleep")
-    if not d:
-        return _card("Sleep", "\U0001F634", "", data.get("sleep_err") or "no data")
-    score = d.get("sleep_score")
-    label = d.get("sleep_score_label")
-    score_sub = _label(label)
-    stages = (
-        '<table class="stages sleep-stages">'
-        '<tr><th class="st-deep">Deep</th><th class="st-light">Light</th>'
-        '<th class="st-rem">REM</th><th class="st-awake">Awake</th></tr>'
-        "<tr>"
-        f'<td>{_num(d.get("deep_sleep_hrs"), "h")}</td>'
-        f'<td>{_num(d.get("light_sleep_hrs"), "h")}</td>'
-        f'<td>{_num(d.get("rem_sleep_hrs"), "h")}</td>'
-        f'<td>{_num(d.get("awake_hrs"), "h")}</td>'
-        "</tr>"
-        "<tr>"
-        f'<td>{_num(d.get("deep_pct"), "%")}</td>'
-        f'<td>{_num(d.get("light_pct"), "%")}</td>'
-        f'<td>{_num(d.get("rem_pct"), "%")}</td>'
-        f'<td>{_num(d.get("awake_count"))}</td>'
-        "</tr>"
-        "</table>"
-    )
-    body = (
-        '<div class="metrics">'
-        + _metric("Score", _num(score), score_sub)
-        + _metric("Duration", _num(d.get("total_sleep_hrs"), "h"))
-        + "</div>"
-        + stages
-    )
-    return _card("Sleep", "\U0001F634", body)
-
-
-def _heart_rate_card(data: dict) -> str:
-    d = data.get("readiness")
-    health = data.get("health") or {}
-    hr = (health.get("heart_rate") or {})
-    stats = (d or {}).get("daily_stats", {}) if d else {}
-    if not d and not health:
-        return _card("Heart Rate", "❤️", "",
-                     data.get("readiness_err") or data.get("health_err") or "no data")
-    resting = stats.get("resting_hr") if stats else hr.get("resting_hr")
-    seven_day = stats.get("resting_hr_7day_avg") if stats else hr.get("seven_day_avg_resting_hr")
-    body = (
-        '<div class="metrics">'
-        + _metric("Resting", _num(resting, " bpm"))
-        + _metric("7-day avg", _num(seven_day, " bpm"))
-        + _metric("Min", _num(hr.get("min_hr"), " bpm"))
-        + _metric("Max", _num(hr.get("max_hr"), " bpm"))
-        + "</div>"
-    )
-    return _card("Heart Rate", "❤️", body)
-
-
-def _stress_card(data: dict) -> str:
-    health = data.get("health")
-    if not health:
-        return _card("Stress", "\U0001F9D8", "", data.get("health_err") or "no data")
-    s = health.get("stress", {})
-    body = (
-        '<div class="metrics">'
-        + _metric("Average", _num(s.get("avg_stress")))
-        + _metric("Max", _num(s.get("max_stress")))
-        + "</div>"
-        + '<table class="stages">'
-        + "<tr><th>Rest</th><th>Low</th><th>Medium</th><th>High</th></tr>"
-        + "<tr>"
-        + f'<td>{_num(s.get("rest_stress_mins"), "m")}</td>'
-        + f'<td>{_num(s.get("low_stress_mins"), "m")}</td>'
-        + f'<td>{_num(s.get("medium_stress_mins"), "m")}</td>'
-        + f'<td>{_num(s.get("high_stress_mins"), "m")}</td>'
-        + "</tr>"
-        + "</table>"
-    )
-    return _card("Stress", "\U0001F9D8", body)
-
-
-def _readiness_card(data: dict) -> str:
-    r = (data.get("training") or {}).get("readiness", {}) or {}
-    ts = data.get("training_status") or {}
-    hrv = (data.get("readiness") or {}).get("hrv") or {}
-
-    if not r and not ts and not hrv:
-        return _card("Training Readiness", "⚡", "",
-                     data.get("training_err") or data.get("training_status_err")
-                     or "no data")
-
-    metrics = [_metric("Score", _num(r.get("score")), _label(r.get("level")))]
-
-    # HRV — current vs baseline (issue 22).
-    hrv_cur, hrv_base = hrv.get("last_night_avg"), hrv.get("weekly_avg")
-    if hrv_cur is not None or hrv_base is not None:
-        sub = f"baseline {_num(hrv_base, ' ms')}" if hrv_base is not None else ""
-        metrics.append(_metric("HRV", _num(hrv_cur, " ms"), sub))
-
-    # VO2max — running / cycling (issue 22).
-    vo2 = ts.get("vo2max") or {}
-    run, bike = vo2.get("running"), vo2.get("cycling")
-    if run is not None or bike is not None:
-        metrics.append(_metric("VO₂max", f"{_num(run)} / {_num(bike)}", "run / bike"))
-
-    # Acute load with an ACWR building/tapering indicator (issue 23).
-    load, acwr = r.get("acute_load"), ts.get("acwr")
-    if load is not None or acwr is not None:
-        arrow, word = _acwr_indicator(acwr)
-        value = f"{_num(load)} {arrow}".strip()
-        sub = f"ACWR {acwr:g} · {word}" if acwr is not None else ""
-        metrics.append(_metric("Acute Load", value, sub))
-
-    body = '<div class="metrics">' + "".join(metrics) + "</div>"
-    if r.get("feedback_short"):
-        body += f'<div class="feedback">{_label(r.get("feedback_short"))}</div>'
-    return _card("Training Readiness", "⚡", body)
-
-
-def _activities_card(data: dict) -> str:
-    acts = data.get("activities")
-    if acts is None:
-        return _card("Recent Activities", "\U0001F3C3", "", data.get("activities_err") or "no data")
-    if not acts:
-        return _card("Recent Activities", "\U0001F3C3", '<div class="empty">No recent activities.</div>')
-    rows = "".join(
-        "<tr>"
-        f'<td>{_e((a.get("date") or "")[:10])}</td>'
-        f'<td>{_e(a.get("name"))}</td>'
-        f'<td><span class="sport-icon">{_sport_icon(a.get("type"))}</span>'
-        f'{_e(str(a.get("type", "")).replace("_", " "))}</td>'
-        f'<td class="num">{_num(a.get("distance_km"), " km")}</td>'
-        f'<td class="num">{_num(a.get("duration_min"), " min")}</td>'
-        f'<td class="num">{_num(a.get("training_load"))}</td>'
-        "</tr>"
-        for a in acts
-    )
-    body = (
-        '<table class="list">'
-        "<tr><th>Date</th><th>Activity</th><th>Type</th>"
-        '<th class="num">Dist</th><th class="num">Time</th><th class="num">Load</th></tr>'
-        f"{rows}"
-        "</table>"
-    )
-    return _card("Recent Activities", "\U0001F3C3", body)
-
-
-def _weekly_card(data: dict) -> str:
-    w = data.get("week")
-    if not w:
-        return _card("This Week's Training", "\U0001F4CA", "", data.get("week_err") or "no data")
-    metrics = (
-        '<div class="metrics">'
-        + _metric("Activities", _num(w.get("total_activities")))
-        + _metric("Distance", _num(w.get("total_distance_km"), " km"))
-        + _metric("Duration", _num(w.get("total_duration_min"), " min"))
-        + _metric("Load", _num(w.get("total_training_load")))
-        + "</div>"
-    )
-    by_type = w.get("by_type") or {}
-    if by_type:
-        rows = "".join(
-            "<tr>"
-            f'<td>{_e(t.replace("_", " "))}</td>'
-            f'<td class="num">{_num(v.get("count"))}</td>'
-            f'<td class="num">{_num(v.get("distance_km"), " km")}</td>'
-            f'<td class="num">{_num(v.get("duration_min"), " min")}</td>'
-            "</tr>"
-            for t, v in by_type.items()
-        )
-        metrics += (
-            '<table class="list">'
-            '<tr><th>Type</th><th class="num">Count</th>'
-            '<th class="num">Dist</th><th class="num">Time</th></tr>'
-            f"{rows}"
-            "</table>"
-        )
-    sub = ""
-    if w.get("week_start") and w.get("week_end"):
-        sub = f'<div class="feedback">{_e(w.get("week_start"))} &rarr; {_e(w.get("week_end"))}</div>'
-    return _card("This Week's Training", "\U0001F4CA", metrics + sub)
-
-
-# Sparkline rows: (metric key, label, unit, higher_is_better, line colour).
-_SPARK_SPECS = [
-    ("rhr", "Resting HR", " bpm", False, "#e0736f"),
-    ("hrv", "HRV", " ms", True, "#6fae7d"),
-    ("sleep_score", "Sleep Score", "", True, "#5aa9e6"),
-]
-
-
-def _trends_card(data: dict) -> str:
-    """7-day sparklines for RHR, HRV, and sleep score (issue 23 stretch goal).
-
-    Returns an empty string (no card) when sparklines are disabled and no error
-    was captured, so the grid simply omits the section.
-    """
-    t = data.get("trends")
-    if not t:
-        err = data.get("trends_err")
-        if not err:
-            return ""
-        return _card("7-Day Trends", "\U0001F4C8", "", err)
-
-    metrics = t.get("metrics") or {}
-    rows = []
-    for key, label, unit, good_up, color in _SPARK_SPECS:
-        s = metrics.get(key) or {}
-        spark = _sparkline_svg(s.get("daily") or [], color)
-        current = _num(s.get("end"), unit)
-        rows.append(
-            "<tr>"
-            f'<td class="spark-label">{html.escape(label)}</td>'
-            f'<td class="spark-cell">{spark}</td>'
-            f'<td class="num">{current}</td>'
-            f'<td class="num">{_delta_badge(s.get("delta"), good_up)}</td>'
-            "</tr>"
-        )
-    body = f'<table class="list spark-table">{"".join(rows)}</table>'
-    return _card("7-Day Trends", "\U0001F4C8", body)
-
-
-# Light-theme variable overrides, shared by the system-preference default (when
-# no manual theme is set) and the explicit [data-theme="light"] toggle.
-_LIGHT_VARS = """
-  --bg:#f5f6f8; --fg:#1a1d23; --muted:#6b7280; --card-bg:#fff; --card-border:#e4e7ec;
-  --h2:#2d3340; --value:#111; --sub:#3f8a51; --feedback:#4b515c; --row-border:#eceef2;
-  --stage-row:#4b515c; --btn-bg:#fff; --btn-border:#d7dbe2;
-"""
-
-_STYLE = """
-:root {
-  color-scheme: light dark;
-  --bg:#0f1115; --fg:#e6e8eb; --muted:#8b93a1; --card-bg:#171a21; --card-border:#232833;
-  --h2:#cfd4dc; --value:#fff; --sub:#6fae7d; --feedback:#a7adb8; --row-border:#232833;
-  --stage-row:#a7adb8; --btn-bg:#171a21; --btn-border:#2b313d;
-}
-@media (prefers-color-scheme: light) { :root:not([data-theme]) {%LIGHT%} }
-:root[data-theme="light"] {%LIGHT%}
-* { box-sizing: border-box; }
-body {
-  margin: 0; padding: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  background: var(--bg); color: var(--fg); line-height: 1.4;
-}
-/* Page padding lives here, not on body, so the injected nav bar spans the
-   full width of the window. */
-.page { padding: 1.5rem; }
-header { max-width: 1100px; margin: 0 auto 1.25rem; position: relative; }
-header h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
-header .meta { color: var(--muted); font-size: .85rem; }
-header .meta.sync { margin-top: .15rem; }
-#theme-toggle {
-  position: absolute; top: 0; right: 0;
-  background: var(--btn-bg); color: var(--fg);
-  border: 1px solid var(--btn-border); border-radius: 8px;
-  width: 2.1rem; height: 2.1rem; font-size: 1rem; line-height: 1;
-  cursor: pointer; padding: 0;
-}
-#theme-toggle:hover { border-color: var(--muted); }
-.grid {
-  max-width: 1100px; margin: 0 auto;
-  display: grid; gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-}
-.card {
-  background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px;
-  padding: 1rem 1.15rem;
-}
-.card.wide { grid-column: 1 / -1; }
-.card h2 {
-  margin: 0 0 .75rem; font-size: 1rem; font-weight: 600;
-  display: flex; align-items: center; gap: .5rem; color: var(--h2);
-}
-.emoji { font-size: 1.15rem; }
-.metrics { display: flex; flex-wrap: wrap; gap: 1rem 1.5rem; }
-.metric-value { font-size: 1.5rem; font-weight: 700; color: var(--value); }
-.metric-label { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
-.metric-sub { font-size: .75rem; color: var(--sub); margin-top: .1rem; }
-.feedback { margin-top: .75rem; font-size: .85rem; color: var(--feedback); font-style: italic; }
-table { width: 100%; border-collapse: collapse; margin-top: .85rem; font-size: .85rem; }
-th, td { text-align: left; padding: .35rem .4rem; border-bottom: 1px solid var(--row-border); }
-th { color: var(--muted); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; }
-td.num, th.num { text-align: right; }
-table.stages tr:last-child td { border-bottom: none; color: var(--stage-row); }
-.error { color: #e0736f; font-size: .85rem; }
-.empty { color: var(--muted); font-size: .85rem; }
-footer { max-width: 1100px; margin: 1.25rem auto 0; color: var(--muted); font-size: .75rem; }
-.sport-icon { margin-right: .4rem; }
-.sleep-stages th { border-bottom: 2px solid currentColor; }
-.sleep-stages th.st-deep  { color: #3b5bdb; }
-.sleep-stages th.st-light { color: #5aa9e6; }
-.sleep-stages th.st-rem   { color: #9775fa; }
-.sleep-stages th.st-awake { color: #e8863c; }
-.trend-up   { color: #e8863c; }
-.trend-down { color: #5aa9e6; }
-.trend-flat { color: var(--muted); }
-.spark { width: 140px; height: 32px; display: block; }
-.spark-table td { vertical-align: middle; border-bottom: none; padding: .3rem .4rem; }
-.spark-table .spark-label { color: var(--muted); font-size: .8rem; }
-.spark-cell { width: 150px; }
-.delta { font-size: .8rem; font-weight: 600; white-space: nowrap; }
-.delta.good { color: #6fae7d; }
-.delta.bad  { color: #e0736f; }
-.delta.flat { color: var(--muted); }
-""".replace("%LIGHT%", _LIGHT_VARS)
-
-
-# Flip between light/dark, persisting the choice. Falls back to the system
-# preference for the very first toggle when no explicit theme is set yet.
-_THEME_TOGGLE_JS = """
-(function(){
-  var root=document.documentElement, btn=document.getElementById('theme-toggle');
-  if(!btn) return;
-  btn.addEventListener('click',function(){
-    var cur=root.getAttribute('data-theme');
-    if(!cur){cur=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}
-    var next=cur==='dark'?'light':'dark';
-    root.setAttribute('data-theme',next);
-    try{localStorage.setItem('garmin-theme',next);}catch(e){}
-  });
-})();
-"""
+    return str(value).replace("T", " ").split(".")[0][-8:-3] if "T" in str(value) else str(value)
 
 
 def render_dashboard_html(data: dict, token: str | None = None) -> str:
     """Render the dashboard data dict into a complete HTML document.
 
-    ``token`` is the ``?token=`` bearer auth the request came in with; it is
-    threaded into the site nav links so navigating away doesn't drop auth.
+    ``token`` is accepted for interface compatibility with the previous
+    dashboard (server.py threads the request's ``?token=`` bearer auth
+    through) but this design has no cross-page links to carry it on.
     """
-    cards = "".join([
-        _readiness_card(data),
-        _body_battery_card(data),
-        _sleep_card(data),
-        _heart_rate_card(data),
-        _stress_card(data),
-        _trends_card(data),
-        _weekly_card(data),
-    ])
-    activities = f'<div class="grid" style="margin-top:1rem">{_activities_card(data)}</div>'
+    weekday_line = data.get("date") or ""
+    try:
+        weekday_line = date.fromisoformat(data["date"]).strftime("%A %-d %B")
+    except (KeyError, ValueError, TypeError):
+        pass
 
-    refresh_meta = (
-        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">'
-        if REFRESH_SECONDS > 0 else ""
-    )
-    tz = data.get("tz_offset_hours", 0)
-    tz_label = f"UTC{'+' if tz >= 0 else ''}{tz:g}"
-
-    # Last device sync — the timestamp Garmin last received data, distinct from
-    # when this page was generated (issue 24).
     sync = data.get("last_sync") or {}
     sync_time = _fmt_sync_time(sync.get("upload_time"))
-    sync_html = ""
-    if sync_time:
-        device = f' &middot; {_e(sync.get("device_name"))}' if sync.get("device_name") else ""
-        sync_html = (
-            f'<div class="meta sync">Last Garmin sync: '
-            f'{_e(sync_time)}{device}</div>'
-        )
+    sync_line = f"Last sync {sync_time}" if sync_time else "Live from Garmin Connect"
+
+    refresh_meta = (
+        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if REFRESH_SECONDS > 0 else ""
+    )
+
+    panels = _panel_today(data) + _panel_trends(data) + _panel_activity(data) + _panel_fitness(data)
+
+    body = f"""
+<div style="min-height:100vh;background:
+    radial-gradient(120% 60% at 12% -10%, color-mix(in srgb, var(--color-accent) 13%, transparent), transparent 60%),
+    var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding-bottom:104px">
+  {_SVG_DEFS}
+  <div style="position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+      background:color-mix(in srgb, var(--color-bg) 78%, transparent);border-bottom:1px solid var(--color-divider)">
+    <div style="max-width:1120px;margin:0 auto;padding:11px 16px;display:flex;align-items:center;gap:12px">
+      <div style="width:26px;height:26px;border-radius:50%;border:1px solid var(--color-accent);
+          display:grid;place-items:center;color:var(--color-accent);font-size:15px"><i class="ph">{_PULSE}</i></div>
+      <div style="flex:1;min-width:0">
+        <div style="font-family:var(--font-heading);font-size:15px;line-height:1.1">{_e(weekday_line)}</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)">{_e(sync_line)}</div>
+      </div>
+    </div>
+  </div>
+
+  <input class="hide" type="radio" name="tab" id="tab-today" checked>
+  <input class="hide" type="radio" name="tab" id="tab-trends">
+  <input class="hide" type="radio" name="tab" id="tab-activity">
+  <input class="hide" type="radio" name="tab" id="tab-you">
+
+  <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
+
+  <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px 16px;pointer-events:none">
+    <div style="pointer-events:auto;display:flex;gap:2px;padding:6px;border-radius:999px;width:min(420px,100%);
+        background:color-mix(in srgb, var(--color-surface) 92%, transparent);backdrop-filter:blur(16px);box-shadow:var(--shadow-md)">
+      <label for="tab-today"><i class="ph">&#xe2c2;</i><span>Today</span></label>
+      <label for="tab-trends"><i class="ph">&#xe154;</i><span>Trends</span></label>
+      <label for="tab-activity"><i class="ph">&#xed60;</i><span>Activity</span></label>
+      <label for="tab-you"><i class="ph">&#xe2ac;</i><span>Fitness</span></label>
+    </div>
+  </div>
+</div>"""
 
     return (
         "<!doctype html>"
@@ -682,27 +1198,8 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"{refresh_meta}"
         "<title>Garmin Health Dashboard</title>"
-        # Apply a saved theme before first paint to avoid a flash of the wrong mode.
-        "<script>try{var t=localStorage.getItem('garmin-theme');"
-        "if(t)document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
-        + render_nav_html("dashboard", token)
-        + '<div class="page">'
-        "<header>"
-        '<button id="theme-toggle" type="button" aria-label="Toggle dark mode" '
-        'title="Toggle light / dark">\U0001F313</button>'
-        "<h1>Garmin Health Dashboard</h1>"
-        f'<div class="meta">{_e(data.get("date"))} &middot; '
-        f'generated {_e(data.get("generated_at"))} ({html.escape(tz_label)})</div>'
-        f"{sync_html}"
-        "</header>"
-        f'<div class="grid">{cards}</div>'
-        f"{activities}"
-        "<footer>Data fetched live from Garmin Connect on each page load."
-        + (f" Auto-refresh every {REFRESH_SECONDS}s." if REFRESH_SECONDS > 0 else "")
-        + "</footer>"
-        "</div>"
-        f"<script>{_THEME_TOGGLE_JS}</script>"
+        f"{body}"
         "</body></html>"
     )
