@@ -28,6 +28,7 @@ import html
 import json
 import os
 from datetime import date, datetime, timedelta, timezone
+from urllib.parse import urlencode
 
 # Auto-refresh the browser page this often (seconds). 0 disables refresh.
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
@@ -535,6 +536,11 @@ details.actcard { padding:12px; border-radius:var(--radius-md); background:var(-
 details.actcard[open] { box-shadow:0 0 0 1px var(--color-accent-700); }
 details.actcard summary { cursor:pointer; list-style:none; }
 details.actcard summary::-webkit-details-marker { display:none; }
+
+/* ── footer ── */
+.footer-link { display:block; text-align:center; padding:18px 16px 0; font-size:11px;
+               color:var(--color-neutral-600); text-decoration:none; }
+.footer-link:hover { color:var(--color-neutral-400); }
 
 /* ── interactive charts (crosshair line/area + tappable bars) ── */
 .js-bar { cursor:pointer; }
@@ -1193,6 +1199,15 @@ _SVG_DEFS = """
 </defs></svg>"""
 
 
+def _weekly_report_url(token: str | None) -> str:
+    """/weekly-summary, carrying the bearer token when one was supplied.
+
+    /weekly-summary serves the most recent report by default, so a bare link
+    to it is always "the latest weekly report."
+    """
+    return f"/weekly-summary?{urlencode({'token': token})}" if token else "/weekly-summary"
+
+
 # ── CHART INTERACTIVITY (vanilla JS, no external libraries) ────────────────
 # Reads data off the markup emitted above: `data-points` (JSON [{x,y,d,v}, ...]
 # in viewBox coordinates) on line/area charts, and `data-date`/`data-value`
@@ -1302,9 +1317,8 @@ def _fmt_sync_time(value):
 def render_dashboard_html(data: dict, token: str | None = None) -> str:
     """Render the dashboard data dict into a complete HTML document.
 
-    ``token`` is accepted for interface compatibility with the previous
-    dashboard (server.py threads the request's ``?token=`` bearer auth
-    through) but this design has no cross-page links to carry it on.
+    ``token`` is threaded into the footer link to the latest weekly report so
+    navigating there never drops the ``?token=`` bearer auth.
     """
     weekday_line = data.get("date") or ""
     try:
@@ -1345,6 +1359,8 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
   <input class="hide" type="radio" name="tab" id="tab-you">
 
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
+
+  <a class="footer-link" href="{_e(_weekly_report_url(token))}">Latest weekly report &rarr;</a>
 
   <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px 16px;pointer-events:none">
     <div style="pointer-events:auto;display:flex;gap:2px;padding:6px;border-radius:999px;width:min(420px,100%);

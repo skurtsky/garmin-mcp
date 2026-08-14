@@ -231,6 +231,18 @@ def test_none_values_render_as_dash():
     assert "&mdash;" in html
 
 
+def test_footer_links_to_latest_weekly_report():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'class="footer-link"' in html
+    assert 'href="/weekly-summary?token=t0k"' in html
+
+
+def test_footer_link_omits_token_param_when_none():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'href="/weekly-summary"' in html
+    assert "token=" not in html.split('class="footer-link"')[1].split("</a>")[0]
+
+
 def test_no_external_requests():
     """Tabs/range/PR-filter switching stays pure CSS (radio-driven visibility);
     the only JS is the inline chart-interactivity module — no network requests
