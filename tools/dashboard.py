@@ -2,14 +2,22 @@
 """Server-rendered health dashboard — "Nocturne" design.
 
 Gathers a live overview from the Garmin client and renders it as a single,
-self-contained HTML page (inline CSS, no JS, no build step, no external
-requests — the Phosphor icon font is embedded as a subsetted base64 woff2).
+self-contained HTML page (inline CSS, no build step, no external requests —
+the Phosphor icon font is embedded as a subsetted base64 woff2, and the small
+amount of interactivity below is a single inline `<script>`, no CDN/library).
 Each request pulls fresh data server-side.
 
 The four tabs (Today / Trends / Activity / Fitness) are all rendered into the
 page on every load; switching tabs, the trend range (7d/14d/30d), and the
 personal-records sport filter are pure CSS (`:checked` radio inputs driving
-sibling visibility) — there is no client-side JavaScript.
+sibling visibility) — no JS is involved there.
+
+Line/area trend charts and bar charts are touch/click-interactive: a small
+inline JS module (`_CHART_JS`) reads each chart's data points off its markup
+(a `data-points` JSON attribute on line charts, `data-date`/`data-value`
+attributes on bar segments) and drives a shared tooltip + crosshair overlay
+on mousemove/click/touch. The data itself stays server-rendered; JS only
+handles pointer interaction.
 
 The data-gathering entrypoint (`build_dashboard_data`) lazily imports the
 underlying tool functions so that `render_dashboard_html` — a pure function of
@@ -17,6 +25,7 @@ a data dict — can be imported and exercised without a live Garmin session.
 """
 import base64
 import html
+import json
 import os
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -370,20 +379,30 @@ def _spark(vals: list, w: int = 300, h: int = 78, p: int = 9):
     return {
         "line": line, "area": area, "min": vmin, "max": vmax, "avg": avg,
         "avgY": round(sy(avg), 1), "last": filled[-1], "first": filled[0],
+        "points": [(round(x, 2), round(y, 2)) for x, y in pts],
     }
 
 
 def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
-           big: bool = False, stroke: str | None = None, fill: str | None = None):
+           big: bool = False, stroke: str | None = None, fill: str | None = None,
+           chart_id: str | None = None):
     """A Trends-tab metric card's display values, sliced to the trailing `days`."""
     daily = (series or {}).get("daily") or []
-    vals = [p.get("value") for p in daily[-days:]]
+    sliced = daily[-days:]
+    vals = [p.get("value") for p in sliced]
     s = _spark(vals)
     if s is None:
         return None
     delta = s["last"] - s["first"]
     good = delta <= 0 if lower_better else delta >= 0
     f = (lambda v: f"{round(v):,}") if big else (lambda v: str(round(v)))
+    filled = _fill_gaps(vals)
+    unit_suffix = f" {unit}" if unit else ""
+    points = [
+        {"x": x, "y": y, "d": _short_date(sliced[i].get("date")) or "",
+         "v": f"{f(filled[i])}{unit_suffix}"}
+        for i, (x, y) in enumerate(s["points"])
+    ]
     return {
         "label": label, "unit": unit,
         "value": f(s["last"]), "avg": f(s["avg"]), "lo": f(s["min"]), "hi": f(s["max"]),
@@ -391,6 +410,8 @@ def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
         "avgY": s["avgY"], "line": s["line"], "area": s["area"],
         "stroke": stroke or "var(--color-accent)", "fill": fill or "url(#gArea)",
         "deltaColor": "#7fc9b0" if good else "#cf8a80",
+        "id": chart_id or "",
+        "points_json": html.escape(json.dumps(points), quote=True),
     }
 
 
@@ -520,10 +541,52 @@ details.actcard summary::-webkit-details-marker { display:none; }
 .footer-link { display:block; text-align:center; padding:18px 16px 0; font-size:11px;
                color:var(--color-neutral-600); text-decoration:none; }
 .footer-link:hover { color:var(--color-neutral-400); }
+
+/* ── interactive charts (crosshair line/area + tappable bars) ── */
+.js-bar { cursor:pointer; }
+.chart-tooltip { display:none; position:fixed; z-index:100; pointer-events:none;
+  background:var(--color-neutral-900); border:1px solid var(--color-divider); border-radius:6px;
+  padding:6px 10px; box-shadow:var(--shadow-md); white-space:nowrap; }
+.chart-tooltip .tt-date { font-size:10px; color:var(--color-neutral-500); }
+.chart-tooltip .tt-val { font-family:var(--font-heading); font-size:13px; margin-top:1px; }
 """ + _ICON_CSS
 
 
 # ── PANEL: TODAY ─────────────────────────────────────────────────────────────
+
+_STRESS_ZONES = [
+    ("Rest", "rest_stress_mins", "#4fae72"),
+    ("Low", "low_stress_mins", "#7fc9b0"),
+    ("Medium", "medium_stress_mins", "#d9a441"),
+    ("High", "high_stress_mins", "#cf5a4e"),
+]
+
+
+def _stress_breakdown_card(health: dict) -> str:
+    """Today's stress-zone minutes as a tappable bar chart, or '' if unavailable."""
+    stress = (health or {}).get("stress") or {}
+    zones = [(label, stress.get(key), color) for label, key, color in _STRESS_ZONES]
+    if not any(v is not None for _, v, _ in zones):
+        return ""
+    vmax = max((v or 0) for _, v, _ in zones) or 1
+    bars = "".join(
+        f'<div class="js-bar" data-date="{html.escape(label)} stress" '
+        f'data-value="{_fmt_dur(v) if v is not None else "No data"}" '
+        'style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;'
+        'align-items:center;gap:6px;height:100%">'
+        f'<div style="width:100%;border-radius:5px 5px 2px 2px;height:{max(round((v or 0) / vmax * 100), 3)}px;'
+        f'background:{color};min-height:3px"></div>'
+        f'<div style="font-size:10px;color:var(--color-neutral-600)">{html.escape(label)}</div></div>'
+        for label, v, color in zones
+    )
+    return f"""
+    <div>
+      <div class="section-title">Today's stress breakdown</div>
+      <div class="card" style="padding:14px">
+        <div style="display:flex;align-items:flex-end;gap:6px;height:92px">{bars}</div>
+      </div>
+    </div>"""
+
 
 def _factor_bar(label, pct):
     pct = 0 if pct is None else pct
@@ -731,7 +794,8 @@ def _panel_today(data: dict) -> str:
     today_wd = date.fromisoformat(today).weekday() if today else -1
     wd_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     week_bars = "".join(
-        f'<div style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;height:100%">'
+        f'<div class="js-bar" data-date="{html.escape(wd)}" data-value="{f"{round(v):,} load" if v else "No activity"}" '
+        f'style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:6px;height:100%">'
         f'<div style="width:100%;border-radius:5px 5px 2px 2px;height:{max(round(v/max_load*100),3) if v else 3}px;'
         f'background:{"var(--color-accent)" if i==today_wd else ("var(--color-accent-700)" if v else "var(--color-neutral-800)")};min-height:3px"></div>'
         f'<div style="font-size:10px;color:{"var(--color-accent-200)" if i==today_wd else "var(--color-neutral-600)"}">{wd}</div></div>'
@@ -756,9 +820,11 @@ def _panel_today(data: dict) -> str:
       <div style="display:flex;flex-direction:column;gap:8px">{act_rows or '<div class="muted" style="font-size:13px">No activities logged yet today.</div>'}</div>
     </div>""" if today_acts or activities is not None else ""
 
+    stress_card = _stress_breakdown_card(health)
+
     return (
         '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:22px">'
-        f"{hero}{quick_cards}{sleep_card}{week_card}{today_acts_card}"
+        f"{hero}{quick_cards}{stress_card}{sleep_card}{week_card}{today_acts_card}"
         "</section>"
     )
 
@@ -804,10 +870,14 @@ def _chart_card_html(c: dict) -> str:
         <div style="font-family:var(--font-heading);font-size:26px;line-height:1">{c["value"]}</div>
         <div style="font-size:11px;color:var(--color-neutral-500)">{html.escape(c["unit"])}</div>
       </div>
-      <svg viewBox="0 0 300 78" preserveAspectRatio="none" style="width:100%;height:66px;display:block">
+      <svg class="js-linechart" id="{c["id"]}" data-points="{c["points_json"]}"
+          viewBox="0 0 300 78" preserveAspectRatio="none" style="width:100%;height:66px;display:block">
         <path d="{c["area"]}" fill="{c["fill"]}"></path>
         <line x1="0" x2="300" y1="{c["avgY"]}" y2="{c["avgY"]}" stroke="var(--color-neutral-700)" stroke-width="1" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"></line>
         <path d="{c["line"]}" fill="none" stroke="{c["stroke"]}" stroke-width="1.7" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>
+        <line class="chart-crosshair" x1="0" x2="0" y1="0" y2="78" stroke="var(--color-neutral-400)" stroke-width="1" vector-effect="non-scaling-stroke" style="opacity:0;pointer-events:none"></line>
+        <circle class="chart-dot" cx="0" cy="0" r="3" fill="{c["stroke"]}" stroke="var(--color-bg)" stroke-width="1.5" style="opacity:0;pointer-events:none"></circle>
+        <rect class="chart-hit" x="0" y="0" width="300" height="78" style="fill:transparent;pointer-events:all;cursor:crosshair"></rect>
       </svg>
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
         <span>{c["lo"]}</span><span>avg {c["avg"]}</span><span>{c["hi"]}</span>
@@ -837,7 +907,8 @@ def _panel_trends(data: dict) -> str:
     for r in ranges:
         cards = "".join(
             _chart_card_html(chart) for chart in (
-                _chart(metrics.get(key), label, unit, lower_better, r, big=big, stroke=stroke, fill=fill)
+                _chart(metrics.get(key), label, unit, lower_better, r, big=big, stroke=stroke, fill=fill,
+                       chart_id=f"lc-{key}-{r}")
                 for key, label, unit, lower_better, big, stroke, fill in _CHART_SPECS
             ) if chart is not None
         )
@@ -882,8 +953,9 @@ def _panel_trends(data: dict) -> str:
     step_vals = [p.get("value") or 0 for p in step_daily]
     smax = max(step_vals) if step_vals else 1
     step_bars = "".join(
-        f'<div style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end">'
-        f'<div title="{_e(p.get("date"))} · {_e(p.get("value"))}" style="width:100%;border-radius:3px;'
+        f'<div class="js-bar" data-date="{_e(_short_date(p.get("date")))}" data-value="{_e(p.get("value"))} steps" '
+        f'style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end">'
+        f'<div style="width:100%;border-radius:3px;'
         f'height:{max(4, (p.get("value") or 0) / (smax or 1) * 100):.1f}%;'
         f'background:{"#4fae72" if (p.get("value") or 0) >= step_goal else "var(--color-neutral-700)"}"></div></div>'
         for p in step_daily
@@ -1136,6 +1208,100 @@ def _weekly_report_url(token: str | None) -> str:
     return f"/weekly-summary?{urlencode({'token': token})}" if token else "/weekly-summary"
 
 
+# ── CHART INTERACTIVITY (vanilla JS, no external libraries) ────────────────
+# Reads data off the markup emitted above: `data-points` (JSON [{x,y,d,v}, ...]
+# in viewBox coordinates) on line/area charts, and `data-date`/`data-value`
+# text attributes on tappable bar segments. Drives a single shared tooltip +
+# per-chart crosshair overlay; never touches the underlying data.
+
+_CHART_JS = """
+(function () {
+  var tip = document.getElementById('chart-tooltip');
+  if (!tip) return;
+  var tipDate = tip.querySelector('.tt-date');
+  var tipVal = tip.querySelector('.tt-val');
+
+  function pointFromEvent(e) {
+    if (e.touches && e.touches.length) return e.touches[0];
+    if (e.changedTouches && e.changedTouches.length) return e.changedTouches[0];
+    return e;
+  }
+
+  function showTip(clientX, clientY, dateText, valueText) {
+    tipDate.textContent = dateText;
+    tipVal.textContent = valueText;
+    tip.style.display = 'block';
+    var pad = 14;
+    var x = clientX + pad, y = clientY + pad;
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    if (x + tw > window.innerWidth) x = clientX - tw - pad;
+    if (y + th > window.innerHeight) y = clientY - th - pad;
+    tip.style.left = Math.max(4, x) + 'px';
+    tip.style.top = Math.max(4, y) + 'px';
+  }
+
+  function hideTip() { tip.style.display = 'none'; }
+
+  document.querySelectorAll('svg.js-linechart').forEach(function (svg) {
+    var pts;
+    try { pts = JSON.parse(svg.getAttribute('data-points') || '[]'); } catch (err) { return; }
+    if (!pts.length) return;
+    var hit = svg.querySelector('.chart-hit');
+    var crosshair = svg.querySelector('.chart-crosshair');
+    var dot = svg.querySelector('.chart-dot');
+    if (!hit || !crosshair || !dot) return;
+    var vb = svg.viewBox.baseVal;
+
+    function nearest(clientX) {
+      var rect = svg.getBoundingClientRect();
+      var vx = rect.width ? (clientX - rect.left) / rect.width * vb.width : pts[0].x;
+      var best = pts[0], bestDist = Infinity;
+      for (var i = 0; i < pts.length; i++) {
+        var d = Math.abs(pts[i].x - vx);
+        if (d < bestDist) { bestDist = d; best = pts[i]; }
+      }
+      return best;
+    }
+
+    function update(e) {
+      var p = pointFromEvent(e);
+      var pt = nearest(p.clientX);
+      crosshair.setAttribute('x1', pt.x);
+      crosshair.setAttribute('x2', pt.x);
+      crosshair.style.opacity = 1;
+      dot.setAttribute('cx', pt.x);
+      dot.setAttribute('cy', pt.y);
+      dot.style.opacity = 1;
+      showTip(p.clientX, p.clientY, pt.d, pt.v);
+    }
+
+    hit.addEventListener('mousemove', update);
+    hit.addEventListener('mousedown', update);
+    hit.addEventListener('mouseleave', function () {
+      crosshair.style.opacity = 0;
+      dot.style.opacity = 0;
+      hideTip();
+    });
+    hit.addEventListener('touchstart', function (e) { e.preventDefault(); update(e); }, { passive: false });
+    hit.addEventListener('touchmove', function (e) { e.preventDefault(); update(e); }, { passive: false });
+  });
+
+  document.querySelectorAll('.js-bar').forEach(function (bar) {
+    function activate(e) {
+      var p = pointFromEvent(e);
+      showTip(p.clientX, p.clientY, bar.getAttribute('data-date') || '', bar.getAttribute('data-value') || '');
+    }
+    bar.addEventListener('click', activate);
+    bar.addEventListener('touchstart', function (e) { e.preventDefault(); activate(e); }, { passive: false });
+  });
+
+  document.addEventListener('click', function (e) {
+    if (!e.target.closest('.js-linechart') && !e.target.closest('.js-bar')) hideTip();
+  });
+})();
+"""
+
+
 def _fmt_sync_time(value):
     if value is None:
         return None
@@ -1205,6 +1371,10 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
       <label for="tab-you"><i class="ph">&#xe2ac;</i><span>Fitness</span></label>
     </div>
   </div>
+
+  <div id="chart-tooltip" class="chart-tooltip" role="status" aria-live="polite">
+    <div class="tt-date"></div><div class="tt-val"></div>
+  </div>
 </div>"""
 
     return (
@@ -1217,5 +1387,6 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
         f"<style>{_STYLE}</style>"
         "</head><body>"
         f"{body}"
+        f"<script>{_CHART_JS}</script>"
         "</body></html>"
     )

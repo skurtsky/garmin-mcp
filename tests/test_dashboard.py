@@ -243,13 +243,44 @@ def test_footer_link_omits_token_param_when_none():
     assert "token=" not in html.split('class="footer-link"')[1].split("</a>")[0]
 
 
-def test_no_javascript_or_external_requests():
-    """The design is implemented as pure CSS (radio-driven visibility) — no
-    <script> tags and no network requests (fonts/icons are embedded)."""
+def test_no_external_requests():
+    """Tabs/range/PR-filter switching stays pure CSS (radio-driven visibility);
+    the only JS is the inline chart-interactivity module — no network requests
+    (fonts/icons are embedded, and the script has no external src)."""
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "<script" not in html
+    assert "<script src=" not in html
     assert "http://" not in html
     assert "https://" not in html
+
+
+def test_render_includes_inline_chart_interactivity_script():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "<script>" in html
+    assert "chart-tooltip" in html
+    assert "addEventListener" in html
+    assert "touchstart" in html and "touchmove" in html
+
+
+def test_line_charts_expose_point_data_for_tooltips():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'class="js-linechart"' in html
+    assert "data-points=" in html
+    assert "chart-crosshair" in html
+    assert "chart-dot" in html
+    assert "chart-hit" in html
+
+
+def test_bar_charts_are_tappable_with_date_and_value():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'class="js-bar"' in html
+    assert "data-date=" in html
+    assert "data-value=" in html
+
+
+def test_render_shows_stress_breakdown_bar_chart():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "stress breakdown" in html.lower()
+    assert "Rest" in html and "Medium" in html and "High" in html
 
 
 def test_build_dashboard_data_aggregates(monkeypatch):
