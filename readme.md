@@ -125,10 +125,11 @@ variable to override.
 
 ## Site Navigation
 
-`/training-plan`, `/weekly-summary`, and `/dashboard/gear` share a navigation
-bar so they aren't dead ends: a horizontal bar across the top on desktop, a
-bottom tab bar on mobile, with the current page highlighted and the `?token=`
-carried into every link.
+`/training-plan` and `/weekly-summary` share a navigation bar so they aren't
+dead ends: a horizontal bar across the top on desktop, a bottom tab bar on
+mobile, with the current page highlighted and the `?token=` carried into every
+link. Its "Gear" entry links straight into the dashboard's Gear tab
+(`/dashboard?tab=gear`).
 
 The bar is rendered by `tools/navbar.py` and injected server-side at request
 time (never baked into the uploaded plan or report files, so re-uploading picks
@@ -136,8 +137,8 @@ up the current nav automatically). Its CSS is scoped under a `#gm-nav` wrapper
 so it can't collide with the Svelte plan app or a report's own styling.
 
 `/dashboard` (below) has its own self-contained design with its own tab bar and
-doesn't use this shared nav — it links out to the gear tracker and the latest
-weekly report from its footer instead.
+doesn't use this shared nav — it links out to the latest weekly report from
+its footer instead.
 
 ## Dashboard
 
@@ -150,9 +151,10 @@ query param:
 http://localhost:8000/dashboard?token=YOUR_TOKEN
 ```
 
-It's a single self-contained HTML page (inline CSS, no external requests, no
-client-side JavaScript — tab/filter switching is pure CSS via `:checked` radio
-inputs) that fetches fresh data server-side on each load. Four tabs:
+It's a single self-contained HTML page (inline CSS, no external requests —
+`?tab=` selects which one opens, and switching between them client-side is
+pure CSS via `:checked` radio inputs, no JS) that fetches fresh data
+server-side on each load. Five tabs:
 
 - **Today** — training readiness (score, level, contributing factors), body
   battery, steps vs. goal, resting HR with a 14-day sparkline, HRV status,
@@ -167,6 +169,8 @@ inputs) that fetches fresh data server-side on each load. Four tabs:
 - **Fitness** — VO₂max (run/bike), thresholds (LTHR/LT pace/FTP/weight),
   approximate heart-rate zones derived from LTHR, and personal records
   grouped by sport with a filter.
+- **Gear** — bike component maintenance tracking; see
+  [Gear Tracker](#gear-tracker) below.
 
 Optional environment variables:
 
@@ -263,11 +267,13 @@ Optional environment variables:
 Garmin's `gear` tool reports cumulative distance per piece of gear (shoes,
 bikes) but knows nothing about individual wear components on a bike — chain,
 brake pads, tires, and so on — or when they were last serviced. The gear
-tracker fills that gap, hosted behind the same `?token=` auth:
+tracker fills that gap, as the **Gear** tab on the [dashboard](#dashboard):
 
 ```
-http://localhost:8000/dashboard/gear?token=YOUR_TOKEN
+http://localhost:8000/dashboard?tab=gear&token=YOUR_TOKEN
 ```
+
+(`/dashboard/gear` — its old standalone URL — redirects here.)
 
 It shows an overview card per registered piece of active gear (distance, time,
 a status dot), a component table per bike (last serviced, distance since
@@ -285,14 +291,14 @@ worst-tracked component.
 
 | Route | Method | Description |
 |---|---|---|
-| `/dashboard/gear` | `GET` | The gear tracker page (overview, bike component tables, maintenance log) |
+| `/dashboard/gear` | `GET` | Redirects to `/dashboard?tab=gear` |
 | `/api/gear/components` | `GET` | Components + live maintenance status as JSON; optional `?gear_name=` filter |
-| `/api/gear/components` | `POST` | Add or edit a component definition (JSON body, or the page's own forms) |
-| `/api/gear/maintenance` | `POST` | Log a maintenance action (JSON body, or the page's own forms) |
+| `/api/gear/components` | `POST` | Add or edit a component definition (JSON body, or the Gear tab's own forms) |
+| `/api/gear/maintenance` | `POST` | Log a maintenance action (JSON body, or the Gear tab's own forms) |
 
 `POST` routes accept either a JSON body (returns JSON) or an HTML form post
-(redirects back to the page) — the same endpoints back both the in-page forms
-and programmatic use.
+(redirects back to the Gear tab) — the same endpoints back both the in-page
+forms and programmatic use.
 
 Components and maintenance log entries are stored in a SQLite database
 (`gear-tracker.db`) in the same mounted Azure File Share used for the Garmin
@@ -359,7 +365,7 @@ garmin-mcp/
 │   ├── activities.py      # get_activities, get_activity, get_activity_summary, get_weekly_summary, get_swim_records
 │   ├── challenges.py      # get_active_goals, get_earned_badges, get_adhoc_challenges
 │   ├── dashboard.py       # build_dashboard_data, render_dashboard_html (/dashboard route)
-│   ├── gear_tracker.py    # storage + routes + MCP tools for bike component maintenance (/dashboard/gear)
+│   ├── gear_tracker.py    # storage + API routes + MCP tools for bike component maintenance (dashboard.py's Gear tab)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── navbar.py          # shared site nav bar injected into every hosted page
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records

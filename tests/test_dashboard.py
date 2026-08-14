@@ -5,7 +5,17 @@ These are offline unit tests: `render_dashboard_html` is a pure function of a
 data dict, and `build_dashboard_data` is exercised with the underlying tool
 functions monkeypatched, so no live Garmin session is needed.
 """
+import pytest
+
 from tools import dashboard
+
+
+@pytest.fixture(autouse=True)
+def gear_db(tmp_path, monkeypatch):
+    """render_dashboard_html's Gear panel reads the maintenance log straight
+    from tools.gear_tracker (list_maintenance_log) — redirect it at a tmp
+    file so these tests stay fully offline, matching every other test here."""
+    monkeypatch.setenv("GEAR_TRACKER_DB_PATH", str(tmp_path / "gear-tracker.db"))
 
 
 def _trend_series(values, unit="bpm"):
@@ -92,6 +102,28 @@ SAMPLE = {
     "athlete_err": None,
     "last_sync": {"device_name": "Forerunner 965", "upload_time": "2026-07-17T08:05:00.0"},
     "last_sync_err": None,
+    "gear_status": {"gear": [
+        {"name": "Canyon Ultimate", "model": None, "uuid": "bike-1", "activity_type": "Bike",
+         "status": "active", "distance_km": 5800.0, "duration_min": 3000.0,
+         "total_activities": 40, "max_distance_km": None,
+         "date_begin": "2025-01-01", "date_end": None,
+         "status_indicator": "yellow", "status_emoji": "\U0001F7E1", "status_color": "#d9a441",
+         "is_bike": True, "is_shoe": False,
+         "components": [
+             {"id": 1, "bike_uuid": "bike-1", "bike_name": "Canyon Ultimate", "name": "Chain",
+              "install_date": "2026-01-01", "install_distance_km": 5420.0,
+              "maintenance_interval_km": 400.0, "last_serviced": "2026-01-01",
+              "ever_serviced": False, "distance_since_km": 380.0,
+              "status": "yellow", "status_emoji": "\U0001F7E1"},
+         ]},
+        {"name": "Nike Vaporfly", "model": None, "uuid": "shoe-1", "activity_type": "Shoes",
+         "status": "active", "distance_km": 320.0, "duration_min": None,
+         "total_activities": 20, "max_distance_km": 800.0,
+         "date_begin": "2025-01-01", "date_end": None,
+         "status_indicator": "green", "status_emoji": "\U0001F7E2", "status_color": "#4fae72",
+         "is_bike": False, "is_shoe": True, "components": []},
+    ]},
+    "gear_status_err": None,
 }
 
 
@@ -101,12 +133,57 @@ def test_render_is_a_complete_document():
     assert html.endswith("</html>")
 
 
-def test_render_includes_all_four_tabs():
+def test_render_includes_all_five_tabs():
     html = dashboard.render_dashboard_html(SAMPLE)
-    for marker in ("tp-today", "tp-trends", "tp-activity", "tp-you"):
+    for marker in ("tp-today", "tp-trends", "tp-activity", "tp-you", "tp-gear"):
         assert marker in html
-    for label in ("Trends", "Activity", "Fitness"):
+    for label in ("Trends", "Activity", "Fitness", "Gear"):
         assert label in html
+
+
+def test_render_today_tab_checked_by_default():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'id="tab-today" checked' in html
+    assert 'id="tab-gear" checked' not in html
+
+
+def test_render_gear_tab_checked_when_requested():
+    html = dashboard.render_dashboard_html(SAMPLE, initial_tab="gear")
+    assert 'id="tab-gear" checked' in html
+    assert 'id="tab-today" checked' not in html
+
+
+def test_render_unknown_initial_tab_falls_back_to_today():
+    html = dashboard.render_dashboard_html(SAMPLE, initial_tab="not-a-real-tab")
+    assert 'id="tab-today" checked' in html
+
+
+def test_render_gear_panel_shows_overview_and_components():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "Canyon Ultimate" in html
+    assert "Nike Vaporfly" in html
+    assert "Chain" in html
+    assert "380" in html  # distance since service
+    assert "400" in html  # maintenance interval
+
+
+def test_render_gear_panel_forms_carry_token():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'action="/api/gear/maintenance?token=t0k"' in html
+    assert 'action="/api/gear/components?token=t0k"' in html
+
+
+def test_render_gear_panel_handles_missing_data():
+    data = {**SAMPLE, "gear_status": None, "gear_status_err": "AuthError: expired"}
+    html = dashboard.render_dashboard_html(data)
+    assert "Gear tracker unavailable" in html
+    assert "AuthError" in html
+
+
+def test_render_no_longer_links_out_to_a_separate_gear_page():
+    """Gear moved from a footer link into the tab bar (follow-up to #53)."""
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert "/dashboard/gear" not in html
 
 
 def test_render_shows_key_values():

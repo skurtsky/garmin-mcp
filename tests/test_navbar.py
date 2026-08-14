@@ -11,15 +11,25 @@ def _markup(nav: str) -> str:
     return nav[nav.index("</style>"):]
 
 
-def test_nav_links_all_three_pages():
+def test_nav_links_all_four_pages():
     nav = navbar.render_nav_html("dashboard", "t0k")
 
     assert 'href="/dashboard?token=t0k"' in nav
     assert 'href="/training-plan?token=t0k"' in nav
     assert 'href="/weekly-summary?token=t0k"' in nav
-    assert "Dashboard" in nav and "Training Plan" in nav and "Weekly Summary" in nav
+    assert 'href="/dashboard?tab=gear&amp;token=t0k"' in nav
+    assert "Dashboard" in nav and "Training Plan" in nav and "Weekly Summary" in nav and "Gear" in nav
     # Brand links home.
     assert "Garmin MCP" in nav
+
+
+def test_nav_gear_link_has_no_double_query_string_without_a_token():
+    """The Gear entry's path already carries ?tab=gear — appending the token
+    must use '&', not a second '?' (which would break the URL)."""
+    nav = navbar.render_nav_html("dashboard")
+
+    assert 'href="/dashboard?tab=gear"' in nav
+    assert "?tab=gear?" not in nav
 
 
 def test_nav_highlights_the_active_page_only():

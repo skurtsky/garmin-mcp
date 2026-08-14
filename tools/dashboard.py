@@ -102,6 +102,7 @@ def build_dashboard_data() -> dict:
     from tools.performance import get_personal_records
     from tools.profile import get_athlete_profile
     from tools.challenges import get_active_goals
+    from tools.gear_tracker import build_gear_status
 
     now = _local_now()
     today = now.date().isoformat()
@@ -118,6 +119,7 @@ def build_dashboard_data() -> dict:
     active_goals, active_goals_err = _safe(get_active_goals)
     athlete, athlete_err = _safe(get_athlete_profile)
     last_sync, last_sync_err = _safe(_fetch_last_sync)
+    gear_status, gear_status_err = _safe(build_gear_status)
 
     return {
         "date": today,
@@ -135,6 +137,7 @@ def build_dashboard_data() -> dict:
         "active_goals": active_goals, "active_goals_err": active_goals_err,
         "athlete": athlete, "athlete_err": athlete_err,
         "last_sync": last_sync, "last_sync_err": last_sync_err,
+        "gear_status": gear_status, "gear_status_err": gear_status_err,
     }
 
 
@@ -280,6 +283,7 @@ _LOTUS = ""
 _BOAT = ""
 _MEDAL = ""
 _PULSE = ""
+_WRENCH = ""
 
 _SPORT_STYLE = {
     "running": (_RUN, "#e2734a"), "trail_running": (_RUN, "#e2734a"),
@@ -418,7 +422,7 @@ def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
 # ── ICON FONT (Phosphor, subsetted to the glyphs this page uses) ───────────
 
 _PHOSPHOR_WOFF2_B64 = (
-    "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"
+    "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"
 )
 
 _ICON_CSS = (
@@ -499,7 +503,8 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #tab-today:checked ~ .tabpanels .tp-today,
 #tab-trends:checked ~ .tabpanels .tp-trends,
 #tab-activity:checked ~ .tabpanels .tp-activity,
-#tab-you:checked ~ .tabpanels .tp-you { display:flex; }
+#tab-you:checked ~ .tabpanels .tp-you,
+#tab-gear:checked ~ .tabpanels .tp-gear { display:flex; }
 #range-7:checked ~ .range-body .rs-7,
 #range-14:checked ~ .range-body .rs-14,
 #range-30:checked ~ .range-body .rs-30 { display:grid; }
@@ -525,10 +530,35 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #tab-today:checked ~ .botnav label[for=tab-today],
 #tab-trends:checked ~ .botnav label[for=tab-trends],
 #tab-activity:checked ~ .botnav label[for=tab-activity],
-#tab-you:checked ~ .botnav label[for=tab-you] {
+#tab-you:checked ~ .botnav label[for=tab-you],
+#tab-gear:checked ~ .botnav label[for=tab-gear] {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
   color: var(--color-accent-200);
 }
+
+/* ── gear tracker forms (issue 53's tab) ── */
+.gear-form { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-top:10px;
+             padding:10px; background:var(--color-neutral-900); border-radius:var(--radius-md); }
+.gear-form label { font-size:10px; color:var(--color-neutral-500); display:flex;
+                    flex-direction:column; gap:3px; }
+.gear-form input, .gear-form select {
+  font:inherit; font-size:12px; color:var(--color-text); background:var(--color-bg);
+  border:1px solid var(--color-divider); border-radius:6px; padding:.35rem .5rem;
+}
+.gear-form button { font:inherit; font-size:12px; cursor:pointer; border-radius:6px;
+                     border:1px solid var(--color-accent-700); background:transparent;
+                     color:var(--color-accent-200); padding:.4rem .8rem; align-self:flex-end; }
+.gear-form button:hover { background:color-mix(in srgb, var(--color-accent) 18%, transparent); }
+details.gear-actions summary { cursor:pointer; list-style:none; color:var(--color-accent-300);
+                                font-size:11px; display:inline-block; margin-right:14px; }
+details.gear-actions summary::-webkit-details-marker { display:none; }
+.gear-table { width:100%; border-collapse:collapse; }
+.gear-table th, .gear-table td { text-align:left; padding:8px 10px; font-size:12px;
+                                  border-bottom:1px solid var(--color-divider); }
+.gear-table th { color:var(--color-neutral-500); font-weight:500; font-size:10px;
+                  text-transform:uppercase; letter-spacing:.05em; }
+.gear-table tr:last-child td { border-bottom:none; }
+.gear-log-list { max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; }
 
 /* ── activity expand ── */
 details.actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
@@ -1186,6 +1216,199 @@ def _panel_fitness(data: dict) -> str:
     </section>"""
 
 
+# ── PANEL: GEAR ──────────────────────────────────────────────────────────────
+# Bike component maintenance tracking (issue 53) — Garmin's own gear distance
+# joined with the local gear-tracker database (tools/gear_tracker.py). The
+# API routes it posts to (/api/gear/maintenance, /api/gear/components) are
+# served by that module's Starlette sub-app, mounted alongside /dashboard.
+
+_GEAR_ACTIONS = ("lubed", "replaced", "serviced", "adjusted", "other")
+
+
+def _gear_status_dot(status: str) -> str:
+    from tools.gear_tracker import _STATUS_COLOR
+    color = _STATUS_COLOR.get(status, _STATUS_COLOR["unknown"])
+    return f'<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:{color};flex:0 0 auto"></span>'
+
+
+def _gear_overview_card(g: dict) -> str:
+    stats = [("Distance", _fmt_km(g.get("distance_km")))]
+    if g.get("duration_min"):
+        stats.append(("Time", _fmt_dur(g.get("duration_min"))))
+    stats_html = "".join(
+        f'<div><div style="font-family:var(--font-heading);font-size:17px">{v}</div>'
+        f'<div style="font-size:10px;color:var(--color-neutral-500)">{html.escape(k)}</div></div>'
+        for k, v in stats
+    )
+    return f"""
+    <div class="card" style="padding:14px;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        {_gear_status_dot(g["status_indicator"])}
+        <div style="min-width:0;flex:1">
+          <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(g.get("name"))}</div>
+          <div style="font-size:10px;color:var(--color-neutral-500);text-transform:uppercase;letter-spacing:.06em">{_e(g.get("activity_type") or "Gear")}</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:16px">{stats_html}</div>
+    </div>"""
+
+
+def _gear_component_row(c: dict, token: str | None) -> str:
+    interval = c.get("maintenance_interval_km")
+    interval_txt = _fmt_km(interval) if interval else "N/A"
+    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
+    interval_value = "" if interval is None else f"{interval:g}"
+    today_iso = date.today().isoformat()
+    return f"""
+    <tr>
+      <td>{_e(c["name"])}</td>
+      <td>{_e(c["last_serviced"])}</td>
+      <td>{_fmt_km(c.get("distance_since_km"))}</td>
+      <td>{interval_txt}</td>
+      <td>{c["status_emoji"]}</td>
+    </tr>
+    <tr>
+      <td colspan="5" style="padding-top:0;border-bottom:1px solid var(--color-divider)">
+        <details class="gear-actions">
+          <summary>Log maintenance</summary>
+          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
+            <input type="hidden" name="component_id" value="{c['id']}">
+            <label>Action<select name="action">{action_options}</select></label>
+            <label>Date<input type="date" name="date" value="{today_iso}"></label>
+            <label>Notes<input type="text" name="notes" placeholder="optional"></label>
+            <button type="submit">Log</button>
+          </form>
+        </details>
+        <details class="gear-actions">
+          <summary>Edit</summary>
+          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}">
+            <input type="hidden" name="component_id" value="{c['id']}">
+            <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
+            <label>Name<input type="text" name="name" value="{_e(c['name'])}" required></label>
+            <label>Install date<input type="date" name="install_date" value="{_e(c['install_date'])}"></label>
+            <label>Interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
+                value="{interval_value}" placeholder="N/A"></label>
+            <button type="submit">Save</button>
+          </form>
+        </details>
+      </td>
+    </tr>"""
+
+
+def _gear_bike_block(g: dict, token: str | None) -> str:
+    rows = "".join(_gear_component_row(c, token) for c in g["components"])
+    table = f"""
+    <table class="gear-table">
+      <thead><tr><th>Component</th><th>Last serviced</th><th>Distance since</th>
+        <th>Interval</th><th>Status</th></tr></thead>
+      <tbody>{rows}</tbody>
+    </table>""" if g["components"] else '<div class="muted" style="font-size:12px">No components tracked yet.</div>'
+
+    today_iso = date.today().isoformat()
+    add_form = f"""
+    <details class="gear-actions" style="margin-top:8px">
+      <summary>+ Add component</summary>
+      <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}">
+        <input type="hidden" name="bike_uuid" value="{_e(g.get('uuid') or '')}">
+        <input type="hidden" name="bike_name" value="{_e(g.get('name') or '')}">
+        <label>Name<input type="text" name="name" placeholder="e.g. Chain" required></label>
+        <label>Install date<input type="date" name="install_date" value="{today_iso}"></label>
+        <label>Interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
+            placeholder="optional"></label>
+        <button type="submit">Add</button>
+      </form>
+    </details>"""
+
+    return f"""
+    <div class="card" style="padding:14px;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px">
+        {_gear_status_dot(g["status_indicator"])}
+        <div style="font-size:13px;font-weight:600">{_e(g.get("name"))}</div>
+        <div class="muted" style="font-size:11px">&middot; {_fmt_km(g.get("distance_km"))}</div>
+      </div>
+      <div style="overflow-x:auto">{table}</div>
+      {add_form}
+    </div>"""
+
+
+def _gear_log_entry(entry: dict, bike_names: dict) -> str:
+    bike_name = bike_names.get(entry.get("bike_uuid")) or entry.get("bike_name")
+    notes = (f'<div style="margin-top:3px;font-size:11px;color:var(--color-neutral-400)">'
+             f'{_e(entry.get("notes"))}</div>') if entry.get("notes") else ""
+    return f"""
+    <div class="card" style="padding:10px 12px;gap:2px">
+      <div style="font-size:12px"><strong>{_e(entry.get("action", "").title())}</strong> &mdash;
+        {_e(bike_name)} / {_e(entry.get("component_name"))}</div>
+      <div style="font-size:10px;color:var(--color-neutral-500)">{_e(entry["date"])} &middot;
+        at {_fmt_km(entry["distance_at_service_km"])}</div>
+      {notes}
+    </div>"""
+
+
+def _gear_log_form(components: list[dict], bike_names: dict, token: str | None) -> str:
+    if not components:
+        return ""
+    options = "".join(
+        f'<option value="{c["id"]}">'
+        f'{_e(bike_names.get(c.get("bike_uuid")) or c.get("bike_name"))} &mdash; {_e(c["name"])}</option>'
+        for c in components
+    )
+    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
+    today_iso = date.today().isoformat()
+    return f"""
+    <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
+      <label>Component<select name="component_id">{options}</select></label>
+      <label>Action<select name="action">{action_options}</select></label>
+      <label>Date<input type="date" name="date" value="{today_iso}"></label>
+      <label>Notes<input type="text" name="notes" placeholder="optional"></label>
+      <button type="submit">+ Log maintenance</button>
+    </form>"""
+
+
+def _panel_gear(data: dict, token: str | None = None) -> str:
+    gear_status = data.get("gear_status")
+    if not gear_status:
+        err = data.get("gear_status_err") or "no data"
+        return f'<section class="panel tabpanel tp-gear"><div class="err">Gear tracker unavailable — {_e(err)}</div></section>'
+
+    gear = gear_status.get("gear") or []
+    active_gear = [g for g in gear if (g.get("status") or "active").lower() == "active"]
+    bikes = [g for g in active_gear if g["is_bike"]]
+
+    cards_html = "".join(_gear_overview_card(g) for g in active_gear) or \
+        '<div class="muted" style="font-size:13px">No registered gear yet — add shoes or a bike in Garmin Connect.</div>'
+
+    bikes_html = "".join(
+        f'<div style="margin-bottom:12px">{_gear_bike_block(g, token)}</div>' for g in bikes
+    ) or '<div class="muted" style="font-size:13px">No bikes registered yet.</div>'
+
+    bike_names = {g["uuid"]: g.get("name") for g in gear if g.get("uuid")}
+    all_components = [c for g in bikes for c in g["components"]]
+
+    from tools.gear_tracker import list_maintenance_log
+    log_entries, log_err = _safe(list_maintenance_log, limit=50)
+    log_html = "".join(_gear_log_entry(e, bike_names) for e in (log_entries or [])) or \
+        f'<div class="muted" style="font-size:13px">{"No maintenance logged yet." if not log_err else f"Log unavailable — {_e(log_err)}"}</div>'
+
+    return f"""
+    <section class="panel tabpanel tp-gear" style="flex-direction:column;gap:16px">
+      <div style="font-family:var(--font-heading);font-size:20px">Gear</div>
+      <div>
+        <div class="section-title">Overview</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">{cards_html}</div>
+      </div>
+      <div>
+        <div class="section-title">Bike components</div>
+        {bikes_html}
+      </div>
+      <div>
+        <div class="section-title">Maintenance log</div>
+        {_gear_log_form(all_components, bike_names, token)}
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;max-height:340px;overflow-y:auto">{log_html}</div>
+      </div>
+    </section>"""
+
+
 # ── ASSEMBLY ─────────────────────────────────────────────────────────────────
 
 _SVG_DEFS = """
@@ -1208,9 +1431,9 @@ def _weekly_report_url(token: str | None) -> str:
     return f"/weekly-summary?{urlencode({'token': token})}" if token else "/weekly-summary"
 
 
-def _gear_tracker_url(token: str | None) -> str:
-    """/dashboard/gear, carrying the bearer token when one was supplied."""
-    return f"/dashboard/gear?{urlencode({'token': token})}" if token else "/dashboard/gear"
+def _gear_api_url(path: str, token: str | None) -> str:
+    """A /api/gear/* route URL, carrying the bearer token when one was supplied."""
+    return f"{path}?{urlencode({'token': token})}" if token else path
 
 
 # ── CHART INTERACTIVITY (vanilla JS, no external libraries) ────────────────
@@ -1335,11 +1558,25 @@ def _fmt_sync_time(value):
     return str(value).replace("T", " ").split(".")[0][-8:-3] if "T" in str(value) else str(value)
 
 
-def render_dashboard_html(data: dict, token: str | None = None) -> str:
+_TAB_IDS = {
+    "today": "tab-today", "trends": "tab-trends", "activity": "tab-activity",
+    "fitness": "tab-you", "gear": "tab-gear",
+}
+_DEFAULT_TAB = "today"
+
+
+def render_dashboard_html(data: dict, token: str | None = None,
+                          initial_tab: str | None = None) -> str:
     """Render the dashboard data dict into a complete HTML document.
 
-    ``token`` is threaded into the footer link to the latest weekly report so
-    navigating there never drops the ``?token=`` bearer auth.
+    ``token`` is threaded into the footer link to the latest weekly report,
+    and into every gear-tracker form action, so navigating or submitting
+    never drops the ``?token=`` bearer auth.
+
+    ``initial_tab`` (one of "today" (default), "trends", "activity",
+    "fitness", "gear") selects which tab starts open — used so a gear-tracker
+    form submission can redirect back to the Gear tab specifically rather
+    than always landing on Today.
     """
     weekday_line = data.get("date") or ""
     try:
@@ -1355,7 +1592,10 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if REFRESH_SECONDS > 0 else ""
     )
 
-    panels = _panel_today(data) + _panel_trends(data) + _panel_activity(data) + _panel_fitness(data)
+    active_tab_id = _TAB_IDS.get(initial_tab, _TAB_IDS[_DEFAULT_TAB])
+
+    panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data)
+             + _panel_fitness(data) + _panel_gear(data, token))
 
     body = f"""
 <div style="min-height:100vh;background:
@@ -1374,15 +1614,15 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
     </div>
   </div>
 
-  <input class="hide" type="radio" name="tab" id="tab-today" checked>
-  <input class="hide" type="radio" name="tab" id="tab-trends">
-  <input class="hide" type="radio" name="tab" id="tab-activity">
-  <input class="hide" type="radio" name="tab" id="tab-you">
+  <input class="hide" type="radio" name="tab" id="tab-today"{" checked" if active_tab_id == "tab-today" else ""}>
+  <input class="hide" type="radio" name="tab" id="tab-trends"{" checked" if active_tab_id == "tab-trends" else ""}>
+  <input class="hide" type="radio" name="tab" id="tab-activity"{" checked" if active_tab_id == "tab-activity" else ""}>
+  <input class="hide" type="radio" name="tab" id="tab-you"{" checked" if active_tab_id == "tab-you" else ""}>
+  <input class="hide" type="radio" name="tab" id="tab-gear"{" checked" if active_tab_id == "tab-gear" else ""}>
 
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
 
   <a class="footer-link" href="{_e(_weekly_report_url(token))}">Latest weekly report &rarr;</a>
-  <a class="footer-link" href="{_e(_gear_tracker_url(token))}">Gear tracker &rarr;</a>
 
   <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px 16px;pointer-events:none">
     <div style="pointer-events:auto;display:flex;gap:2px;padding:6px;border-radius:999px;width:min(420px,100%);
@@ -1391,6 +1631,7 @@ def render_dashboard_html(data: dict, token: str | None = None) -> str:
       <label for="tab-trends"><i class="ph">&#xe154;</i><span>Trends</span></label>
       <label for="tab-activity"><i class="ph">&#xed60;</i><span>Activity</span></label>
       <label for="tab-you"><i class="ph">&#xe2ac;</i><span>Fitness</span></label>
+      <label for="tab-gear"><i class="ph">{_WRENCH}</i><span>Gear</span></label>
     </div>
   </div>
 

@@ -316,7 +316,7 @@ def log_maintenance(gear_name: str, component: str, action: str,
                     notes: Optional[str] = None) -> dict:
     """
     Log a maintenance action against a tracked bike component (chain lubed,
-    tires replaced, etc.) — also viewable/loggable at /dashboard/gear.
+    tires replaced, etc.) — also viewable/loggable in the Gear tab at /dashboard.
 
     Resolves the bike by its Garmin gear name and the component by name
     (case-insensitive), auto-creating the component on this bike if it
@@ -694,10 +694,12 @@ def build_asgi_app():
             try:
                 # The token is threaded into the nav links so navigating to the
                 # training plan or the weekly reports keeps the ?token= auth.
-                token = parse_qs(scope.get("query_string", b"").decode()).get(
-                    "token", [None]
-                )[0]
-                page = render_dashboard_html(build_dashboard_data(), token)
+                # ?tab= opens a specific tab (e.g. "gear" — used by gear-tracker
+                # form submissions redirecting back here) instead of Today.
+                query = parse_qs(scope.get("query_string", b"").decode())
+                token = query.get("token", [None])[0]
+                initial_tab = query.get("tab", [None])[0]
+                page = render_dashboard_html(build_dashboard_data(), token, initial_tab)
                 response = HTMLResponse(page)
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Dashboard render failed")
@@ -705,9 +707,9 @@ def build_asgi_app():
             await response(scope, receive, send)
             return
 
-        # Gear tracker — bike component maintenance tracking (issue 53), same
-        # bearer-token auth. Checked ahead of training-plan/weekly-summary
-        # since its page lives under /dashboard/gear.
+        # Gear tracker API (issue 53) — the page itself is the Gear tab above
+        # (/dashboard?tab=gear); this only serves the JSON/form API those
+        # forms post to, plus a redirect for the old standalone page URL.
         if scope["type"] == "http" and gear_tracker.owns_path(scope.get("path", "")):
             await gear_tracker_app(scope, receive, send)
             return

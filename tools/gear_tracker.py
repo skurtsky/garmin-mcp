@@ -26,11 +26,15 @@ Storage lives on the same Azure File Share already mounted for the Garmin
 OAuth tokens (``~/.garminconnect``), under ``gear-tracker.db``.
 ``GEAR_TRACKER_DB_PATH`` overrides the location (used by tests).
 
-Routes (all behind the same ``?token=`` bearer auth as ``/mcp`` and
-``/dashboard``, enforced by the wrapper in server.py):
+Viewing lives in the dashboard's Gear tab (tools/dashboard.py, ``/dashboard``
+— its ``tp-gear`` panel calls :func:`build_gear_status`, styled to match the
+rest of the Nocturne dashboard). This module owns the data layer plus the
+JSON/form API those forms post to (all behind the same ``?token=`` bearer
+auth as ``/mcp`` and ``/dashboard``, enforced by the wrapper in server.py):
 
-    GET  /dashboard/gear        — the gear tracker page (overview, bike
-                                   component tables, maintenance log)
+    GET  /dashboard/gear        — redirects to /dashboard?tab=gear (the page
+                                   used to be standalone; this forwards
+                                   existing links/bookmarks)
     GET  /api/gear/components   — components + live maintenance status (JSON)
     POST /api/gear/maintenance  — log a maintenance action
     POST /api/gear/components   — add/edit a component definition
@@ -39,7 +43,6 @@ Two MCP tools (``log_maintenance``, ``get_maintenance_status``) expose the
 same operations to the assistant, so a coach prompt can flag overdue
 maintenance and log it once confirmed.
 """
-import html
 import json
 import logging
 import os
@@ -49,10 +52,8 @@ from datetime import date, datetime, timezone
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
-from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse
 from starlette.routing import Route
-
-from tools.navbar import render_nav_html
 
 logger = logging.getLogger(__name__)
 
@@ -565,294 +566,48 @@ def get_maintenance_status(gear_name: str | None = None) -> dict:
     return build_gear_status(gear_name=gear_name)
 
 
-# ── RENDERING ─────────────────────────────────────────────────────────────────
-
-_STYLE = """
-:root {
-  color-scheme: dark;
-  --bg:#161826; --surface:#232532; --surface-2:#2b2e3d; --fg:#e9e9ed; --muted:#9397ab;
-  --divider:color-mix(in srgb, #e9e9ed 16%, transparent);
-  --accent:#9184d9; --accent-200:#e7e5fe;
-  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-}
-* { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--fg); font-family:var(--font);
-       font-size:15px; line-height:1.5; }
-main { max-width:920px; margin:0 auto; padding:20px 16px 64px; }
-h1 { font-size:22px; font-weight:600; margin:0 0 4px; }
-h2 { font-size:15px; font-weight:600; margin:28px 0 10px; letter-spacing:.02em; }
-.muted { color:var(--muted); font-size:.85em; }
-.error { color:#cf8a80; background:color-mix(in srgb, #cf5a4e 14%, var(--surface));
-         border-radius:8px; padding:.7rem 1rem; margin:0 0 1rem; font-size:.9em; }
-.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; }
-.card { background:var(--surface); border-radius:10px; padding:14px 16px;
-        box-shadow:0 0 0 1px var(--divider); }
-.card-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
-.dot { width:10px; height:10px; border-radius:50%; flex:0 0 auto; }
-.gear-name { font-weight:600; font-size:14px; overflow:hidden; text-overflow:ellipsis;
-             white-space:nowrap; }
-.gear-type { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
-.gear-stats { display:flex; gap:18px; margin-top:4px; }
-.gear-stats div div:first-child { font-size:18px; font-weight:600; }
-.gear-stats div div:last-child { font-size:10px; color:var(--muted); }
-.empty { color:var(--muted); font-size:.9em; padding:.5rem 0; }
-table { width:100%; border-collapse:collapse; background:var(--surface); border-radius:10px;
-        overflow:hidden; box-shadow:0 0 0 1px var(--divider); }
-th, td { text-align:left; padding:9px 12px; font-size:13px; border-bottom:1px solid var(--divider); }
-th { color:var(--muted); font-weight:500; font-size:11px; text-transform:uppercase; letter-spacing:.05em; }
-tr:last-child td { border-bottom:none; }
-.bike-block { margin-bottom:22px; }
-.bike-title { font-size:14px; font-weight:600; margin-bottom:6px; }
-details.row-actions { padding:0; }
-details.row-actions summary { cursor:pointer; color:var(--accent); font-size:12px;
-                               list-style:none; display:inline-block; margin-right:14px; }
-details.row-actions summary::-webkit-details-marker { display:none; }
-.inline-form { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;
-               padding:10px; background:var(--surface-2); border-radius:8px; }
-.inline-form label { font-size:11px; color:var(--muted); display:flex; flex-direction:column; gap:3px; }
-input, select, textarea, button {
-  font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--divider);
-  border-radius:6px; padding:.4rem .55rem;
-}
-textarea { min-width:180px; resize:vertical; }
-button { cursor:pointer; border-color:var(--accent); color:var(--accent-200); }
-button:hover { background:color-mix(in srgb, var(--accent) 20%, var(--bg)); }
-.log-list { max-height:340px; overflow-y:auto; display:flex; flex-direction:column; gap:8px;
-            padding-right:4px; }
-.log-entry { background:var(--surface); border-radius:8px; padding:10px 12px; font-size:13px;
-             box-shadow:0 0 0 1px var(--divider); }
-.log-entry .log-meta { color:var(--muted); font-size:11px; margin-top:2px; }
-.log-entry .log-notes { margin-top:4px; color:var(--fg); opacity:.85; }
-"""
-
-
-def _e(value) -> str:
-    return html.escape("" if value is None else str(value))
-
-
-def _url(path: str, token: str | None) -> str:
-    return f"{path}?{urlencode({'token': token})}" if token else path
-
-
-def _error_redirect_url(token: str | None, error: str) -> str:
-    """The gear page URL with an ``error`` message queued for display,
-    carrying the bearer token alongside it when one was supplied."""
-    params = {"error": error}
-    if token:
-        params["token"] = token
-    return f"{PAGE_PATH}?{urlencode(params)}"
-
-
-def _fmt_km(v) -> str:
-    if v is None:
-        return "&mdash;"
-    return f"{v:,.1f} km".replace(".0 km", " km")
-
-
-def _fmt_dur(minutes) -> str:
-    if not minutes:
-        return "&mdash;"
-    total = round(minutes)
-    h, m = divmod(total, 60)
-    return f"{h}h{m:02d}" if h else f"{m} min"
-
-
-def _status_dot(status: str) -> str:
-    color = _STATUS_COLOR.get(status, _STATUS_COLOR["unknown"])
-    return f'<span class="dot" style="background:{color}"></span>'
-
-
-def _gear_card_html(g: dict) -> str:
-    stats = [("Distance", _fmt_km(g.get("distance_km")))]
-    if g.get("duration_min"):
-        stats.append(("Time", _fmt_dur(g.get("duration_min"))))
-    stats_html = "".join(
-        f"<div><div>{v}</div><div>{_e(k)}</div></div>" for k, v in stats
-    )
-    return f"""
-    <div class="card">
-      <div class="card-head">{_status_dot(g["status_indicator"])}
-        <div style="min-width:0"><div class="gear-name">{_e(g.get("name"))}</div>
-        <div class="gear-type">{_e(g.get("activity_type") or "Gear")}</div></div>
-      </div>
-      <div class="gear-stats">{stats_html}</div>
-    </div>"""
-
-
-def _component_row_html(c: dict, token: str | None) -> str:
-    interval = c.get("maintenance_interval_km")
-    interval_txt = _fmt_km(interval) if interval else "N/A"
-    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _ACTIONS)
-    interval_value = "" if interval is None else f"{interval:g}"
-    return f"""
-    <tr>
-      <td>{_e(c["name"])}</td>
-      <td>{_e(c["last_serviced"])}</td>
-      <td>{_fmt_km(c.get("distance_since_km"))}</td>
-      <td>{interval_txt}</td>
-      <td>{c["status_emoji"]}</td>
-    </tr>
-    <tr>
-      <td colspan="5" style="padding-top:0">
-        <details class="row-actions">
-          <summary>Log maintenance</summary>
-          <form class="inline-form" method="post" action="{_e(_url(API_PREFIX + '/maintenance', token))}">
-            <input type="hidden" name="component_id" value="{c['id']}">
-            <label>Action<select name="action">{action_options}</select></label>
-            <label>Date<input type="date" name="date" value="{date.today().isoformat()}"></label>
-            <label>Notes<input type="text" name="notes" placeholder="optional"></label>
-            <button type="submit">Log</button>
-          </form>
-        </details>
-        <details class="row-actions">
-          <summary>Edit</summary>
-          <form class="inline-form" method="post" action="{_e(_url(API_PREFIX + '/components', token))}">
-            <input type="hidden" name="component_id" value="{c['id']}">
-            <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
-            <label>Name<input type="text" name="name" value="{_e(c['name'])}" required></label>
-            <label>Install date<input type="date" name="install_date" value="{_e(c['install_date'])}"></label>
-            <label>Interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
-                value="{interval_value}" placeholder="N/A"></label>
-            <button type="submit">Save</button>
-          </form>
-        </details>
-      </td>
-    </tr>"""
-
-
-def _bike_block_html(g: dict, token: str | None) -> str:
-    rows = "".join(_component_row_html(c, token) for c in g["components"])
-    table = f"""
-    <table>
-      <thead><tr><th>Component</th><th>Last serviced</th><th>Distance since</th>
-        <th>Interval</th><th>Status</th></tr></thead>
-      <tbody>{rows}</tbody>
-    </table>""" if g["components"] else '<div class="empty">No components tracked yet.</div>'
-
-    add_form = f"""
-    <details class="row-actions" style="margin-top:8px">
-      <summary>+ Add component</summary>
-      <form class="inline-form" method="post" action="{_e(_url(API_PREFIX + '/components', token))}">
-        <input type="hidden" name="bike_uuid" value="{_e(g.get('uuid') or '')}">
-        <input type="hidden" name="bike_name" value="{_e(g.get('name') or '')}">
-        <label>Name<input type="text" name="name" placeholder="e.g. Chain" required></label>
-        <label>Install date<input type="date" name="install_date" value="{date.today().isoformat()}"></label>
-        <label>Interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
-            placeholder="optional"></label>
-        <button type="submit">Add</button>
-      </form>
-    </details>"""
-
-    return f"""
-    <div class="bike-block">
-      <div class="bike-title">{_status_dot(g["status_indicator"])} {_e(g.get("name"))}
-        <span class="muted">&middot; {_fmt_km(g.get("distance_km"))}</span></div>
-      {table}
-      {add_form}
-    </div>"""
-
-
-def _log_entry_html(entry: dict, bike_names: dict) -> str:
-    bike_name = bike_names.get(entry.get("bike_uuid")) or entry.get("bike_name")
-    notes = f'<div class="log-notes">{_e(entry.get("notes"))}</div>' if entry.get("notes") else ""
-    return f"""
-    <div class="log-entry">
-      <div><strong>{_e(entry.get("action", "").title())}</strong> &mdash;
-        {_e(bike_name)} / {_e(entry.get("component_name"))}</div>
-      <div class="log-meta">{_e(entry["date"])} &middot; at {_fmt_km(entry["distance_at_service_km"])}</div>
-      {notes}
-    </div>"""
-
-
-def _log_form_html(components: list[dict], bike_names: dict, token: str | None) -> str:
-    if not components:
-        return ""
-    options = "".join(
-        f'<option value="{c["id"]}">'
-        f'{_e(bike_names.get(c.get("bike_uuid")) or c.get("bike_name"))} &mdash; {_e(c["name"])}</option>'
-        for c in components
-    )
-    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _ACTIONS)
-    return f"""
-    <form class="inline-form" method="post" action="{_e(_url(API_PREFIX + '/maintenance', token))}"
-        style="margin-bottom:12px">
-      <label>Component<select name="component_id">{options}</select></label>
-      <label>Action<select name="action">{action_options}</select></label>
-      <label>Date<input type="date" name="date" value="{date.today().isoformat()}"></label>
-      <label>Notes<input type="text" name="notes" placeholder="optional"></label>
-      <button type="submit">+ Log maintenance</button>
-    </form>"""
-
-
-def render_gear_html(data: dict, token: str | None = None, error: str | None = None) -> str:
-    gear = data.get("gear") or []
-    active_gear = [g for g in gear if (g.get("status") or "active").lower() == "active"]
-    bikes = [g for g in active_gear if g["is_bike"]]
-
-    cards_html = "".join(_gear_card_html(g) for g in active_gear) or \
-        '<div class="empty">No registered gear yet — add shoes or a bike in Garmin Connect.</div>'
-
-    bikes_html = "".join(_bike_block_html(g, token) for g in bikes) or \
-        '<div class="empty">No bikes registered yet.</div>'
-
-    bike_names = {g["uuid"]: g.get("name") for g in gear if g.get("uuid")}
-    all_components = [c for g in bikes for c in g["components"]]
-    log_entries = list_maintenance_log(limit=100)
-    log_html = "".join(_log_entry_html(e, bike_names) for e in log_entries) or \
-        '<div class="empty">No maintenance logged yet.</div>'
-
-    error_html = f'<div class="error">{_e(error)}</div>' if error else ""
-
-    body = f"""
-    <h1>Gear tracker</h1>
-    <div class="muted">Component wear and maintenance history for your registered gear.</div>
-    {error_html}
-    <h2>Overview</h2>
-    <div class="cards">{cards_html}</div>
-    <h2>Bike components</h2>
-    {bikes_html}
-    <h2>Maintenance log</h2>
-    {_log_form_html(all_components, bike_names, token)}
-    <div class="log-list">{log_html}</div>
-    """
-
-    return (
-        "<!doctype html>"
-        '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        "<title>Gear Tracker</title>"
-        f"<style>{_STYLE}</style>"
-        "</head><body>"
-        f'{render_nav_html("gear", token)}'
-        f"<main>{body}</main></body></html>"
-    )
-
-
-# ── ROUTES ────────────────────────────────────────────────────────────────────
+# ── API ROUTES ────────────────────────────────────────────────────────────────
+# Viewing lives in the dashboard's Gear tab (tools/dashboard.py, /dashboard);
+# this module only serves the JSON/form API those forms post to, plus a
+# redirect for the page's old standalone URL.
 
 _NO_STORE = {"Cache-Control": "no-store"}
 
 
+def _dashboard_gear_url(token: str | None) -> str:
+    """/dashboard with the Gear tab open, carrying the bearer token when one
+    was supplied."""
+    params = {"tab": "gear"}
+    if token:
+        params["token"] = token
+    return f"/dashboard?{urlencode(params)}"
+
+
+def _error_redirect_url(token: str | None, error: str) -> str:
+    """The dashboard's Gear tab URL with an ``error`` message queued for
+    display, carrying the bearer token alongside it when one was supplied."""
+    params = {"tab": "gear", "error": error}
+    if token:
+        params["token"] = token
+    return f"/dashboard?{urlencode(params)}"
+
+
 def _wants_json(request) -> bool:
-    """Form posts (the page's own UI) redirect back to the page; anything else
-    (an API caller) gets JSON back."""
+    """Form posts (the dashboard's own Gear-tab UI) redirect back to the
+    dashboard; anything else (an API caller) gets JSON back."""
     ctype = request.headers.get("content-type", "")
     return "application/json" in ctype
 
 
 async def serve_gear_page(request):
-    """GET /dashboard/gear — the gear tracker page."""
+    """GET /dashboard/gear — redirects into the dashboard's Gear tab.
+
+    Gear tracking used to be its own page; it's now a tab on /dashboard
+    (tools/dashboard.py's tp-gear panel), so this just forwards bookmarks and
+    existing links to the right place.
+    """
     token = request.query_params.get("token")
-    error = request.query_params.get("error")
-    try:
-        data = build_gear_status()
-    except Exception as e:  # pragma: no cover — defensive, mirrors dashboard.py
-        logger.exception("Gear tracker data fetch failed")
-        return HTMLResponse(
-            render_gear_html({"gear": []}, token, error=f"{type(e).__name__}: {e}"),
-            headers=_NO_STORE,
-        )
-    return HTMLResponse(render_gear_html(data, token, error=error), headers=_NO_STORE)
+    return RedirectResponse(_dashboard_gear_url(token), status_code=302)
 
 
 async def get_components(request):
@@ -872,8 +627,9 @@ async def _request_fields(request) -> dict:
 async def post_maintenance(request):
     """POST /api/gear/maintenance — log a maintenance action.
 
-    Accepts either a JSON body or an HTML form post; a form post (the page's
-    own UI) redirects back to the gear page, a JSON request gets JSON back.
+    Accepts either a JSON body or an HTML form post; a form post (the
+    dashboard's own Gear-tab UI) redirects back to the Gear tab, a JSON
+    request gets JSON back.
     """
     token = request.query_params.get("token")
     is_json = _wants_json(request)
@@ -909,14 +665,15 @@ async def post_maintenance(request):
 
     if is_json:
         return JSONResponse(entry)
-    return RedirectResponse(_url(PAGE_PATH, token), status_code=303)
+    return RedirectResponse(_dashboard_gear_url(token), status_code=303)
 
 
 async def post_component(request):
     """POST /api/gear/components — add or edit a component definition.
 
-    Accepts either a JSON body or an HTML form post; a form post (the page's
-    own UI) redirects back to the gear page, a JSON request gets JSON back.
+    Accepts either a JSON body or an HTML form post; a form post (the
+    dashboard's own Gear-tab UI) redirects back to the Gear tab, a JSON
+    request gets JSON back.
     """
     token = request.query_params.get("token")
     is_json = _wants_json(request)
@@ -953,7 +710,7 @@ async def post_component(request):
 
     if is_json:
         return JSONResponse(component)
-    return RedirectResponse(_url(PAGE_PATH, token), status_code=303)
+    return RedirectResponse(_dashboard_gear_url(token), status_code=303)
 
 
 ROUTES = [
@@ -970,5 +727,5 @@ def owns_path(path: str) -> bool:
 
 
 def create_app() -> Starlette:
-    """The gear-tracker sub-app, mounted by server.py behind token auth."""
+    """The gear-tracker API sub-app, mounted by server.py behind token auth."""
     return Starlette(routes=ROUTES)
