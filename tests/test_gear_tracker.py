@@ -119,6 +119,29 @@ def test_list_components_scoped_to_bike():
     assert len(gear_tracker.list_components()) == 2
 
 
+# ── CONNECTION REUSE (issue #58) ───────────────────────────────────────────────
+
+def test_get_conn_reused_across_calls():
+    """A single process-wide connection is reused rather than a fresh
+    sqlite3.connect() per call — cuts lock-acquisition churn on the network
+    file share the database lives on."""
+    gear_tracker.list_components()
+    conn1 = gear_tracker._conn
+    gear_tracker.list_components()
+    conn2 = gear_tracker._conn
+    assert conn1 is not None
+    assert conn1 is conn2
+
+
+def test_get_conn_reopens_when_path_changes(tmp_path, monkeypatch):
+    gear_tracker.list_components()
+    conn1 = gear_tracker._conn
+    monkeypatch.setenv("GEAR_TRACKER_DB_PATH", str(tmp_path / "other.db"))
+    gear_tracker.list_components()
+    conn2 = gear_tracker._conn
+    assert conn1 is not conn2
+
+
 # ── MAINTENANCE LOG ───────────────────────────────────────────────────────────
 
 def test_log_maintenance_entry_requires_action():
@@ -242,6 +265,37 @@ def test_build_gear_status_untracked_bike_has_unknown_status(monkeypatch):
     bike = next(g for g in status["gear"] if g["uuid"] == "bike-1")
     assert bike["components"] == []
     assert bike["status_indicator"] == "unknown"
+
+
+def test_build_gear_status_includes_maintenance_log(monkeypatch):
+    """The dashboard's Gear tab needs both the component status and the
+    maintenance log; build_gear_status returns both from the same
+    connection/round trip instead of the caller making a second query
+    (issue #58)."""
+    _patch_gear(monkeypatch)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain",
+                                      bike_name="Canyon Ultimate")
+    gear_tracker.log_maintenance_entry(component_id=c["id"], action="lubed",
+                                       distance_at_service_km=100, date_="2026-01-01")
+
+    status = gear_tracker.build_gear_status()
+    assert len(status["maintenance_log"]) == 1
+    entry = status["maintenance_log"][0]
+    assert entry["action"] == "lubed"
+    assert entry["component_name"] == "Chain"
+    assert entry["bike_name"] == "Canyon Ultimate"
+
+
+def test_build_gear_status_maintenance_log_respects_limit(monkeypatch):
+    _patch_gear(monkeypatch)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    for i in range(3):
+        gear_tracker.log_maintenance_entry(component_id=c["id"], action="lubed",
+                                           distance_at_service_km=100 + i,
+                                           date_=f"2026-01-0{i+1}")
+
+    status = gear_tracker.build_gear_status(log_limit=2)
+    assert len(status["maintenance_log"]) == 2
 
 
 # ── MCP TOOL FUNCTIONS ────────────────────────────────────────────────────────

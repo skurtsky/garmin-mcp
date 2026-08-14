@@ -1385,10 +1385,12 @@ def _panel_gear(data: dict, token: str | None = None) -> str:
     bike_names = {g["uuid"]: g.get("name") for g in gear if g.get("uuid")}
     all_components = [c for g in bikes for c in g["components"]]
 
-    from tools.gear_tracker import list_maintenance_log
-    log_entries, log_err = _safe(list_maintenance_log, limit=50)
-    log_html = "".join(_gear_log_entry(e, bike_names) for e in (log_entries or [])) or \
-        f'<div class="muted" style="font-size:13px">{"No maintenance logged yet." if not log_err else f"Log unavailable — {_e(log_err)}"}</div>'
+    # The maintenance log comes from gear_status itself (build_gear_status
+    # already fetched it) rather than a second gear_tracker call/connection —
+    # see issue #58.
+    log_entries = gear_status.get("maintenance_log") or []
+    log_html = "".join(_gear_log_entry(e, bike_names) for e in log_entries) or \
+        '<div class="muted" style="font-size:13px">No maintenance logged yet.</div>'
 
     return f"""
     <section class="panel tabpanel tp-gear" style="flex-direction:column;gap:16px">
