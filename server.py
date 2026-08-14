@@ -45,6 +45,10 @@ from tools.workout import (
     delete_workout as delete_workout_impl,
     update_workout_weights as update_workout_weights_impl,
 )
+from tools.gear_tracker import (
+    log_maintenance as log_maintenance_impl,
+    get_maintenance_status as get_maintenance_status_impl,
+)
 
 load_dotenv()
 
@@ -305,6 +309,46 @@ def gear() -> list:
     activity type, distance and time used, and current status.
     """
     return get_gear()
+
+
+@mcp.tool()
+def log_maintenance(gear_name: str, component: str, action: str,
+                    notes: Optional[str] = None) -> dict:
+    """
+    Log a maintenance action against a tracked bike component (chain lubed,
+    tires replaced, etc.) — also viewable/loggable at /dashboard/gear.
+
+    Resolves the bike by its Garmin gear name and the component by name
+    (case-insensitive), auto-creating the component on this bike if it
+    hasn't been tracked yet (picking up a default maintenance interval when
+    the name matches a known one — chain, brake pads, tires, chain ring,
+    cassette). The bike's current cumulative distance (from Garmin) is
+    recorded as the service point automatically.
+
+    Args:
+        gear_name: Exact gear name as registered in Garmin Connect (see gear).
+        component: Component name, e.g. "Chain", "Brake pads", "Tires".
+        action:    What was done — "lubed", "replaced", "serviced",
+                   "adjusted", or a short free-form description.
+        notes:     Optional free-form notes.
+    """
+    return log_maintenance_impl(gear_name=gear_name, component=component,
+                                action=action, notes=notes)
+
+
+@mcp.tool()
+def get_maintenance_status(gear_name: Optional[str] = None) -> dict:
+    """
+    Get bike component maintenance status — last serviced date, distance
+    since service, maintenance interval, and a status ("green"/"yellow"/
+    "red"/"unknown" — unknown means no interval is set) for every tracked
+    component, so overdue maintenance can be flagged proactively.
+
+    Args:
+        gear_name: Optional exact gear name to scope to one bike (see gear).
+                   Omit to get every registered piece of gear.
+    """
+    return get_maintenance_status_impl(gear_name=gear_name)
 
 
 @mcp.tool()
@@ -623,10 +667,12 @@ def build_asgi_app():
     from tools.dashboard import build_dashboard_data, render_dashboard_html
     from tools import training_plan
     from tools import weekly_summaries
+    from tools import gear_tracker
 
     app = mcp.http_app()
     training_plan_app = training_plan.create_app()
     weekly_summary_app = weekly_summaries.create_app()
+    gear_tracker_app = gear_tracker.create_app()
 
     # Wrap the app with a simple ASGI auth wrapper
     bearer = BEARER_TOKEN
@@ -657,6 +703,13 @@ def build_asgi_app():
                 logger.exception("Dashboard render failed")
                 response = HTMLResponse(f"Dashboard error: {e}", status_code=500)
             await response(scope, receive, send)
+            return
+
+        # Gear tracker — bike component maintenance tracking (issue 53), same
+        # bearer-token auth. Checked ahead of training-plan/weekly-summary
+        # since its page lives under /dashboard/gear.
+        if scope["type"] == "http" and gear_tracker.owns_path(scope.get("path", "")):
+            await gear_tracker_app(scope, receive, send)
             return
 
         # Training-plan viewer — serves the uploaded Claude Coach plan app from
