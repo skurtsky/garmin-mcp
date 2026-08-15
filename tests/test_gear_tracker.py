@@ -1,11 +1,14 @@
 # tests/test_gear_tracker.py
 """Tests for the gear tracker (tools/gear_tracker.py, issue 53).
 
-Fully offline: storage is redirected to a tmp SQLite file via
-GEAR_TRACKER_DB_PATH and Garmin gear data is monkeypatched on
+Fully offline: storage is redirected to a tmp JSON file via
+GEAR_TRACKER_DATA_PATH and Garmin gear data is monkeypatched on
 tools.profile.get_gear, so no live Garmin session is needed. Routes are
 exercised with Starlette's TestClient.
 """
+import json
+import threading
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -15,8 +18,8 @@ from tools import gear_tracker, profile
 @pytest.fixture(autouse=True)
 def gear_db(tmp_path, monkeypatch):
     """Redirect gear-tracker storage at a tmp file for every test."""
-    target = tmp_path / "gear-tracker.db"
-    monkeypatch.setenv("GEAR_TRACKER_DB_PATH", str(target))
+    target = tmp_path / "gear-tracker" / "gear_data.json"
+    monkeypatch.setenv("GEAR_TRACKER_DATA_PATH", str(target))
     return target
 
 
@@ -119,27 +122,58 @@ def test_list_components_scoped_to_bike():
     assert len(gear_tracker.list_components()) == 2
 
 
-# ── CONNECTION REUSE (issue #58) ───────────────────────────────────────────────
+# ── JSON STORAGE (issue #60) ────────────────────────────────────────────────
 
-def test_get_conn_reused_across_calls():
-    """A single process-wide connection is reused rather than a fresh
-    sqlite3.connect() per call — cuts lock-acquisition churn on the network
-    file share the database lives on."""
-    gear_tracker.list_components()
-    conn1 = gear_tracker._conn
-    gear_tracker.list_components()
-    conn2 = gear_tracker._conn
-    assert conn1 is not None
-    assert conn1 is conn2
+def test_data_file_created_on_first_write(gear_db):
+    assert not gear_db.exists()
+    gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    assert gear_db.exists()
+    with open(gear_db) as f:
+        data = json.load(f)
+    assert data["components"][0]["name"] == "Chain"
 
 
-def test_get_conn_reopens_when_path_changes(tmp_path, monkeypatch):
-    gear_tracker.list_components()
-    conn1 = gear_tracker._conn
-    monkeypatch.setenv("GEAR_TRACKER_DB_PATH", str(tmp_path / "other.db"))
-    gear_tracker.list_components()
-    conn2 = gear_tracker._conn
-    assert conn1 is not conn2
+def test_data_persists_across_separate_reads(gear_db):
+    """Nothing is cached in-process — a fresh read sees what an earlier
+    write left on disk, simulating surviving a container restart."""
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    gear_tracker.log_maintenance_entry(component_id=c["id"], action="lubed",
+                                       distance_at_service_km=100)
+
+    assert gear_tracker.get_component(c["id"])["name"] == "Chain"
+    assert len(gear_tracker.list_maintenance_log()) == 1
+
+
+def test_write_leaves_no_tmp_file_behind(gear_db):
+    gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    assert not (gear_db.parent / (gear_db.name + ".tmp")).exists()
+
+
+def test_missing_data_file_reads_as_empty():
+    assert gear_tracker.list_components() == []
+    assert gear_tracker.list_maintenance_log() == []
+
+
+def test_concurrent_maintenance_log_writes_dont_corrupt_or_lose_entries(gear_db):
+    """Several maintenance-log submissions arriving at once (issue #60's
+    'rapid-fire' scenario) must all land, and the file must stay valid JSON —
+    the in-process _lock serializes the read-modify-write cycles."""
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+
+    def log_one(i):
+        gear_tracker.log_maintenance_entry(component_id=c["id"], action="lubed",
+                                           distance_at_service_km=100 + i)
+
+    threads = [threading.Thread(target=log_one, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    with open(gear_db) as f:
+        data = json.load(f)  # raises if the file was left corrupt
+    assert len(data["maintenance_log"]) == 20
+    assert len(gear_tracker.list_maintenance_log(component_id=c["id"])) == 20
 
 
 # ── MAINTENANCE LOG ───────────────────────────────────────────────────────────
