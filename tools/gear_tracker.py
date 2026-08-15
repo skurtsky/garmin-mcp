@@ -22,6 +22,21 @@ stored locally. "Distance since [service]" is therefore always
 ``- install_distance_km`` when a component has never been serviced) —
 never a value stored directly.
 
+Garmin Connect lets a part (a chain, a cassette, a set of tires, ...) be
+registered as its *own* gear item, with its own real cumulative distance and
+optional replace-at threshold (``max_distance_km``) — separate from the bike
+it's mounted on. Garmin's API gives no field linking that part back to a
+bike, so a component here can optionally carry a ``linked_gear_uuid``
+pointing at one of those Garmin-tracked items (see :func:`upsert_component`
+and the ``linkable_gear`` list :func:`build_gear_status` returns — every
+active, not-yet-linked, non-bike/non-shoe gear item, for a "Link component"
+picker). A linked component's distance-since is measured against *that
+item's* live distance rather than the bike's, and its interval falls back to
+the item's own ``max_distance_km`` when no local interval override is set —
+both computed in :func:`_component_with_status`. A component with no
+``linked_gear_uuid`` behaves exactly as before: a name typed in by hand,
+measured against the bike's own cumulative distance.
+
 Storage lives on the same Azure File Share already mounted for the Garmin
 OAuth tokens (``~/.garminconnect``), under ``gear-tracker/gear_data.json`` —
 the same JSON-file-on-the-share pattern already used for the Garmin tokens
@@ -229,32 +244,45 @@ def find_component(bike_uuid: str, name: str) -> dict | None:
 
 def upsert_component(
     bike_uuid: str,
-    name: str,
+    name: str | None = None,
     bike_name: str | None = None,
     install_date: str | None = None,
     install_distance_km: float = 0.0,
     maintenance_interval_km=_UNSET,
     component_id: str | None = None,
+    linked_gear_uuid=_UNSET,
 ) -> dict:
     """Create a component, or update an existing one.
 
     With ``component_id`` given, that exact component is updated. Otherwise a
     matching ``bike_uuid`` + ``name`` (case-insensitive) component is updated
     if one exists, and a new component is created if not — so re-submitting
-    the "add component" form for the same name just edits it rather than
+    the "link component" form for the same name just edits it rather than
     duplicating.
 
     ``maintenance_interval_km`` left at its default keeps the existing value
     on an update; on create it falls back to :data:`DEFAULT_INTERVALS_KM`
     (matched case-insensitively by name), or None when there's no default.
     Pass ``None`` explicitly to clear/omit an interval.
+
+    ``linked_gear_uuid``, left at its default, keeps the existing link (or
+    None) on an update; pass a Garmin gear uuid to link the component to that
+    gear item's own live distance (see the module docstring), or ``None``
+    explicitly to unlink it. If ``name`` is omitted, it defaults to that
+    linked gear item's own name — so linking doesn't require retyping it.
     """
     if not bike_uuid or not bike_uuid.strip():
         raise ValueError("bike_uuid is required.")
-    if not name or not name.strip():
-        raise ValueError("name is required.")
     bike_uuid = bike_uuid.strip()
-    name = name.strip()
+    name = (name or "").strip()
+
+    if not name and linked_gear_uuid not in (_UNSET, None, ""):
+        from tools.profile import get_gear
+        linked = next((g for g in get_gear() if g.get("uuid") == linked_gear_uuid), None)
+        name = ((linked or {}).get("name") or "").strip()
+    if not name:
+        raise ValueError("name is required.")
+
     install_date = _validate_date(install_date or date.today().isoformat(), "install_date")
 
     with _lock:
@@ -276,6 +304,11 @@ def upsert_component(
             else:
                 maintenance_interval_km = _load_default_intervals().get(name.lower())
 
+        if linked_gear_uuid is _UNSET:
+            linked_gear_uuid = existing.get("linked_gear_uuid") if existing is not None else None
+        else:
+            linked_gear_uuid = linked_gear_uuid or None
+
         if existing is not None:
             existing.update({
                 "bike_uuid": bike_uuid,
@@ -284,6 +317,7 @@ def upsert_component(
                 "install_date": install_date,
                 "install_distance_km": install_distance_km,
                 "maintenance_interval_km": maintenance_interval_km,
+                "linked_gear_uuid": linked_gear_uuid,
             })
             result = dict(existing)
         else:
@@ -295,6 +329,7 @@ def upsert_component(
                 "install_date": install_date,
                 "install_distance_km": install_distance_km,
                 "maintenance_interval_km": maintenance_interval_km,
+                "linked_gear_uuid": linked_gear_uuid,
             }
             data["components"].append(result)
             result = dict(result)
@@ -398,8 +433,22 @@ def _worst_status(statuses: list[str]) -> str:
     return max(ranked, key=lambda s: _STATUS_RANK[s])
 
 
-def _component_with_status(data: dict, component: dict,
-                            gear_distance_km: float | None) -> dict:
+def _is_bike(g: dict) -> bool:
+    gear_type = (g.get("activity_type") or "").lower()
+    return "bike" in gear_type or "cycl" in gear_type
+
+
+def _is_shoe(g: dict) -> bool:
+    return "shoe" in (g.get("activity_type") or "").lower()
+
+
+def _component_with_status(data: dict, component: dict, basis_gear: dict | None) -> dict:
+    """A component plus its live status, computed against ``basis_gear`` —
+    the Garmin gear item its distance is measured against: the linked gear
+    item's own distance when the component is linked to one (see the module
+    docstring), otherwise the bike itself. ``None`` when that basis gear
+    can't be found (e.g. its Garmin gear item was deleted).
+    """
     last = _last_service(data, component["id"])
     if last is not None:
         last_serviced = last["date"]
@@ -408,18 +457,24 @@ def _component_with_status(data: dict, component: dict,
         last_serviced = None
         base_distance = component["install_distance_km"]
 
+    gear_distance_km = basis_gear.get("distance_km") if basis_gear else None
     distance_since = None
     if gear_distance_km is not None:
         distance_since = round(max(gear_distance_km - base_distance, 0), 1)
 
     interval = component["maintenance_interval_km"]
-    status = _component_status(distance_since, interval)
+    effective_interval = interval
+    if effective_interval is None and component.get("linked_gear_uuid") and basis_gear:
+        effective_interval = basis_gear.get("max_distance_km")
+
+    status = _component_status(distance_since, effective_interval)
 
     return {
         **component,
         "last_serviced": last_serviced or component["install_date"],
         "ever_serviced": last is not None,
         "distance_since_km": distance_since,
+        "effective_interval_km": effective_interval,
         "status": status,
         "status_emoji": _STATUS_EMOJI[status],
     }
@@ -428,8 +483,10 @@ def _component_with_status(data: dict, component: dict,
 def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict:
     """The full gear-tracker view: every piece of gear from Garmin, each
     bike's tracked components with live maintenance status computed against
-    that bike's current cumulative distance, plus the maintenance log
-    (newest first, up to ``log_limit`` entries).
+    that bike's (or a linked component's own) current cumulative distance,
+    the maintenance log (newest first, up to ``log_limit`` entries), and
+    ``linkable_gear`` — active Garmin gear items (chains, cassettes, tires,
+    ...) not yet linked to a component, for a "Link component" picker.
 
     The log is included here — rather than left to a separate
     :func:`list_maintenance_log` call — so a single call covers everything
@@ -439,18 +496,38 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
     from tools.profile import get_gear
 
     all_gear = get_gear()
+    gear_by_uuid = {g["uuid"]: g for g in all_gear if g.get("uuid")}
+
+    filtered_gear = all_gear
     if gear_name:
-        all_gear = [g for g in all_gear
-                    if (g.get("name") or "").strip().lower() == gear_name.strip().lower()]
+        filtered_gear = [g for g in all_gear
+                          if (g.get("name") or "").strip().lower() == gear_name.strip().lower()]
 
     with _lock:
         data = _read()
 
+    linked_uuids = {c["linked_gear_uuid"] for c in data["components"] if c.get("linked_gear_uuid")}
+    linkable_gear = sorted(
+        (
+            {
+                "uuid": g["uuid"],
+                "name": g.get("name"),
+                "model": g.get("model"),
+                "distance_km": g.get("distance_km"),
+                "max_distance_km": g.get("max_distance_km"),
+            }
+            for g in all_gear
+            if g.get("uuid") and g["uuid"] not in linked_uuids
+            and (g.get("status") or "active").lower() == "active"
+            and not _is_bike(g) and not _is_shoe(g)
+        ),
+        key=lambda g: (g["name"] or "").lower(),
+    )
+
     items = []
-    for g in all_gear:
-        gear_type = (g.get("activity_type") or "").lower()
-        is_bike = "bike" in gear_type or "cycl" in gear_type
-        is_shoe = "shoe" in gear_type
+    for g in filtered_gear:
+        is_bike = _is_bike(g)
+        is_shoe = _is_shoe(g)
 
         components = []
         bike_uuid = g.get("uuid")
@@ -460,7 +537,11 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
                 key=lambda c: c["name"].lower(),
             )
             components = [
-                _component_with_status(data, c, g.get("distance_km")) for c in matching
+                _component_with_status(
+                    data, c,
+                    gear_by_uuid.get(c["linked_gear_uuid"]) if c.get("linked_gear_uuid") else g,
+                )
+                for c in matching
             ]
 
         if is_shoe:
@@ -489,7 +570,7 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
         if len(maintenance_log) >= log_limit:
             break
 
-    return {"gear": items, "maintenance_log": maintenance_log}
+    return {"gear": items, "maintenance_log": maintenance_log, "linkable_gear": linkable_gear}
 
 
 # ── MCP TOOL FUNCTIONS ───────────────────────────────────────────────────────
@@ -504,8 +585,12 @@ def log_maintenance(gear_name: str, component: str, action: str,
     bike yet, it's created automatically — using the component's default
     maintenance interval when its name matches a known default (chain, brake
     pads, tires, chain ring, cassette, ...), otherwise untracked (no interval,
-    never flagged as due). The bike's *current* cumulative distance (from
-    Garmin) is recorded as the service point automatically.
+    never flagged as due). The service point recorded is that new component's
+    bike distance; an *existing* component that's linked to its own
+    Garmin-tracked gear item (see the gear tool's "Other"-typed entries, e.g.
+    a chain or cassette registered on its own) instead records that linked
+    item's own current distance, since that's the basis its status is judged
+    against.
 
     Args:
         gear_name: Exact gear name as registered in Garmin Connect (see the
@@ -517,7 +602,8 @@ def log_maintenance(gear_name: str, component: str, action: str,
     """
     from tools.profile import get_gear
 
-    matches = [g for g in get_gear()
+    all_gear = get_gear()
+    matches = [g for g in all_gear
                if (g.get("name") or "").strip().lower() == gear_name.strip().lower()]
     if not matches:
         raise ValueError(f"No gear found named {gear_name!r}.")
@@ -534,10 +620,18 @@ def log_maintenance(gear_name: str, component: str, action: str,
             bike_uuid=uuid, name=component, bike_name=gear.get("name"),
             install_distance_km=current_distance,
         )
+        basis_distance = current_distance
+    elif comp.get("linked_gear_uuid"):
+        linked = next((g for g in all_gear if g.get("uuid") == comp["linked_gear_uuid"]), None)
+        if linked is None:
+            raise ValueError(f"Component {component!r}'s linked gear is no longer registered in Garmin.")
+        basis_distance = linked.get("distance_km") or 0.0
+    else:
+        basis_distance = current_distance
 
     entry = log_maintenance_entry(
         component_id=comp["id"], action=action,
-        distance_at_service_km=current_distance, notes=notes,
+        distance_at_service_km=basis_distance, notes=notes,
     )
     return {
         "gear_name": gear.get("name"),
@@ -554,7 +648,8 @@ def get_maintenance_status(gear_name: str | None = None) -> dict:
     Get bike component maintenance status — last serviced date, distance
     since service, maintenance interval, and a status ("green"/"yellow"/
     "red"/"unknown") for every tracked component, plus the recent
-    maintenance log.
+    maintenance log and the list of Garmin-tracked gear items (chains,
+    cassettes, tires, ...) not yet linked to a bike component.
 
     Args:
         gear_name: Optional exact gear name to scope to one bike (see the
@@ -644,14 +739,25 @@ async def post_maintenance(request):
             raise ValueError(f"No component with id {component_id}.")
 
         from tools.profile import get_gear
-        bike = next((g for g in get_gear() if g.get("uuid") == component["bike_uuid"]), None)
+        all_gear = get_gear()
+        bike = next((g for g in all_gear if g.get("uuid") == component["bike_uuid"]), None)
         if bike is None:
             raise ValueError("That component's bike is no longer registered in Garmin.")
+
+        # A linked component's status is judged against its own linked gear
+        # item's distance (see the module docstring), not the bike's — the
+        # logged service point has to use the same basis.
+        linked_uuid = component.get("linked_gear_uuid")
+        basis_gear = bike
+        if linked_uuid:
+            basis_gear = next((g for g in all_gear if g.get("uuid") == linked_uuid), None)
+            if basis_gear is None:
+                raise ValueError("That component's linked gear is no longer registered in Garmin.")
 
         entry = log_maintenance_entry(
             component_id=component_id,
             action=fields.get("action") or "",
-            distance_at_service_km=bike.get("distance_km") or 0.0,
+            distance_at_service_km=basis_gear.get("distance_km") or 0.0,
             date_=fields.get("date") or None,
             notes=fields.get("notes") or None,
         )
@@ -686,6 +792,12 @@ async def post_component(request):
         except (TypeError, ValueError):
             interval_km = _UNSET
 
+    # A key that's absent entirely (the plain "Edit" form doesn't carry one)
+    # keeps the existing link; present-but-empty (the "Link component" form's
+    # "custom, not tracked in Garmin" choice) explicitly clears/omits it.
+    linked_raw = fields.get("linked_gear_uuid")
+    linked_gear_uuid = _UNSET if linked_raw is None else (linked_raw or None)
+
     try:
         component = upsert_component(
             bike_uuid=fields.get("bike_uuid") or "",
@@ -695,6 +807,7 @@ async def post_component(request):
             install_distance_km=float(fields.get("install_distance_km") or 0.0),
             maintenance_interval_km=interval_km,
             component_id=component_id,
+            linked_gear_uuid=linked_gear_uuid,
         )
     except ValueError as e:
         return (JSONResponse({"error": str(e)}, status_code=400) if is_json
