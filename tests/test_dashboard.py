@@ -222,6 +222,37 @@ def test_render_humanizes_enum_strings():
     assert "BALANCED" not in html
 
 
+def test_render_last_sync_carries_utc_instant_for_client_side_conversion():
+    """The "Last sync" time is server-rendered (offset by the operator's
+    DASHBOARD_TZ_OFFSET_HOURS) as a no-JS fallback, but also carries the raw
+    UTC instant in a data attribute so the inline script (issue #52) can
+    rewrite it to the viewer's actual local timezone."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'id="sync-time"' in html
+    assert 'data-sync-utc="2026-07-17T08:05:00+00:00"' in html
+    assert "Last sync" in html
+    assert "document.querySelectorAll('[data-sync-utc]')" in html
+    assert "toLocaleTimeString" in html
+
+
+def test_render_last_sync_falls_back_when_no_sync_data():
+    data = {**SAMPLE, "last_sync": {}, "last_sync_err": "boom"}
+    html = dashboard.render_dashboard_html(data)
+    assert "Live from Garmin Connect" in html
+    assert "data-sync-utc=" not in html
+
+
+@pytest.mark.parametrize("value,expected", [
+    (1784275500000, "2026-07-17T08:05:00+00:00"),
+    ("2026-07-17T08:05:00.0", "2026-07-17T08:05:00+00:00"),
+    ("2026-07-17T08:05:00", "2026-07-17T08:05:00+00:00"),
+    (None, None),
+    ("not-a-date", None),
+])
+def test_sync_time_utc_iso(value, expected):
+    assert dashboard._sync_time_utc_iso(value) == expected
+
+
 def test_render_shows_vo2max_and_acwr():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "52" in html and "48" in html   # run / bike VO2max

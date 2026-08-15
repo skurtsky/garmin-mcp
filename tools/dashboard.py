@@ -1547,6 +1547,18 @@ _CHART_JS = """
 })();
 """
 
+# Converts the server-rendered "Last sync" time (offset by the operator's
+# configured DASHBOARD_TZ_OFFSET_HOURS) to the viewer's actual local
+# timezone, using the UTC instant stashed in the element's data attribute.
+_TZ_JS = """
+document.querySelectorAll('[data-sync-utc]').forEach(function (el) {
+  var d = new Date(el.getAttribute('data-sync-utc'));
+  if (!isNaN(d.getTime())) {
+    el.textContent = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+});
+"""
+
 
 def _fmt_sync_time(value):
     if value is None:
@@ -1558,6 +1570,28 @@ def _fmt_sync_time(value):
         except (ValueError, OverflowError, OSError):
             return str(value)
     return str(value).replace("T", " ").split(".")[0][-8:-3] if "T" in str(value) else str(value)
+
+
+def _sync_time_utc_iso(value):
+    """The device's last-upload time as a UTC ISO-8601 string, for the
+    browser to convert to the viewer's own local timezone client-side.
+
+    Returns None if `value` can't be parsed — the caller then falls back to
+    the server-rendered `_fmt_sync_time` text (offset by
+    DASHBOARD_TZ_OFFSET_HOURS rather than the viewer's real timezone).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            return None
+    try:
+        dt = datetime.fromisoformat(str(value).split(".")[0])
+        return dt.replace(tzinfo=timezone.utc).isoformat()
+    except ValueError:
+        return None
 
 
 _TAB_IDS = {
@@ -1588,7 +1622,12 @@ def render_dashboard_html(data: dict, token: str | None = None,
 
     sync = data.get("last_sync") or {}
     sync_time = _fmt_sync_time(sync.get("upload_time"))
-    sync_line = f"Last sync {sync_time}" if sync_time else "Live from Garmin Connect"
+    sync_utc_iso = _sync_time_utc_iso(sync.get("upload_time"))
+    sync_attr = f' data-sync-utc="{html.escape(sync_utc_iso, quote=True)}"' if sync_utc_iso else ""
+    sync_line = (
+        f'Last sync <span id="sync-time"{sync_attr}>{_e(sync_time)}</span>'
+        if sync_time else "Live from Garmin Connect"
+    )
 
     refresh_meta = (
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if REFRESH_SECONDS > 0 else ""
@@ -1611,7 +1650,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
           display:grid;place-items:center;color:var(--color-accent);font-size:15px"><i class="ph">{_PULSE}</i></div>
       <div style="flex:1;min-width:0">
         <div style="font-family:var(--font-heading);font-size:15px;line-height:1.1">{_e(weekday_line)}</div>
-        <div style="font-size:11px;color:var(--color-neutral-500)">{_e(sync_line)}</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)">{sync_line}</div>
       </div>
     </div>
   </div>
@@ -1653,5 +1692,6 @@ def render_dashboard_html(data: dict, token: str | None = None,
         "</head><body>"
         f"{body}"
         f"<script>{_CHART_JS}</script>"
+        f"<script>{_TZ_JS}</script>"
         "</body></html>"
     )
