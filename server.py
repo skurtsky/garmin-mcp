@@ -699,7 +699,8 @@ def build_asgi_app():
                 query = parse_qs(scope.get("query_string", b"").decode())
                 token = query.get("token", [None])[0]
                 initial_tab = query.get("tab", [None])[0]
-                page = render_dashboard_html(build_dashboard_data(), token, initial_tab)
+                error = query.get("error", [None])[0]
+                page = render_dashboard_html(build_dashboard_data(), token, initial_tab, error)
                 response = HTMLResponse(page)
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Dashboard render failed")

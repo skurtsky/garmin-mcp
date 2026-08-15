@@ -39,6 +39,17 @@ def _patch_gear(monkeypatch, gear=None):
     monkeypatch.setattr(profile, "get_gear", lambda: gear if gear is not None else SAMPLE_GEAR)
 
 
+# A Garmin gear item registered as its own "Other"-typed part (issue 63) —
+# e.g. a chain tracked separately from the bike it's mounted on, with its own
+# real distance and replace-at threshold.
+GEAR_WITH_LINKABLE_CHAIN = SAMPLE_GEAR + [
+    {"name": "Shimano 12s Chain", "model": None, "uuid": "chain-1", "activity_type": "Other",
+     "status": "active", "distance_km": 1969.68, "duration_min": None,
+     "total_activities": 36, "max_distance_km": 3000.0,
+     "date_begin": "2026-02-22", "date_end": None},
+]
+
+
 # ── COMPONENT STORAGE ─────────────────────────────────────────────────────────
 
 def test_upsert_component_creates_with_default_interval():
@@ -120,6 +131,48 @@ def test_list_components_scoped_to_bike():
     gear_tracker.upsert_component(bike_uuid="bike-2", name="Chain")
     assert len(gear_tracker.list_components("bike-1")) == 1
     assert len(gear_tracker.list_components()) == 2
+
+
+# ── LINKING TO GARMIN-TRACKED GEAR (issue 63) ───────────────────────────────
+
+def test_upsert_component_links_to_garmin_gear_and_defaults_name(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+    assert c["name"] == "Shimano 12s Chain"
+    assert c["linked_gear_uuid"] == "chain-1"
+
+
+def test_upsert_component_link_explicit_name_overrides_default(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="Drivetrain chain",
+                                      linked_gear_uuid="chain-1")
+    assert c["name"] == "Drivetrain chain"
+
+
+def test_upsert_component_no_name_and_no_link_still_requires_name():
+    with pytest.raises(ValueError):
+        gear_tracker.upsert_component(bike_uuid="bike-1")
+
+
+def test_upsert_component_edit_keeps_link_when_field_omitted(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+    edited = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain (renamed)",
+                                           component_id=c["id"])
+    assert edited["linked_gear_uuid"] == "chain-1"
+
+
+def test_upsert_component_edit_can_unlink_explicitly(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+    edited = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain",
+                                           component_id=c["id"], linked_gear_uuid=None)
+    assert edited["linked_gear_uuid"] is None
+
+
+def test_upsert_component_unlinked_by_default():
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    assert c["linked_gear_uuid"] is None
 
 
 # ── JSON STORAGE (issue #60) ────────────────────────────────────────────────
@@ -332,6 +385,65 @@ def test_build_gear_status_maintenance_log_respects_limit(monkeypatch):
     assert len(status["maintenance_log"]) == 2
 
 
+# ── LINKED COMPONENT STATUS (issue 63) ──────────────────────────────────────
+
+def test_build_gear_status_linked_component_uses_linked_gears_own_distance(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+
+    status = gear_tracker.build_gear_status()
+    bike = next(g for g in status["gear"] if g["uuid"] == "bike-1")
+    chain = bike["components"][0]
+    # The linked gear's own distance (1969.68), not the bike's (1000.0).
+    assert chain["distance_since_km"] == 1969.7
+
+
+def test_build_gear_status_linked_component_interval_falls_back_to_gear_max_distance(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+
+    status = gear_tracker.build_gear_status()
+    chain = status["gear"][0]["components"][0]
+    assert chain["maintenance_interval_km"] is None  # no local override was set
+    assert chain["effective_interval_km"] == 3000.0  # the linked gear's max_distance_km
+
+
+def test_build_gear_status_linked_component_local_interval_overrides_gear_max_distance(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1",
+                                  maintenance_interval_km=2500)
+
+    status = gear_tracker.build_gear_status()
+    chain = status["gear"][0]["components"][0]
+    assert chain["effective_interval_km"] == 2500
+
+
+def test_build_gear_status_linkable_gear_lists_unlinked_other_gear(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    status = gear_tracker.build_gear_status()
+    assert [g["uuid"] for g in status["linkable_gear"]] == ["chain-1"]
+
+
+def test_build_gear_status_linkable_gear_excludes_already_linked(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+    status = gear_tracker.build_gear_status()
+    assert status["linkable_gear"] == []
+
+
+def test_build_gear_status_linkable_gear_excludes_retired(monkeypatch):
+    retired = GEAR_WITH_LINKABLE_CHAIN[:2] + [{**GEAR_WITH_LINKABLE_CHAIN[2], "status": "retired"}]
+    _patch_gear(monkeypatch, retired)
+    status = gear_tracker.build_gear_status()
+    assert status["linkable_gear"] == []
+
+
+def test_build_gear_status_linkable_gear_excludes_bikes_and_shoes(monkeypatch):
+    _patch_gear(monkeypatch)  # SAMPLE_GEAR: only a bike and a shoe
+    status = gear_tracker.build_gear_status()
+    assert status["linkable_gear"] == []
+
+
 # ── MCP TOOL FUNCTIONS ────────────────────────────────────────────────────────
 
 def test_log_maintenance_auto_creates_untracked_component(monkeypatch):
@@ -360,6 +472,18 @@ def test_log_maintenance_unknown_gear_raises(monkeypatch):
     _patch_gear(monkeypatch)
     with pytest.raises(ValueError):
         gear_tracker.log_maintenance(gear_name="Nonexistent Bike", component="Chain", action="lubed")
+
+
+def test_log_maintenance_uses_linked_gears_own_distance(monkeypatch):
+    """An existing component that's linked to its own Garmin gear item (issue
+    63) is judged against that item's distance — the logged service point has
+    to use the same basis, or future 'distance since' would be nonsense."""
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain", bike_name="Canyon Ultimate",
+                                  linked_gear_uuid="chain-1")
+
+    result = gear_tracker.log_maintenance(gear_name="Canyon Ultimate", component="Chain", action="lubed")
+    assert result["distance_at_service_km"] == 1969.68  # chain-1's own distance, not the bike's 1000.0
 
 
 def test_get_maintenance_status_scopes_to_one_gear(monkeypatch):
@@ -430,6 +554,47 @@ def test_post_component_missing_bike_uuid_errors(client):
     assert "error" in resp.json()
 
 
+def test_post_component_json_links_to_garmin_gear(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", json={
+        "bike_uuid": "bike-1", "linked_gear_uuid": "chain-1",
+    })
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["name"] == "Shimano 12s Chain"
+    assert body["linked_gear_uuid"] == "chain-1"
+
+
+def test_post_component_edit_form_without_linked_field_keeps_link(monkeypatch):
+    """The plain 'Edit component' form doesn't carry a linked_gear_uuid field
+    at all — an absent key must keep the existing link, not clear it."""
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    comp = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "component_id": comp["id"], "bike_uuid": "bike-1", "name": "Chain (renamed)",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    assert gear_tracker.get_component(comp["id"])["linked_gear_uuid"] == "chain-1"
+
+
+def test_post_component_form_empty_linked_field_clears_link(monkeypatch):
+    """The 'Link component' form's 'Custom' option submits an empty
+    linked_gear_uuid — present-but-empty must explicitly clear the link."""
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    comp = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "component_id": comp["id"], "bike_uuid": "bike-1", "name": "Chain",
+        "linked_gear_uuid": "",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    assert gear_tracker.get_component(comp["id"])["linked_gear_uuid"] is None
+
+
 def test_post_component_form_error_redirects_with_message(client):
     resp = client.post(f"{gear_tracker.API_PREFIX}/components", data={"name": "Chain"},
                        follow_redirects=False)
@@ -471,6 +636,18 @@ def test_post_maintenance_unknown_component_errors(client):
         "component_id": 9999, "action": "lubed",
     })
     assert resp.status_code == 400
+
+
+def test_post_maintenance_linked_component_uses_linked_gears_distance(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    comp = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/maintenance", json={
+        "component_id": comp["id"], "action": "lubed",
+    })
+    assert resp.status_code == 200
+    assert resp.json()["distance_at_service_km"] == 1969.68
 
 
 def test_post_maintenance_redirect_preserves_token(client):

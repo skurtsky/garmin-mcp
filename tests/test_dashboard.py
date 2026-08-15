@@ -114,7 +114,8 @@ SAMPLE = {
          "components": [
              {"id": 1, "bike_uuid": "bike-1", "bike_name": "Canyon Ultimate", "name": "Chain",
               "install_date": "2026-01-01", "install_distance_km": 5420.0,
-              "maintenance_interval_km": 400.0, "last_serviced": "2026-01-01",
+              "maintenance_interval_km": 400.0, "effective_interval_km": 400.0,
+              "linked_gear_uuid": None, "last_serviced": "2026-01-01",
               "ever_serviced": False, "distance_since_km": 380.0,
               "status": "yellow", "status_emoji": "\U0001F7E1"},
          ]},
@@ -124,7 +125,7 @@ SAMPLE = {
          "date_begin": "2025-01-01", "date_end": None,
          "status_indicator": "green", "status_emoji": "\U0001F7E2", "status_color": "#4fae72",
          "is_bike": False, "is_shoe": True, "components": []},
-    ]},
+    ], "linkable_gear": []},
     "gear_status_err": None,
 }
 
@@ -191,6 +192,47 @@ def test_render_gear_panel_forms_carry_token():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
     assert 'action="/api/gear/maintenance?token=t0k"' in html
     assert 'action="/api/gear/components?token=t0k"' in html
+
+
+def test_render_gear_panel_offers_link_component_not_add(monkeypatch):
+    """'Add component' (free-text) was replaced with 'Link component' (pick
+    from the athlete's own Garmin-tracked gear) — issue 63."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "Link component" in html
+    assert "Add component" not in html
+
+
+def test_render_gear_panel_link_form_lists_linkable_gear():
+    data = {**SAMPLE, "gear_status": {
+        **SAMPLE["gear_status"],
+        "linkable_gear": [{"uuid": "chain-1", "name": "Shimano 12s Chain", "model": None,
+                           "distance_km": 1969.68, "max_distance_km": 3000.0}],
+    }}
+    html = dashboard.render_dashboard_html(data)
+    assert '<option value="chain-1">' in html
+    assert "Shimano 12s Chain" in html
+
+
+def test_render_gear_panel_component_row_opens_target_modal():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'href="#component-1"' in html
+    assert 'id="component-1"' in html
+
+
+def test_render_gear_panel_shows_error_banner():
+    html = dashboard.render_dashboard_html(SAMPLE, error="name is required.")
+    assert "name is required." in html
+
+
+def test_render_gear_panel_no_error_banner_by_default():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "name is required." not in html
+
+
+def test_render_gear_panel_bike_card_links_to_component_tracker():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'href="#bike-bike-1"' in html
+    assert 'id="bike-bike-1"' in html
 
 
 def test_render_gear_panel_handles_missing_data():

@@ -560,6 +560,39 @@ details.gear-actions summary::-webkit-details-marker { display:none; }
 .gear-table tr:last-child td { border-bottom:none; }
 .gear-log-list { max-height:320px; overflow-y:auto; display:flex; flex-direction:column; gap:8px; }
 
+/* ── gear tab (Nocturne mockup match, issue 63) ── */
+.gt-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; }
+.gt-bike-card { text-decoration:none; color:inherit; }
+.gt-bike-card:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
+.gt-wearbar { height:5px; border-radius:999px; background:var(--color-neutral-800); overflow:hidden; }
+.gt-wearbar > div { height:100%; border-radius:999px; }
+.gt-badge { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:500;
+            padding:3px 9px; border-radius:999px; border:1px solid; white-space:nowrap; }
+details.gt-bike { background:var(--color-surface); border-radius:var(--radius-md);
+                   margin-bottom:12px; scroll-margin-top:60px; }
+details.gt-bike > summary { display:flex; align-items:center; justify-content:space-between;
+                             padding:14px; cursor:pointer; list-style:none; }
+details.gt-bike > summary::-webkit-details-marker { display:none; }
+details.gt-bike > summary::after { content:'\\25BE'; color:var(--color-neutral-500);
+                                    font-size:13px; transition:transform .15s; }
+details.gt-bike[open] > summary::after { transform:rotate(180deg); }
+.gt-comp-grid { display:grid; grid-template-columns:minmax(150px,1fr) 100px 100px 80px 140px; gap:8px; align-items:center; }
+.gt-comp-row { padding:8px 10px; border-radius:6px; text-decoration:none; color:inherit; cursor:pointer; }
+.gt-comp-row:hover { filter:brightness(1.1); }
+.gt-hist-extra { display:none; }
+.gt-history label[for=gt-hist-lim] { display:none; }
+.gt-hist-toggle { font-size:12px; color:var(--color-accent-300); cursor:pointer; }
+#gt-hist-all:checked ~ .gt-history .gt-hist-extra { display:table-row; }
+#gt-hist-all:checked ~ .gt-history label[for=gt-hist-all] { display:none; }
+#gt-hist-all:checked ~ .gt-history label[for=gt-hist-lim] { display:inline; }
+.gear-modal { display:none; position:fixed; inset:0; z-index:1000; align-items:center;
+              justify-content:center; padding:16px; }
+.gear-modal:target { display:flex; }
+.gear-modal-backdrop { position:absolute; inset:0; background:rgba(10,11,16,.65); }
+.gear-modal-dialog { position:relative; z-index:1; width:100%; max-width:420px; max-height:85vh;
+                      overflow-y:auto; background:var(--color-surface); border-radius:var(--radius-md);
+                      padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-md); }
+
 /* ── activity expand ── */
 details.actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
                    box-shadow:var(--shadow-sm); }
@@ -1225,147 +1258,319 @@ def _panel_fitness(data: dict) -> str:
 _GEAR_ACTIONS = ("lubed", "replaced", "serviced", "adjusted", "other")
 
 
-def _gear_status_dot(status: str) -> str:
+def _status_color(status: str) -> str:
     from tools.gear_tracker import _STATUS_COLOR
-    color = _STATUS_COLOR.get(status, _STATUS_COLOR["unknown"])
-    return f'<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:{color};flex:0 0 auto"></span>'
+    return _STATUS_COLOR.get(status, _STATUS_COLOR["unknown"])
 
 
-def _gear_overview_card(g: dict) -> str:
+def _dot_style(color: str) -> str:
+    return f"display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};flex:0 0 auto"
+
+
+def _tint(color: str, pct: int = 14) -> str:
+    """A status color mixed into the surface color, for a subtle status-tinted background."""
+    return f"color-mix(in srgb, {color} {pct}%, var(--color-surface))"
+
+
+def _border_tint(color: str, pct: int = 40) -> str:
+    return f"color-mix(in srgb, {color} {pct}%, transparent)"
+
+
+def _gear_bike_overview_card(g: dict) -> str:
+    """A clickable bike card (Bikes overview) that jumps to its entry in the
+    Bike Component Tracker section below via a same-page anchor link — no JS
+    needed."""
+    color = _status_color(g["status_indicator"])
+    n = len(g["components"])
+    badge = ""
+    if g["status_indicator"] == "red":
+        badge = (
+            f'<span class="gt-badge" style="color:{color};background:{_tint(color)};'
+            f'border-color:{_border_tint(color)}"><span style="{_dot_style(color)}"></span>Service due</span>'
+        )
     stats = [("Distance", _fmt_km(g.get("distance_km")))]
     if g.get("duration_min"):
         stats.append(("Time", _fmt_dur(g.get("duration_min"))))
+    if g.get("total_activities") is not None:
+        stats.append(("Rides", str(g["total_activities"])))
     stats_html = "".join(
-        f'<div><div style="font-family:var(--font-heading);font-size:17px">{v}</div>'
-        f'<div style="font-size:10px;color:var(--color-neutral-500)">{html.escape(k)}</div></div>'
+        f'<div style="font-size:12px;white-space:nowrap"><span style="color:var(--color-text)">{_e(v)}</span> '
+        f'<span style="color:var(--color-neutral-500)">{html.escape(k)}</span></div>'
         for k, v in stats
     )
     return f"""
+    <a class="card gt-bike-card" href="#bike-{_e(g.get('uuid') or '')}" style="padding:14px;gap:10px">
+      <div style="font-size:15px;font-weight:600;font-family:var(--font-heading)">{_e(g.get("name"))}</div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap">{stats_html}</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding-top:10px;border-top:1px solid var(--color-divider)">
+        <span style="font-size:12px;color:var(--color-neutral-500)">{n} component{"" if n == 1 else "s"} tracked</span>
+        {badge}
+      </div>
+    </a>"""
+
+
+def _gear_shoe_card(g: dict) -> str:
+    color = _status_color(g["status_indicator"])
+    max_km = g.get("max_distance_km") or 750
+    pct = min(((g.get("distance_km") or 0) / max_km) * 100, 100) if max_km else 0
+    distance_line = _fmt_km(g.get("distance_km"))
+    if g.get("max_distance_km"):
+        distance_line += f" of {_fmt_km(g['max_distance_km'])}"
+    return f"""
     <div class="card" style="padding:14px;gap:10px">
-      <div style="display:flex;align-items:center;gap:8px">
-        {_gear_status_dot(g["status_indicator"])}
-        <div style="min-width:0;flex:1">
-          <div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(g.get("name"))}</div>
-          <div style="font-size:10px;color:var(--color-neutral-500);text-transform:uppercase;letter-spacing:.06em">{_e(g.get("activity_type") or "Gear")}</div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:19px;line-height:1">\U0001F3C3</span>
+        <div style="min-width:0">
+          <div style="font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(g.get("name"))}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">{_e(g.get("model") or "Shoes")}</div>
         </div>
       </div>
-      <div style="display:flex;gap:16px">{stats_html}</div>
+      <div style="font-size:12px;color:var(--color-neutral-400)">{distance_line}</div>
+      <div class="gt-wearbar"><div style="width:{pct:.0f}%;background:{color}"></div></div>
     </div>"""
 
 
-def _gear_component_row(c: dict, token: str | None) -> str:
-    interval = c.get("maintenance_interval_km")
+def _gear_component_row(c: dict) -> str:
+    """One row of the Bike Component Tracker table — a CSS-grid `<a>` (not a
+    real `<table>` row: browsers foster-parent stray children out of a real
+    `<table>`/`<tbody>`, so an anchor can't stand in for a `<tr>` there) that
+    opens the component's detail/log-maintenance modal via a same-page
+    `#component-<id>` anchor, shown with `:target` (see the .gear-modal CSS)
+    — no JS needed."""
+    color = _status_color(c["status"])
+    interval = c.get("effective_interval_km")
+    since = c.get("distance_since_km") or 0
+    pct = min((since / interval) * 100, 100) if interval else 8
     interval_txt = _fmt_km(interval) if interval else "N/A"
-    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
-    interval_value = "" if interval is None else f"{interval:g}"
-    today_iso = date.today().isoformat()
+    status_label = "N/A" if c["status"] == "unknown" else c["status"].title()
     return f"""
-    <tr>
-      <td>{_e(c["name"])}</td>
-      <td>{_e(c["last_serviced"])}</td>
-      <td>{_fmt_km(c.get("distance_since_km"))}</td>
-      <td>{interval_txt}</td>
-      <td>{c["status_emoji"]}</td>
-    </tr>
-    <tr>
-      <td colspan="5" style="padding-top:0;border-bottom:1px solid var(--color-divider)">
+    <a class="gt-comp-row gt-comp-grid" href="#component-{_e(c['id'])}"
+       style="background:{_tint(color)};border-left:3px solid {color}">
+      <div>{_e(c["name"])}</div>
+      <div style="color:var(--color-neutral-400)">{_e(c["last_serviced"])}</div>
+      <div>{_fmt_km(c.get("distance_since_km"))}</div>
+      <div style="color:var(--color-neutral-400)">{interval_txt}</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:52px;height:6px;border-radius:99px;background:var(--color-neutral-800);overflow:hidden;flex:none">
+          <div style="height:100%;border-radius:99px;background:{color};width:{pct:.0f}%"></div>
+        </div>
+        <span style="font-size:11px;color:{color}">{_e(status_label)}</span>
+      </div>
+    </a>"""
+
+
+def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], token: str | None) -> str:
+    """The CSS-only (`:target`) modal a component row opens: status, wear
+    bar, key dates, recent maintenance, a log-maintenance form, and an
+    "Edit component" disclosure for renaming/adjusting the interval."""
+    color = _status_color(c["status"])
+    interval = c.get("effective_interval_km")
+    since = c.get("distance_since_km") or 0
+    pct = min((since / interval) * 100, 100) if interval else 8
+    interval_txt = _fmt_km(interval) if interval else "N/A"
+    status_label = "N/A" if c["status"] == "unknown" else c["status"].title()
+    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
+    today_iso = date.today().isoformat()
+    raw_interval = c.get("maintenance_interval_km")
+    interval_value = "" if raw_interval is None else f"{raw_interval:g}"
+    interval_placeholder = "uses Garmin's replace-at distance" if c.get("linked_gear_uuid") else "optional"
+
+    linked_note = (
+        '<div style="font-size:11px;color:var(--color-neutral-600)">Linked to its own '
+        'Garmin-tracked gear item &mdash; distance comes from Garmin, not this bike.</div>'
+        if c.get("linked_gear_uuid") else ""
+    )
+
+    history_lines = "".join(
+        '<div style="font-size:12px;color:var(--color-neutral-400);padding:2px 0">'
+        + _e(f'{h["date"]} · {h["action"].title()}' + (f' — {h["notes"]}' if h.get("notes") else ""))
+        + "</div>"
+        for h in history
+    )
+    history_block = f"""
+        <div>
+          <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:4px">Recent maintenance</div>
+          {history_lines}
+        </div>""" if history_lines else ""
+
+    return f"""
+    <div id="component-{_e(c['id'])}" class="gear-modal">
+      <a href="#gm-modal-close" class="gear-modal-backdrop" aria-label="Close"></a>
+      <div class="gear-modal-dialog">
+        <div>
+          <div style="font-size:16px;font-weight:600;font-family:var(--font-heading)">{_e(c["name"])}</div>
+          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(bike_name)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="{_dot_style(color)}"></span><span style="font-size:12px;color:{color}">{_e(status_label)}</span>
+        </div>
+        <div style="height:6px;border-radius:99px;background:var(--color-neutral-800);overflow:hidden">
+          <div style="height:100%;border-radius:99px;background:{color};width:{pct:.0f}%"></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;color:var(--color-neutral-300)">
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Last Serviced</div>{_e(c["last_serviced"])}</div>
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Distance Since</div>{_fmt_km(c.get("distance_since_km"))}</div>
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Interval</div>{interval_txt}</div>
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Installed</div>{_e(c["install_date"])}</div>
+        </div>
+        {linked_note}
+        {history_block}
+        <div style="border-top:1px solid var(--color-divider)"></div>
+        <div style="font-size:13px;font-weight:600;font-family:var(--font-heading)">Log Maintenance</div>
+        <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
+          <input type="hidden" name="component_id" value="{_e(c['id'])}">
+          <label>Action<select name="action">{action_options}</select></label>
+          <label>Date<input type="date" name="date" value="{today_iso}"></label>
+          <label>Notes<input type="text" name="notes" placeholder="optional"></label>
+          <button type="submit">Log</button>
+        </form>
         <details class="gear-actions">
-          <summary>Log maintenance</summary>
-          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
-            <input type="hidden" name="component_id" value="{c['id']}">
-            <label>Action<select name="action">{action_options}</select></label>
-            <label>Date<input type="date" name="date" value="{today_iso}"></label>
-            <label>Notes<input type="text" name="notes" placeholder="optional"></label>
-            <button type="submit">Log</button>
-          </form>
-        </details>
-        <details class="gear-actions">
-          <summary>Edit</summary>
+          <summary>Edit component</summary>
           <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}">
-            <input type="hidden" name="component_id" value="{c['id']}">
+            <input type="hidden" name="component_id" value="{_e(c['id'])}">
             <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
             <label>Name<input type="text" name="name" value="{_e(c['name'])}" required></label>
             <label>Install date<input type="date" name="install_date" value="{_e(c['install_date'])}"></label>
-            <label>Interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
-                value="{interval_value}" placeholder="N/A"></label>
+            <label>Interval override (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
+                value="{interval_value}" placeholder="{interval_placeholder}"></label>
             <button type="submit">Save</button>
           </form>
         </details>
-      </td>
-    </tr>"""
+        <a href="#gm-modal-close" style="align-self:flex-end;font-size:12px;color:var(--color-neutral-500);text-decoration:none">Close</a>
+      </div>
+    </div>"""
 
 
-def _gear_bike_block(g: dict, token: str | None) -> str:
-    rows = "".join(_gear_component_row(c, token) for c in g["components"])
-    table = f"""
-    <table class="gear-table">
-      <thead><tr><th>Component</th><th>Last serviced</th><th>Distance since</th>
-        <th>Interval</th><th>Status</th></tr></thead>
-      <tbody>{rows}</tbody>
-    </table>""" if g["components"] else '<div class="muted" style="font-size:12px">No components tracked yet.</div>'
-
+def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | None) -> str:
+    """Replaces the old free-text "Add component" form (issue 63): pick one
+    of the athlete's own Garmin-tracked gear items (a chain, cassette, tires,
+    ... registered as its own gear — see the gear tool) to link, so status is
+    judged against that item's real tracked distance instead of a
+    hand-typed/guessed one. "Custom" still creates a plain, bike-distance-based
+    component for parts Garmin doesn't track individually (e.g. bar tape)."""
     today_iso = date.today().isoformat()
-    add_form = f"""
-    <details class="gear-actions" style="margin-top:8px">
-      <summary>+ Add component</summary>
+    opts = ['<option value="">Custom (not tracked in Garmin)</option>']
+    for lg in linkable_gear:
+        label = lg.get("name") or "Unnamed gear"
+        if lg.get("distance_km") is not None:
+            label += f" — {_fmt_km(lg['distance_km'])}"
+        opts.append(f'<option value="{_e(lg["uuid"])}">{_e(label)}</option>')
+    options_html = "".join(opts)
+    return f"""
+    <details class="gear-actions" style="margin-top:4px">
+      <summary>+ Link component</summary>
       <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}">
         <input type="hidden" name="bike_uuid" value="{_e(g.get('uuid') or '')}">
         <input type="hidden" name="bike_name" value="{_e(g.get('name') or '')}">
-        <label>Name<input type="text" name="name" placeholder="e.g. Chain" required></label>
+        <label>Garmin gear<select name="linked_gear_uuid">{options_html}</select></label>
+        <label>Name<input type="text" name="name" placeholder="e.g. Chain"></label>
         <label>Install date<input type="date" name="install_date" value="{today_iso}"></label>
-        <label>Interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
-            placeholder="optional"></label>
-        <button type="submit">Add</button>
+        <label>Interval override (km)<input type="number" step="1" min="0" name="maintenance_interval_km" placeholder="optional"></label>
+        <button type="submit">Link</button>
       </form>
     </details>"""
 
+
+def _gear_bike_block(g: dict, linkable_gear: list[dict], token: str | None, is_first: bool) -> str:
+    """One bike's entry in the Bike Component Tracker — an expandable
+    `<details>` (open by default for the first bike, or any bike needing
+    attention) holding its component rows and the Link-component form."""
+    from tools.gear_tracker import list_maintenance_log
+
+    components = g["components"]
+    is_open = is_first or g["status_indicator"] == "red"
+
+    if components:
+        rows_html = "".join(_gear_component_row(c) for c in components)
+        modals_html = "".join(
+            _gear_component_modal(
+                c, g.get("name"), list_maintenance_log(component_id=c["id"], limit=3), token,
+            )
+            for c in components
+        )
+        list_html = f"""
+        <div style="overflow-x:auto">
+          <div style="min-width:620px">
+            <div class="gt-comp-grid" style="padding:4px 10px 8px;font-size:10px;text-transform:uppercase;
+                letter-spacing:.05em;color:var(--color-neutral-500)">
+              <div>Component</div><div>Last Serviced</div><div>Distance Since</div><div>Interval</div><div>Status</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:4px">{rows_html}</div>
+          </div>
+        </div>
+        {modals_html}"""
+    else:
+        list_html = '<div class="muted" style="font-size:12px">No components tracked yet — link one below.</div>'
+
     return f"""
-    <div class="card" style="padding:14px;gap:10px">
-      <div style="display:flex;align-items:center;gap:8px">
-        {_gear_status_dot(g["status_indicator"])}
-        <div style="font-size:13px;font-weight:600">{_e(g.get("name"))}</div>
-        <div class="muted" style="font-size:11px">&middot; {_fmt_km(g.get("distance_km"))}</div>
+    <details class="gt-bike" id="bike-{_e(g.get('uuid') or '')}"{" open" if is_open else ""}>
+      <summary>
+        <span style="display:flex;align-items:center;gap:10px">
+          <span style="{_dot_style(_status_color(g["status_indicator"]))}"></span>
+          <span style="font-size:15px;font-weight:600;font-family:var(--font-heading)">{_e(g.get("name"))}</span>
+        </span>
+      </summary>
+      <div style="padding:0 14px 14px;display:flex;flex-direction:column;gap:6px">
+        {list_html}
+        {_gear_link_component_form(g, linkable_gear, token)}
       </div>
-      <div style="overflow-x:auto">{table}</div>
-      {add_form}
+    </details>"""
+
+
+def _gear_history_section(log_entries: list[dict], bike_names: dict) -> str:
+    """Maintenance History — a table with a CSS-only (radio-driven, matching
+    the tab/range-toggle pattern above) "Show all"/"Show less" beyond the
+    first 5 rows, so long histories don't dominate the tab by default."""
+    if not log_entries:
+        return """
+    <div>
+      <div class="section-title">Maintenance History</div>
+      <div class="muted" style="font-size:13px">No maintenance logged yet.</div>
+    </div>"""
+
+    visible_cap = 5
+    rows = []
+    for i, entry in enumerate(log_entries):
+        bike_name = bike_names.get(entry.get("bike_uuid")) or entry.get("bike_name")
+        cls = ' class="gt-hist-extra"' if i >= visible_cap else ""
+        rows.append(f"""
+        <tr{cls}>
+          <td style="color:var(--color-neutral-400);white-space:nowrap">{_e(entry["date"])}</td>
+          <td>{_e(bike_name)}</td>
+          <td>{_e(entry.get("component_name"))}</td>
+          <td>{_e((entry.get("action") or "").title())}</td>
+          <td style="color:var(--color-neutral-500)">{_e(entry.get("notes") or "—")}</td>
+        </tr>""")
+    rows_html = "".join(rows)
+
+    toggle_inputs, toggle_labels = "", ""
+    if len(log_entries) > visible_cap:
+        toggle_inputs = (
+            '<input class="hide" type="radio" name="gt-hist" id="gt-hist-lim" checked>'
+            '<input class="hide" type="radio" name="gt-hist" id="gt-hist-all">'
+        )
+        toggle_labels = (
+            '<label class="gt-hist-toggle" for="gt-hist-all">Show all</label>'
+            '<label class="gt-hist-toggle" for="gt-hist-lim">Show less</label>'
+        )
+
+    return f"""
+    {toggle_inputs}
+    <div class="gt-history">
+      <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
+        <div class="section-title" style="margin-bottom:0">Maintenance History</div>
+        {toggle_labels}
+      </div>
+      <div style="overflow-x:auto">
+        <table class="gear-table">
+          <thead><tr><th>Date</th><th>Gear</th><th>Component</th><th>Action</th><th>Notes</th></tr></thead>
+          <tbody>{rows_html}</tbody>
+        </table>
+      </div>
     </div>"""
 
 
-def _gear_log_entry(entry: dict, bike_names: dict) -> str:
-    bike_name = bike_names.get(entry.get("bike_uuid")) or entry.get("bike_name")
-    notes = (f'<div style="margin-top:3px;font-size:11px;color:var(--color-neutral-400)">'
-             f'{_e(entry.get("notes"))}</div>') if entry.get("notes") else ""
-    return f"""
-    <div class="card" style="padding:10px 12px;gap:2px">
-      <div style="font-size:12px"><strong>{_e(entry.get("action", "").title())}</strong> &mdash;
-        {_e(bike_name)} / {_e(entry.get("component_name"))}</div>
-      <div style="font-size:10px;color:var(--color-neutral-500)">{_e(entry["date"])} &middot;
-        at {_fmt_km(entry["distance_at_service_km"])}</div>
-      {notes}
-    </div>"""
-
-
-def _gear_log_form(components: list[dict], bike_names: dict, token: str | None) -> str:
-    if not components:
-        return ""
-    options = "".join(
-        f'<option value="{c["id"]}">'
-        f'{_e(bike_names.get(c.get("bike_uuid")) or c.get("bike_name"))} &mdash; {_e(c["name"])}</option>'
-        for c in components
-    )
-    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
-    today_iso = date.today().isoformat()
-    return f"""
-    <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
-      <label>Component<select name="component_id">{options}</select></label>
-      <label>Action<select name="action">{action_options}</select></label>
-      <label>Date<input type="date" name="date" value="{today_iso}"></label>
-      <label>Notes<input type="text" name="notes" placeholder="optional"></label>
-      <button type="submit">+ Log maintenance</button>
-    </form>"""
-
-
-def _panel_gear(data: dict, token: str | None = None) -> str:
+def _panel_gear(data: dict, token: str | None = None, error: str | None = None) -> str:
     gear_status = data.get("gear_status")
     if not gear_status:
         err = data.get("gear_status_err") or "no data"
@@ -1374,40 +1579,49 @@ def _panel_gear(data: dict, token: str | None = None) -> str:
     gear = gear_status.get("gear") or []
     active_gear = [g for g in gear if (g.get("status") or "active").lower() == "active"]
     bikes = [g for g in active_gear if g["is_bike"]]
+    shoes = [g for g in active_gear if g["is_shoe"]]
+    linkable_gear = gear_status.get("linkable_gear") or []
 
-    cards_html = "".join(_gear_overview_card(g) for g in active_gear) or \
-        '<div class="muted" style="font-size:13px">No registered gear yet — add shoes or a bike in Garmin Connect.</div>'
+    error_html = (
+        f'<div style="padding:10px 12px;border-radius:var(--radius-md);font-size:13px;color:#f0b3ab;'
+        f'background:color-mix(in srgb, #cf5a4e 16%, var(--color-surface))">{_e(error)}</div>'
+        if error else ""
+    )
+
+    bike_cards_html = "".join(_gear_bike_overview_card(g) for g in bikes) or \
+        '<div class="muted" style="font-size:13px">No bikes registered yet.</div>'
+    shoe_cards_html = "".join(_gear_shoe_card(g) for g in shoes) or \
+        '<div class="muted" style="font-size:13px">No shoes registered yet.</div>'
 
     bikes_html = "".join(
-        f'<div style="margin-bottom:12px">{_gear_bike_block(g, token)}</div>' for g in bikes
+        _gear_bike_block(g, linkable_gear, token, is_first=(i == 0)) for i, g in enumerate(bikes)
     ) or '<div class="muted" style="font-size:13px">No bikes registered yet.</div>'
-
-    bike_names = {g["uuid"]: g.get("name") for g in gear if g.get("uuid")}
-    all_components = [c for g in bikes for c in g["components"]]
 
     # The maintenance log comes from gear_status itself (build_gear_status
     # already fetched it) rather than a second gear_tracker call/connection —
     # see issue #58.
+    bike_names = {g["uuid"]: g.get("name") for g in gear if g.get("uuid")}
     log_entries = gear_status.get("maintenance_log") or []
-    log_html = "".join(_gear_log_entry(e, bike_names) for e in log_entries) or \
-        '<div class="muted" style="font-size:13px">No maintenance logged yet.</div>'
+    history_html = _gear_history_section(log_entries, bike_names)
 
     return f"""
-    <section class="panel tabpanel tp-gear" style="flex-direction:column;gap:16px">
+    <section class="panel tabpanel tp-gear" style="flex-direction:column;gap:20px">
       <div style="font-family:var(--font-heading);font-size:20px">Gear</div>
+      {error_html}
+      <span id="gm-modal-close"></span>
       <div>
-        <div class="section-title">Overview</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">{cards_html}</div>
+        <div class="section-title">Bikes</div>
+        <div class="gt-grid">{bike_cards_html}</div>
       </div>
       <div>
-        <div class="section-title">Bike components</div>
+        <div class="section-title">Shoes</div>
+        <div class="gt-grid">{shoe_cards_html}</div>
+      </div>
+      <div>
+        <div class="section-title">Bike Component Tracker</div>
         {bikes_html}
       </div>
-      <div>
-        <div class="section-title">Maintenance log</div>
-        {_gear_log_form(all_components, bike_names, token)}
-        <div style="display:flex;flex-direction:column;gap:8px;margin-top:10px;max-height:340px;overflow-y:auto">{log_html}</div>
-      </div>
+      {history_html}
     </section>"""
 
 
@@ -1602,7 +1816,7 @@ _DEFAULT_TAB = "today"
 
 
 def render_dashboard_html(data: dict, token: str | None = None,
-                          initial_tab: str | None = None) -> str:
+                          initial_tab: str | None = None, error: str | None = None) -> str:
     """Render the dashboard data dict into a complete HTML document.
 
     ``token`` is threaded into the footer link to the latest weekly report,
@@ -1613,6 +1827,10 @@ def render_dashboard_html(data: dict, token: str | None = None,
     "fitness", "gear") selects which tab starts open — used so a gear-tracker
     form submission can redirect back to the Gear tab specifically rather
     than always landing on Today.
+
+    ``error``, when given, is shown as a banner at the top of the Gear tab —
+    a gear-tracker form error (see ``_error_redirect_url`` in
+    tools/gear_tracker.py) redirects back here with ``?error=...``.
     """
     weekday_line = data.get("date") or ""
     try:
@@ -1636,7 +1854,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
     active_tab_id = _TAB_IDS.get(initial_tab, _TAB_IDS[_DEFAULT_TAB])
 
     panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data)
-             + _panel_fitness(data) + _panel_gear(data, token))
+             + _panel_fitness(data) + _panel_gear(data, token, error))
 
     body = f"""
 <div style="min-height:100vh;background:
