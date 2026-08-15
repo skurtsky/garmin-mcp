@@ -300,9 +300,13 @@ worst-tracked component.
 (redirects back to the Gear tab) — the same endpoints back both the in-page
 forms and programmatic use.
 
-Components and maintenance log entries are stored in a SQLite database
-(`gear-tracker.db`) in the same mounted Azure File Share used for the Garmin
-tokens (`~/.garminconnect`), so they survive container restarts and redeploys.
+Components and maintenance log entries are stored in a JSON file
+(`gear-tracker/gear_data.json`) in the same mounted Azure File Share used for
+the Garmin tokens (`~/.garminconnect`), so they survive container restarts and
+redeploys. Every request reads the file fresh (it's tiny) and every write is
+atomic, so there's nothing to lock — a SQLite database used to live here, but
+SQLite's own locking doesn't work on this file share (SMB, no POSIX file
+locks), and a stuck lock took the whole server down along with it (issue #60).
 Creating a component without an explicit interval picks up a default matched
 case-insensitively by name (chain 400 km, brake pads 2000 km, tires 5000 km,
 chain ring / cassette 8000 km, bar tape untracked) — override the whole table
@@ -319,7 +323,7 @@ Optional environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `GEAR_TRACKER_DB_PATH` | `~/.garminconnect/gear-tracker.db` | Where the database is stored |
+| `GEAR_TRACKER_DATA_PATH` | `~/.garminconnect/gear-tracker/gear_data.json` | Where the data file is stored |
 | `GEAR_TRACKER_DEFAULT_INTERVALS_KM` | *(built-in table)* | JSON object overriding/extending the default maintenance intervals |
 
 ## Testing

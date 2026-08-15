@@ -13,11 +13,11 @@ from tools import dashboard
 @pytest.fixture(autouse=True)
 def gear_db(tmp_path, monkeypatch):
     """build_dashboard_data() calls tools.gear_tracker.build_gear_status,
-    which hits the gear-tracker database — redirect it at a tmp file so
+    which hits the gear-tracker JSON store — redirect it at a tmp file so
     these tests stay fully offline, matching every other test here.
     (render_dashboard_html itself is a pure function of its data dict and
     doesn't touch gear_tracker — see issue #58.)"""
-    monkeypatch.setenv("GEAR_TRACKER_DB_PATH", str(tmp_path / "gear-tracker.db"))
+    monkeypatch.setenv("GEAR_TRACKER_DATA_PATH", str(tmp_path / "gear-tracker" / "gear_data.json"))
 
 
 def _trend_series(values, unit="bpm"):

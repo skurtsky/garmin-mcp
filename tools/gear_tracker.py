@@ -4,13 +4,13 @@
 Garmin's gear() endpoint (tools/profile.py) reports cumulative distance per
 piece of gear (shoes, bikes) but knows nothing about the individual wear
 components on a bike (chain, brake pads, tires, ...) or when they were last
-serviced. This module fills that gap with a small local SQLite database:
+serviced. This module fills that gap with a small local JSON store:
 
-    components       — one row per tracked bike component (name, which bike
+    components       — one entry per tracked bike component (name, which bike
                         it belongs to, when it was installed and at what
                         cumulative bike distance, and its maintenance
                         interval).
-    maintenance_log   — one row per logged maintenance action (date, action,
+    maintenance_log   — one entry per logged maintenance action (date, action,
                         notes, and the bike's cumulative distance *at the time
                         of service* — the anchor "distance since" is computed
                         from).
@@ -23,13 +23,22 @@ stored locally. "Distance since [service]" is therefore always
 never a value stored directly.
 
 Storage lives on the same Azure File Share already mounted for the Garmin
-OAuth tokens (``~/.garminconnect``), under ``gear-tracker.db``.
-``GEAR_TRACKER_DB_PATH`` overrides the location (used by tests). SQLite's
-locking is unreliable on network file shares like this one (see issue #58),
-so rather than a fresh ``sqlite3.connect()`` per call, the process keeps a
-single connection open (:func:`_get_conn`) and serializes access to it —
-cutting both the per-call schema-check/lock-acquire overhead and the number
-of times the file's lock is actually taken.
+OAuth tokens (``~/.garminconnect``), under ``gear-tracker/gear_data.json`` —
+the same JSON-file-on-the-share pattern already used for the Garmin tokens
+and the training plan (tools/training_plan.py). ``GEAR_TRACKER_DATA_PATH``
+overrides the location (used by tests).
+
+This used to be a SQLite database, but SQLite's own locking doesn't work on
+this file share (it's SMB, which doesn't support the POSIX file locking
+SQLite requires) — writes could leave the database locked and, since the
+lock is on the file itself, that stuck lock blocked every other reader too,
+taking down /dashboard and /mcp along with the gear tab (issue #60). A JSON
+file has no locking of its own to get stuck: every read parses the whole
+(tiny — a few components, a few dozen log entries) file fresh, and every
+write is atomic (write to a ``.tmp`` file, then ``os.replace()`` over the
+real path) so a crash mid-write can't corrupt it. ``_lock`` only serializes
+read-modify-write cycles *within this process* (e.g. two maintenance-log
+submissions arriving at once); it has nothing to do with the file share.
 
 Viewing lives in the dashboard's Gear tab (tools/dashboard.py, ``/dashboard``
 — its ``tp-gear`` panel calls :func:`build_gear_status`, styled to match the
@@ -52,9 +61,9 @@ import json
 import logging
 import os
 import re
-import sqlite3
 import threading
-from datetime import date, datetime, timezone
+import uuid as uuid_module
+from datetime import date
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
@@ -69,7 +78,9 @@ API_PREFIX = "/api/gear"
 # The token file share is mounted at ~/.garminconnect (see garmin_client.py);
 # the path is repeated here rather than imported so this module stays usable
 # without a configured Garmin session.
-DEFAULT_DB_PATH = os.path.join(os.path.expanduser("~/.garminconnect"), "gear-tracker.db")
+DEFAULT_DATA_PATH = os.path.join(
+    os.path.expanduser("~/.garminconnect"), "gear-tracker", "gear_data.json"
+)
 
 # Suggested maintenance intervals used when a component is created without an
 # explicit interval, matched case-insensitively by name. Override the whole
@@ -133,143 +144,87 @@ def _load_default_intervals() -> dict:
 
 # ── STORAGE ───────────────────────────────────────────────────────────────────
 
-def db_path() -> str:
-    """Path to the SQLite database. Read per call so tests can override."""
-    return os.environ.get("GEAR_TRACKER_DB_PATH") or DEFAULT_DB_PATH
+def data_path() -> str:
+    """Path to the JSON data file. Read per call so tests can override."""
+    return os.environ.get("GEAR_TRACKER_DATA_PATH") or DEFAULT_DATA_PATH
 
 
-# gear-tracker.db lives on a network file share (see module docstring), and
-# SQLite's own locking is unreliable there. Every open/close cycle is a fresh
-# lock acquisition against that filesystem, so rather than each function
-# opening (and schema-checking, and closing) its own connection, the process
-# keeps a single connection open and serializes all access to it through
-# _conn_lock (issue #58). It's reopened only if the configured path changes,
-# which happens in tests via GEAR_TRACKER_DB_PATH.
-_conn_lock = threading.RLock()
-_conn: sqlite3.Connection | None = None
-_conn_path: str | None = None
+# Read-modify-write cycles (upsert_component, log_maintenance_entry) aren't
+# safe to interleave within this process, so this serializes them. It says
+# nothing about the file share itself — the atomic write in _write() is what
+# keeps the file on disk from being corrupted (see module docstring).
+_lock = threading.RLock()
 
 
-def _get_conn() -> sqlite3.Connection:
-    """The process-wide connection, opened lazily and reused thereafter.
+def _read() -> dict:
+    """Read the full JSON store, fresh, every call — it's tiny (well under
+    10KB) so there's no reason to cache it and risk serving stale data."""
+    path = data_path()
+    if not os.path.exists(path):
+        return {"components": [], "maintenance_log": []}
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    data.setdefault("components", [])
+    data.setdefault("maintenance_log", [])
+    return data
 
-    Callers must hold ``_conn_lock`` for the duration of their use of the
-    returned connection — a single ``sqlite3.Connection`` isn't safe for
-    concurrent use from multiple threads.
-    """
-    global _conn, _conn_path
-    path = db_path()
-    if _conn is not None and _conn_path == path:
-        return _conn
-    if _conn is not None:
-        try:
-            _conn.close()
-        except sqlite3.Error:
-            pass
+
+def _write(data: dict) -> None:
+    """Atomic write: write to a ``.tmp`` file, then ``os.replace()`` over the
+    real path, so a crash mid-write can't leave a corrupt/partial file."""
+    path = data_path()
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    _ensure_schema(conn)
-    _conn = conn
-    _conn_path = path
-    return _conn
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS components (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            bike_uuid TEXT NOT NULL,
-            bike_name TEXT,
-            name TEXT NOT NULL,
-            install_date TEXT NOT NULL,
-            install_distance_km REAL NOT NULL DEFAULT 0,
-            maintenance_interval_km REAL,
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS maintenance_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            component_id INTEGER NOT NULL REFERENCES components(id) ON DELETE CASCADE,
-            date TEXT NOT NULL,
-            action TEXT NOT NULL,
-            distance_at_service_km REAL NOT NULL,
-            notes TEXT,
-            created_at TEXT NOT NULL
-        );
-        """
+def _find(items: list[dict], **fields):
+    """First item matching all given field values exactly, or None."""
+    return next(
+        (item for item in items if all(item.get(k) == v for k, v in fields.items())),
+        None,
     )
-    conn.commit()
 
 
-def _row_to_component(row: sqlite3.Row) -> dict:
+def _enrich_log_entry(entry: dict, component: dict) -> dict:
+    """A maintenance-log entry plus the fields the old SQL join used to add
+    (component/bike name and bike uuid), for display."""
     return {
-        "id": row["id"],
-        "bike_uuid": row["bike_uuid"],
-        "bike_name": row["bike_name"],
-        "name": row["name"],
-        "install_date": row["install_date"],
-        "install_distance_km": row["install_distance_km"],
-        "maintenance_interval_km": row["maintenance_interval_km"],
+        **entry,
+        "component_name": component["name"],
+        "bike_name": component.get("bike_name"),
+        "bike_uuid": component.get("bike_uuid"),
     }
-
-
-def _row_to_log(row: sqlite3.Row) -> dict:
-    entry = {
-        "id": row["id"],
-        "component_id": row["component_id"],
-        "date": row["date"],
-        "action": row["action"],
-        "distance_at_service_km": row["distance_at_service_km"],
-        "notes": row["notes"],
-    }
-    keys = row.keys()
-    if "component_name" in keys:
-        entry["component_name"] = row["component_name"]
-    if "bike_name" in keys:
-        entry["bike_name"] = row["bike_name"]
-    if "bike_uuid" in keys:
-        entry["bike_uuid"] = row["bike_uuid"]
-    return entry
 
 
 def list_components(bike_uuid: str | None = None) -> list[dict]:
     """Every tracked component, optionally scoped to one bike."""
-    with _conn_lock:
-        conn = _get_conn()
-        if bike_uuid:
-            rows = conn.execute(
-                "SELECT * FROM components WHERE bike_uuid = ? ORDER BY name",
-                (bike_uuid,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM components ORDER BY bike_name, name"
-            ).fetchall()
-        return [_row_to_component(r) for r in rows]
+    with _lock:
+        components = _read()["components"]
+    if bike_uuid:
+        return sorted((c for c in components if c["bike_uuid"] == bike_uuid),
+                      key=lambda c: c["name"].lower())
+    return sorted(components, key=lambda c: ((c.get("bike_name") or "").lower(), c["name"].lower()))
 
 
-def get_component(component_id: int) -> dict | None:
-    with _conn_lock:
-        conn = _get_conn()
-        row = conn.execute(
-            "SELECT * FROM components WHERE id = ?", (component_id,)
-        ).fetchone()
-        return _row_to_component(row) if row else None
+def get_component(component_id: str) -> dict | None:
+    with _lock:
+        return _find(_read()["components"], id=component_id)
 
 
 def find_component(bike_uuid: str, name: str) -> dict | None:
     """Look up a tracked component by bike + name, case-insensitively."""
-    with _conn_lock:
-        conn = _get_conn()
-        row = conn.execute(
-            "SELECT * FROM components WHERE bike_uuid = ? AND lower(name) = lower(?)",
-            (bike_uuid, name),
-        ).fetchone()
-        return _row_to_component(row) if row else None
+    with _lock:
+        components = _read()["components"]
+    return next(
+        (c for c in components
+         if c["bike_uuid"] == bike_uuid and c["name"].lower() == name.lower()),
+        None,
+    )
 
 
 def upsert_component(
@@ -279,14 +234,15 @@ def upsert_component(
     install_date: str | None = None,
     install_distance_km: float = 0.0,
     maintenance_interval_km=_UNSET,
-    component_id: int | None = None,
+    component_id: str | None = None,
 ) -> dict:
     """Create a component, or update an existing one.
 
-    With ``component_id`` given, that exact row is updated. Otherwise a
-    matching ``bike_uuid`` + ``name`` (case-insensitive) row is updated if one
-    exists, and a new component is created if not — so re-submitting the "add
-    component" form for the same name just edits it rather than duplicating.
+    With ``component_id`` given, that exact component is updated. Otherwise a
+    matching ``bike_uuid`` + ``name`` (case-insensitive) component is updated
+    if one exists, and a new component is created if not — so re-submitting
+    the "add component" form for the same name just edits it rather than
+    duplicating.
 
     ``maintenance_interval_km`` left at its default keeps the existing value
     on an update; on create it falls back to :data:`DEFAULT_INTERVALS_KM`
@@ -301,20 +257,18 @@ def upsert_component(
     name = name.strip()
     install_date = _validate_date(install_date or date.today().isoformat(), "install_date")
 
-    with _conn_lock:
-        conn = _get_conn()
-        existing = None
+    with _lock:
+        data = _read()
         if component_id is not None:
-            existing = conn.execute(
-                "SELECT * FROM components WHERE id = ?", (component_id,)
-            ).fetchone()
+            existing = _find(data["components"], id=component_id)
             if existing is None:
                 raise ValueError(f"No component with id {component_id}.")
         else:
-            existing = conn.execute(
-                "SELECT * FROM components WHERE bike_uuid = ? AND lower(name) = lower(?)",
-                (bike_uuid, name),
-            ).fetchone()
+            existing = next(
+                (c for c in data["components"]
+                 if c["bike_uuid"] == bike_uuid and c["name"].lower() == name.lower()),
+                None,
+            )
 
         if maintenance_interval_km is _UNSET:
             if existing is not None:
@@ -322,32 +276,34 @@ def upsert_component(
             else:
                 maintenance_interval_km = _load_default_intervals().get(name.lower())
 
-        now = datetime.now(timezone.utc).isoformat()
         if existing is not None:
-            conn.execute(
-                """UPDATE components SET bike_uuid=?, bike_name=?, name=?, install_date=?,
-                   install_distance_km=?, maintenance_interval_km=? WHERE id=?""",
-                (bike_uuid, bike_name, name, install_date, install_distance_km,
-                 maintenance_interval_km, existing["id"]),
-            )
-            new_id = existing["id"]
+            existing.update({
+                "bike_uuid": bike_uuid,
+                "bike_name": bike_name,
+                "name": name,
+                "install_date": install_date,
+                "install_distance_km": install_distance_km,
+                "maintenance_interval_km": maintenance_interval_km,
+            })
+            result = dict(existing)
         else:
-            cur = conn.execute(
-                """INSERT INTO components
-                   (bike_uuid, bike_name, name, install_date, install_distance_km,
-                    maintenance_interval_km, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (bike_uuid, bike_name, name, install_date, install_distance_km,
-                 maintenance_interval_km, now),
-            )
-            new_id = cur.lastrowid
-        conn.commit()
-        row = conn.execute("SELECT * FROM components WHERE id = ?", (new_id,)).fetchone()
-        return _row_to_component(row)
+            result = {
+                "id": str(uuid_module.uuid4()),
+                "bike_uuid": bike_uuid,
+                "bike_name": bike_name,
+                "name": name,
+                "install_date": install_date,
+                "install_distance_km": install_distance_km,
+                "maintenance_interval_km": maintenance_interval_km,
+            }
+            data["components"].append(result)
+            result = dict(result)
+        _write(data)
+        return result
 
 
 def log_maintenance_entry(
-    component_id: int,
+    component_id: str,
     action: str,
     distance_at_service_km: float,
     date_: str | None = None,
@@ -358,52 +314,56 @@ def log_maintenance_entry(
         raise ValueError("action is required.")
     date_ = _validate_date(date_ or date.today().isoformat())
 
-    with _conn_lock:
-        conn = _get_conn()
-        component = conn.execute(
-            "SELECT * FROM components WHERE id = ?", (component_id,)
-        ).fetchone()
+    with _lock:
+        data = _read()
+        component = _find(data["components"], id=component_id)
         if component is None:
             raise ValueError(f"No component with id {component_id}.")
 
-        now = datetime.now(timezone.utc).isoformat()
-        cur = conn.execute(
-            """INSERT INTO maintenance_log
-               (component_id, date, action, distance_at_service_km, notes, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (component_id, date_, action.strip(), distance_at_service_km,
-             (notes or "").strip() or None, now),
-        )
-        conn.commit()
-        row = conn.execute(
-            """SELECT m.*, c.name AS component_name, c.bike_name AS bike_name, c.bike_uuid AS bike_uuid
-               FROM maintenance_log m JOIN components c ON c.id = m.component_id
-               WHERE m.id = ?""",
-            (cur.lastrowid,),
-        ).fetchone()
-        return _row_to_log(row)
+        entry = {
+            "id": str(uuid_module.uuid4()),
+            "component_id": component_id,
+            "date": date_,
+            "action": action.strip(),
+            "distance_at_service_km": distance_at_service_km,
+            "notes": (notes or "").strip() or None,
+        }
+        data["maintenance_log"].append(entry)
+        _write(data)
+        return _enrich_log_entry(entry, component)
 
 
-def list_maintenance_log(component_id: int | None = None, limit: int = 200) -> list[dict]:
+def _sorted_log(entries: list[dict]) -> list[tuple[int, dict]]:
+    """(index, entry) pairs newest-first: by date descending, then by
+    insertion order descending as a tiebreak for same-day entries — the JSON
+    equivalent of the old ``ORDER BY date DESC, id DESC``."""
+    return sorted(enumerate(entries), key=lambda pair: (pair[1]["date"], pair[0]), reverse=True)
+
+
+def list_maintenance_log(component_id: str | None = None, limit: int = 200) -> list[dict]:
     """Maintenance log entries, newest first, optionally scoped to one component."""
-    with _conn_lock:
-        conn = _get_conn()
-        query = """SELECT m.*, c.name AS component_name, c.bike_name AS bike_name, c.bike_uuid AS bike_uuid
-                    FROM maintenance_log m JOIN components c ON c.id = m.component_id"""
-        params: tuple = ()
-        if component_id is not None:
-            query += " WHERE m.component_id = ?"
-            params = (component_id,)
-        query += " ORDER BY m.date DESC, m.id DESC LIMIT ?"
-        rows = conn.execute(query, params + (limit,)).fetchall()
-        return [_row_to_log(r) for r in rows]
+    with _lock:
+        data = _read()
+    entries = data["maintenance_log"]
+    if component_id is not None:
+        entries = [e for e in entries if e["component_id"] == component_id]
+
+    result = []
+    for _, entry in _sorted_log(entries):
+        component = _find(data["components"], id=entry["component_id"])
+        if component is None:
+            continue  # component was removed — matches the old INNER JOIN
+        result.append(_enrich_log_entry(entry, component))
+        if len(result) >= limit:
+            break
+    return result
 
 
-def _last_service(conn: sqlite3.Connection, component_id: int) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM maintenance_log WHERE component_id = ? ORDER BY date DESC, id DESC LIMIT 1",
-        (component_id,),
-    ).fetchone()
+def _last_service(data: dict, component_id: str) -> dict | None:
+    entries = [e for e in data["maintenance_log"] if e["component_id"] == component_id]
+    if not entries:
+        return None
+    return _sorted_log(entries)[0][1]
 
 
 # ── STATUS COMPUTATION ───────────────────────────────────────────────────────
@@ -438,9 +398,9 @@ def _worst_status(statuses: list[str]) -> str:
     return max(ranked, key=lambda s: _STATUS_RANK[s])
 
 
-def _component_with_status(conn: sqlite3.Connection, component: dict,
+def _component_with_status(data: dict, component: dict,
                             gear_distance_km: float | None) -> dict:
-    last = _last_service(conn, component["id"])
+    last = _last_service(data, component["id"])
     if last is not None:
         last_serviced = last["date"]
         base_distance = last["distance_at_service_km"]
@@ -473,7 +433,7 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
 
     The log is included here — rather than left to a separate
     :func:`list_maintenance_log` call — so a single call covers everything
-    the dashboard's Gear tab needs in one round trip against the database
+    the dashboard's Gear tab needs in one round trip against the store
     (issue #58).
     """
     from tools.profile import get_gear
@@ -483,50 +443,53 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
         all_gear = [g for g in all_gear
                     if (g.get("name") or "").strip().lower() == gear_name.strip().lower()]
 
-    with _conn_lock:
-        conn = _get_conn()
-        items = []
-        for g in all_gear:
-            gear_type = (g.get("activity_type") or "").lower()
-            is_bike = "bike" in gear_type or "cycl" in gear_type
-            is_shoe = "shoe" in gear_type
+    with _lock:
+        data = _read()
 
-            components = []
-            uuid = g.get("uuid")
-            if uuid:
-                rows = conn.execute(
-                    "SELECT * FROM components WHERE bike_uuid = ? ORDER BY name", (uuid,)
-                ).fetchall()
-                components = [
-                    _component_with_status(conn, _row_to_component(r), g.get("distance_km"))
-                    for r in rows
-                ]
+    items = []
+    for g in all_gear:
+        gear_type = (g.get("activity_type") or "").lower()
+        is_bike = "bike" in gear_type or "cycl" in gear_type
+        is_shoe = "shoe" in gear_type
 
-            if is_shoe:
-                item_status = _shoe_status(g.get("distance_km"))
-            elif components:
-                item_status = _worst_status([c["status"] for c in components])
-            else:
-                item_status = "unknown"
+        components = []
+        bike_uuid = g.get("uuid")
+        if bike_uuid:
+            matching = sorted(
+                (c for c in data["components"] if c["bike_uuid"] == bike_uuid),
+                key=lambda c: c["name"].lower(),
+            )
+            components = [
+                _component_with_status(data, c, g.get("distance_km")) for c in matching
+            ]
 
-            items.append({
-                **g,
-                "status_indicator": item_status,
-                "status_emoji": _STATUS_EMOJI[item_status],
-                "status_color": _STATUS_COLOR[item_status],
-                "is_bike": is_bike,
-                "is_shoe": is_shoe,
-                "components": components,
-            })
+        if is_shoe:
+            item_status = _shoe_status(g.get("distance_km"))
+        elif components:
+            item_status = _worst_status([c["status"] for c in components])
+        else:
+            item_status = "unknown"
 
-        log_rows = conn.execute(
-            """SELECT m.*, c.name AS component_name, c.bike_name AS bike_name, c.bike_uuid AS bike_uuid
-               FROM maintenance_log m JOIN components c ON c.id = m.component_id
-               ORDER BY m.date DESC, m.id DESC LIMIT ?""",
-            (log_limit,),
-        ).fetchall()
+        items.append({
+            **g,
+            "status_indicator": item_status,
+            "status_emoji": _STATUS_EMOJI[item_status],
+            "status_color": _STATUS_COLOR[item_status],
+            "is_bike": is_bike,
+            "is_shoe": is_shoe,
+            "components": components,
+        })
 
-        return {"gear": items, "maintenance_log": [_row_to_log(r) for r in log_rows]}
+    maintenance_log = []
+    for _, entry in _sorted_log(data["maintenance_log"]):
+        component = _find(data["components"], id=entry["component_id"])
+        if component is None:
+            continue
+        maintenance_log.append(_enrich_log_entry(entry, component))
+        if len(maintenance_log) >= log_limit:
+            break
+
+    return {"gear": items, "maintenance_log": maintenance_log}
 
 
 # ── MCP TOOL FUNCTIONS ───────────────────────────────────────────────────────
@@ -669,9 +632,8 @@ async def post_maintenance(request):
     is_json = _wants_json(request)
     fields = await _request_fields(request)
 
-    try:
-        component_id = int(fields.get("component_id"))
-    except (TypeError, ValueError):
+    component_id = fields.get("component_id") or None
+    if component_id is None:
         err = "component_id is required."
         return (JSONResponse({"error": err}, status_code=400) if is_json
                 else RedirectResponse(_error_redirect_url(token, err), status_code=303))
@@ -713,11 +675,7 @@ async def post_component(request):
     is_json = _wants_json(request)
     fields = await _request_fields(request)
 
-    component_id = fields.get("component_id")
-    try:
-        component_id = int(component_id) if component_id not in (None, "") else None
-    except (TypeError, ValueError):
-        component_id = None
+    component_id = fields.get("component_id") or None
 
     interval_raw = fields.get("maintenance_interval_km")
     if interval_raw in (None, ""):
