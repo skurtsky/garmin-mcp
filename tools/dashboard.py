@@ -1338,7 +1338,7 @@ def _gear_component_row(c: dict) -> str:
     `#component-<id>` anchor, shown with `:target` (see the .gear-modal CSS)
     — no JS needed."""
     color = _status_color(c["status"])
-    interval = c.get("effective_interval_km")
+    interval = c.get("maintenance_interval_km")
     since = c.get("distance_since_km") or 0
     pct = min((since / interval) * 100, 100) if interval else 8
     interval_txt = _fmt_km(interval) if interval else "N/A"
@@ -1364,16 +1364,14 @@ def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], t
     bar, key dates, recent maintenance, a log-maintenance form, and an
     "Edit component" disclosure for renaming/adjusting the interval."""
     color = _status_color(c["status"])
-    interval = c.get("effective_interval_km")
+    interval = c.get("maintenance_interval_km")
     since = c.get("distance_since_km") or 0
     pct = min((since / interval) * 100, 100) if interval else 8
     interval_txt = _fmt_km(interval) if interval else "N/A"
     status_label = "N/A" if c["status"] == "unknown" else c["status"].title()
     action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
     today_iso = date.today().isoformat()
-    raw_interval = c.get("maintenance_interval_km")
-    interval_value = "" if raw_interval is None else f"{raw_interval:g}"
-    interval_placeholder = "uses Garmin's replace-at distance" if c.get("linked_gear_uuid") else "optional"
+    interval_value = "" if interval is None else f"{interval:g}"
 
     linked_note = (
         '<div style="font-size:11px;color:var(--color-neutral-600)">Linked to its own '
@@ -1431,8 +1429,8 @@ def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], t
             <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
             <label>Name<input type="text" name="name" value="{_e(c['name'])}" required></label>
             <label>Install date<input type="date" name="install_date" value="{_e(c['install_date'])}"></label>
-            <label>Interval override (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
-                value="{interval_value}" placeholder="{interval_placeholder}"></label>
+            <label>Service interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
+                value="{interval_value}" placeholder="optional"></label>
             <button type="submit">Save</button>
           </form>
         </details>
@@ -1447,15 +1445,26 @@ def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | N
     ... registered as its own gear — see the gear tool) to link, so status is
     judged against that item's real tracked distance instead of a
     hand-typed/guessed one. "Custom" still creates a plain, bike-distance-based
-    component for parts Garmin doesn't track individually (e.g. bar tape)."""
+    component for parts Garmin doesn't track individually.
+
+    There's no Name field: a linked component is always named after the
+    Garmin gear item it's linked to (carried in the option's value below, so
+    the POST handler doesn't need to look it up live — see post_component),
+    and a Custom one is named after the selected Type. Type also seeds the
+    Service interval field's default when it's left blank.
+    """
+    from tools.gear_tracker import COMPONENT_TYPES
+
     today_iso = date.today().isoformat()
     opts = ['<option value="">Custom (not tracked in Garmin)</option>']
     for lg in linkable_gear:
-        label = lg.get("name") or "Unnamed gear"
+        gear_name = lg.get("name") or "Unnamed gear"
+        label = gear_name
         if lg.get("distance_km") is not None:
             label += f" — {_fmt_km(lg['distance_km'])}"
-        opts.append(f'<option value="{_e(lg["uuid"])}">{_e(label)}</option>')
+        opts.append(f'<option value="{_e(lg["uuid"])}:{_e(gear_name)}">{_e(label)}</option>')
     options_html = "".join(opts)
+    type_options = "".join(f'<option value="{t}">{t}</option>' for t in COMPONENT_TYPES)
     return f"""
     <details class="gear-actions" style="margin-top:4px">
       <summary>+ Link component</summary>
@@ -1463,9 +1472,9 @@ def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | N
         <input type="hidden" name="bike_uuid" value="{_e(g.get('uuid') or '')}">
         <input type="hidden" name="bike_name" value="{_e(g.get('name') or '')}">
         <label>Garmin gear<select name="linked_gear_uuid">{options_html}</select></label>
-        <label>Name<input type="text" name="name" placeholder="e.g. Chain"></label>
+        <label>Type<select name="component_type">{type_options}</select></label>
         <label>Install date<input type="date" name="install_date" value="{today_iso}"></label>
-        <label>Interval override (km)<input type="number" step="1" min="0" name="maintenance_interval_km" placeholder="optional"></label>
+        <label>Service interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km" placeholder="optional"></label>
         <button type="submit">Link</button>
       </form>
     </details>"""

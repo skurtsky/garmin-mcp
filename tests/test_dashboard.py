@@ -114,7 +114,7 @@ SAMPLE = {
          "components": [
              {"id": 1, "bike_uuid": "bike-1", "bike_name": "Canyon Ultimate", "name": "Chain",
               "install_date": "2026-01-01", "install_distance_km": 5420.0,
-              "maintenance_interval_km": 400.0, "effective_interval_km": 400.0,
+              "maintenance_interval_km": 400.0,
               "linked_gear_uuid": None, "last_serviced": "2026-01-01",
               "ever_serviced": False, "distance_since_km": 380.0,
               "status": "yellow", "status_emoji": "\U0001F7E1"},
@@ -209,8 +209,27 @@ def test_render_gear_panel_link_form_lists_linkable_gear():
                            "distance_km": 1969.68, "max_distance_km": 3000.0}],
     }}
     html = dashboard.render_dashboard_html(data)
-    assert '<option value="chain-1">' in html
+    # The option's value carries "<uuid>:<name>" so the POST doesn't need a
+    # live Garmin lookup to resolve the name (issue 63 follow-up).
+    assert '<option value="chain-1:Shimano 12s Chain">' in html
     assert "Shimano 12s Chain" in html
+
+
+def test_render_gear_panel_link_form_offers_type_not_name():
+    """The Link form has a Type dropdown (Chain/Cassette/Tire/Brakes) instead
+    of a free-text Name field — the name comes from the linked Garmin gear
+    (or, for Custom, from the selected Type) instead (issue 63 follow-up)."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert '<select name="component_type">' in html
+    for option in ("Chain", "Cassette", "Tire", "Brakes"):
+        assert f'<option value="{option}">{option}</option>' in html
+    assert 'placeholder="e.g. Chain"' not in html
+
+
+def test_render_gear_panel_uses_service_interval_label_not_override():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "Service interval (km)" in html
+    assert "Interval override" not in html
 
 
 def test_render_gear_panel_component_row_opens_target_modal():
