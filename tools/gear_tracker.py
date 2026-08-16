@@ -771,13 +771,22 @@ def _distance_ridden_since(gear_uuid: str, since_date: str) -> float:
     Garmin round trips on a form submission. Returns 0.0 past the cap (and
     for a same-day/future date) — the caller then falls back to the plain
     live-total anchor, same as before this correction existed.
+
+    Garmin hangs gear off the individual legs of a multisport activity
+    (triathlon, duathlon, ...), not the parent, so that per-activity
+    get_activity_gear check alone always misses a bike/shoe used in one —
+    a ride tucked inside a triathlon would silently go uncounted. Only for
+    activities of type "multi_sport" that didn't already match at the top
+    level, get_multisport_leg_distance_for_gear checks each leg instead —
+    scoped to just that minority of activities so this doesn't turn into
+    a full get_activity detail fetch (laps/HR/weather/splits) per activity.
     """
     start = date.fromisoformat(since_date) + timedelta(days=1)
     today = date.today()
     if start > today or (today - start).days > _BACKDATE_LOOKBACK_CAP_DAYS:
         return 0.0
 
-    from tools.activities import get_activities
+    from tools.activities import get_activities, get_multisport_leg_distance_for_gear
     from tools.profile import get_activity_gear
 
     activities = get_activities(start_date=start.isoformat(), end_date=today.isoformat())
@@ -785,6 +794,10 @@ def _distance_ridden_since(gear_uuid: str, since_date: str) -> float:
     for a in activities:
         if gear_uuid in {g.get("uuid") for g in get_activity_gear(a["id"])}:
             total += a.get("distance_km") or 0.0
+        elif a.get("type") == "multi_sport":
+            leg_distance = get_multisport_leg_distance_for_gear(a["id"], gear_uuid)
+            if leg_distance is not None:
+                total += leg_distance
     return round(total, 2)
 
 
