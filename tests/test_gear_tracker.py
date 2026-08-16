@@ -823,6 +823,77 @@ def test_distance_ridden_since_sums_only_matching_gear_activities(monkeypatch):
     assert gear_tracker._distance_ridden_since("bike-1", since) == 17.0
 
 
+def test_distance_ridden_since_falls_back_to_multisport_leg_for_hidden_gear(monkeypatch):
+    """Garmin hangs gear off the individual legs of a multisport activity
+    (triathlon, ...), not the parent — a bike ridden inside one must still
+    be counted, via the leg-aware fallback for type == 'multi_sport'."""
+    since = (date.today() - timedelta(days=5)).isoformat()
+
+    def fake_get_activities(start_date=None, end_date=None, **kwargs):
+        return [{"id": 1, "distance_km": 51.5, "type": "multi_sport"}]
+
+    def fake_get_activity_gear(activity_id):
+        return []  # gear never sits on the multisport parent itself
+
+    def fake_leg_distance(activity_id, gear_uuid):
+        assert activity_id == 1
+        assert gear_uuid == "bike-1"
+        return 40.2  # just the bike leg, not the whole triathlon's distance
+
+    monkeypatch.setattr(activities, "get_activities", fake_get_activities)
+    monkeypatch.setattr(profile, "get_activity_gear", fake_get_activity_gear)
+    monkeypatch.setattr(activities, "get_multisport_leg_distance_for_gear", fake_leg_distance)
+
+    assert gear_tracker._distance_ridden_since("bike-1", since) == 40.2
+
+
+def test_distance_ridden_since_multisport_fallback_finds_no_matching_leg(monkeypatch):
+    since = (date.today() - timedelta(days=5)).isoformat()
+
+    monkeypatch.setattr(activities, "get_activities", lambda **kw: [
+        {"id": 1, "distance_km": 51.5, "type": "multi_sport"},
+    ])
+    monkeypatch.setattr(profile, "get_activity_gear", lambda activity_id: [])
+    monkeypatch.setattr(activities, "get_multisport_leg_distance_for_gear",
+                        lambda activity_id, gear_uuid: None)  # no leg used this gear
+
+    assert gear_tracker._distance_ridden_since("bike-1", since) == 0.0
+
+
+def test_distance_ridden_since_skips_multisport_fallback_when_already_matched(monkeypatch):
+    """No need to pay for the leg-aware fallback when the cheap top-level
+    check already found the gear."""
+    since = (date.today() - timedelta(days=5)).isoformat()
+
+    def _boom(*a, **kw):
+        raise AssertionError("multisport fallback should not run when already matched")
+
+    monkeypatch.setattr(activities, "get_activities", lambda **kw: [
+        {"id": 1, "distance_km": 51.5, "type": "multi_sport"},
+    ])
+    monkeypatch.setattr(profile, "get_activity_gear", lambda activity_id: [{"uuid": "bike-1"}])
+    monkeypatch.setattr(activities, "get_multisport_leg_distance_for_gear", _boom)
+
+    assert gear_tracker._distance_ridden_since("bike-1", since) == 51.5
+
+
+def test_distance_ridden_since_skips_multisport_fallback_for_non_multisport(monkeypatch):
+    """An ordinary (non-multisport) activity that doesn't match must not pay
+    for the leg-aware fallback either — it's scoped to type == 'multi_sport'."""
+    since = (date.today() - timedelta(days=5)).isoformat()
+
+    def _boom(*a, **kw):
+        raise AssertionError("multisport fallback should not run for a non-multisport activity")
+
+    monkeypatch.setattr(activities, "get_activities", lambda **kw: [
+        {"id": 1, "distance_km": 10.0, "type": "road_biking"},
+    ])
+    monkeypatch.setattr(profile, "get_activity_gear", lambda activity_id: [{"uuid": "other-bike"}])
+    monkeypatch.setattr(activities, "get_multisport_leg_distance_for_gear", _boom)
+
+    assert gear_tracker._distance_ridden_since("bike-1", since) == 0.0
+
+
 def test_distance_ridden_since_caps_lookback_without_calling_garmin(monkeypatch):
     def _boom(*a, **kw):
         raise AssertionError("get_activities should not be called past the lookback cap")

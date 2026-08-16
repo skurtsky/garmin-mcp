@@ -517,6 +517,45 @@ def _fetch_sub_activities(child_ids: list[int], weight_kg: float) -> list[dict]:
     return subs
 
 
+def get_multisport_leg_distance_for_gear(activity_id: int, gear_uuid: str) -> float | None:
+    """The distance (km) of whichever leg of a multisport activity used the
+    given gear uuid, or None when the activity isn't multisport or none of
+    its legs used that gear.
+
+    Garmin hangs gear off the individual legs of a multisport activity, not
+    the parent (see get_activity's docstring), so a plain get_activity_gear
+    call against the parent id always misses it — this exists for callers
+    (the gear tracker's backdated-service distance reconstruction) that need
+    to know if/how much a specific piece of gear was used, without paying for
+    get_activity's full detail fetch (laps, HR zones, weather, splits, ...)
+    which this has no use for. Only the matching leg's own raw distance is
+    fetched — one client.get_activity(child_id) call, and only for the leg
+    that turns out to match.
+    """
+    client = get_client()
+    try:
+        parent_raw = client.get_activity(activity_id)
+    except Exception:
+        return None
+
+    child_ids = _child_activity_ids(parent_raw)
+    if not child_ids:
+        return None
+
+    for child_id in child_ids:
+        gear_uuids = {g.get('uuid') for g in get_activity_gear(child_id)}
+        if gear_uuid not in gear_uuids:
+            continue
+        try:
+            child_raw = client.get_activity(child_id)
+        except Exception:
+            continue
+        distance_m = (child_raw.get('summaryDTO') or {}).get('distance') or 0
+        return round(distance_m / 1000, 2)
+
+    return None
+
+
 # ── PUBLIC TOOL FUNCTIONS ─────────────────────────────────────────────────────
 
 def get_activity(activity_id: int) -> dict:
