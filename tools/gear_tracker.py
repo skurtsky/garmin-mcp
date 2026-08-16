@@ -23,17 +23,22 @@ stored locally. "Distance since [service]" is therefore always
 never a value stored directly.
 
 Garmin Connect lets a part (a chain, a cassette, a set of tires, ...) be
-registered as its *own* gear item, with its own real cumulative distance and
-optional replace-at threshold (``max_distance_km``) — separate from the bike
-it's mounted on. Garmin's API gives no field linking that part back to a
-bike, so a component here can optionally carry a ``linked_gear_uuid``
-pointing at one of those Garmin-tracked items (see :func:`upsert_component`
-and the ``linkable_gear`` list :func:`build_gear_status` returns — every
-active, not-yet-linked, non-bike/non-shoe gear item, for a "Link component"
-picker). A linked component's distance-since is measured against *that
-item's* live distance rather than the bike's, and its interval falls back to
-the item's own ``max_distance_km`` when no local interval override is set —
-both computed in :func:`_component_with_status`. A component with no
+registered as its *own* gear item, with its own real cumulative distance —
+separate from the bike it's mounted on. Garmin's API gives no field linking
+that part back to a bike, so a component here can optionally carry a
+``linked_gear_uuid`` pointing at one of those Garmin-tracked items (see
+:func:`upsert_component` and the ``linkable_gear`` list
+:func:`build_gear_status` returns — every active, not-yet-linked,
+non-bike/non-shoe gear item, for a "Link component" picker). A linked
+component's distance-since is measured against *that item's* live distance
+rather than the bike's — computed in :func:`_component_with_status`. Its
+service interval, though, is always just the plain stored
+``maintenance_interval_km``: never inherited or overridden from Garmin (which
+has no real "service interval" concept of its own, only a replace-at
+odometer the athlete may or may not have set) — only the "Link component"
+form's Type picker (:data:`COMPONENT_TYPES`) seeds a sensible default for it
+at creation time, same as :data:`DEFAULT_INTERVALS_KM` does by name for the
+``log_maintenance`` MCP tool's auto-create path. A component with no
 ``linked_gear_uuid`` behaves exactly as before: a name typed in by hand,
 measured against the bike's own cumulative distance.
 
@@ -110,6 +115,16 @@ DEFAULT_INTERVALS_KM = {
     "cassette": 8000,
     "bar tape": None,
 }
+
+# The dashboard's "Link component" form's fixed Type choices (issue 63
+# follow-up) — a coarser, always-available alternative to DEFAULT_INTERVALS_KM
+# above, which only matches when a component's *name* happens to equal one of
+# its keys exactly. A linked component's name is normally the Garmin gear
+# item's own (e.g. "Shimano 12s Chain"), which never matches "chain", so the
+# form asks for a Type instead and uses that to seed the service interval
+# when it's left blank at creation. Not persisted on the component itself.
+COMPONENT_TYPES = ("Chain", "Cassette", "Tire", "Brakes")
+_TYPE_INTERVAL_KM = {"chain": 400, "cassette": 8000, "tire": 5000, "brakes": 2000}
 
 # Component wear status is a ratio of distance-since-service to its
 # maintenance interval: green below 60%, yellow from 60% up to due, red once
@@ -251,6 +266,7 @@ def upsert_component(
     maintenance_interval_km=_UNSET,
     component_id: str | None = None,
     linked_gear_uuid=_UNSET,
+    component_type: str | None = None,
 ) -> dict:
     """Create a component, or update an existing one.
 
@@ -261,15 +277,23 @@ def upsert_component(
     duplicating.
 
     ``maintenance_interval_km`` left at its default keeps the existing value
-    on an update; on create it falls back to :data:`DEFAULT_INTERVALS_KM`
-    (matched case-insensitively by name), or None when there's no default.
-    Pass ``None`` explicitly to clear/omit an interval.
+    on an update; on create it falls back, in order, to ``component_type``'s
+    default (see :data:`COMPONENT_TYPES`), then :data:`DEFAULT_INTERVALS_KM`
+    (matched case-insensitively by name), or None when neither applies. Pass
+    ``None`` explicitly to clear/omit an interval. It is always the plain
+    service interval from here on — never re-derived from Garmin data on a
+    linked component (see the module docstring).
 
     ``linked_gear_uuid``, left at its default, keeps the existing link (or
     None) on an update; pass a Garmin gear uuid to link the component to that
     gear item's own live distance (see the module docstring), or ``None``
     explicitly to unlink it. If ``name`` is omitted, it defaults to that
-    linked gear item's own name — so linking doesn't require retyping it.
+    linked gear item's own name (fetched live if the caller doesn't already
+    know it — the dashboard's Link form passes it directly to avoid that
+    round trip) — so linking doesn't require retyping it. Without a link,
+    ``component_type`` (e.g. "Chain") fills in as the name instead, when
+    ``name`` is also omitted — the dashboard's Link form's fallback for
+    parts Garmin doesn't track individually.
     """
     if not bike_uuid or not bike_uuid.strip():
         raise ValueError("bike_uuid is required.")
@@ -280,6 +304,8 @@ def upsert_component(
         from tools.profile import get_gear
         linked = next((g for g in get_gear() if g.get("uuid") == linked_gear_uuid), None)
         name = ((linked or {}).get("name") or "").strip()
+    if not name and component_type:
+        name = component_type.strip()
     if not name:
         raise ValueError("name is required.")
 
@@ -301,6 +327,8 @@ def upsert_component(
         if maintenance_interval_km is _UNSET:
             if existing is not None:
                 maintenance_interval_km = existing["maintenance_interval_km"]
+            elif component_type and component_type.strip().lower() in _TYPE_INTERVAL_KM:
+                maintenance_interval_km = _TYPE_INTERVAL_KM[component_type.strip().lower()]
             else:
                 maintenance_interval_km = _load_default_intervals().get(name.lower())
 
@@ -463,18 +491,13 @@ def _component_with_status(data: dict, component: dict, basis_gear: dict | None)
         distance_since = round(max(gear_distance_km - base_distance, 0), 1)
 
     interval = component["maintenance_interval_km"]
-    effective_interval = interval
-    if effective_interval is None and component.get("linked_gear_uuid") and basis_gear:
-        effective_interval = basis_gear.get("max_distance_km")
-
-    status = _component_status(distance_since, effective_interval)
+    status = _component_status(distance_since, interval)
 
     return {
         **component,
         "last_serviced": last_serviced or component["install_date"],
         "ever_serviced": last is not None,
         "distance_since_km": distance_since,
-        "effective_interval_km": effective_interval,
         "status": status,
         "status_emoji": _STATUS_EMOJI[status],
     }
@@ -785,29 +808,49 @@ async def post_component(request):
 
     interval_raw = fields.get("maintenance_interval_km")
     if interval_raw in (None, ""):
-        interval_km = _UNSET if component_id is not None else None
+        # _UNSET either way: on an edit that keeps the existing value; on a
+        # create it lets upsert_component fall back to the selected Type's
+        # (or, failing that, the name's) default interval instead of forcing
+        # "no interval" — see upsert_component's docstring.
+        interval_km = _UNSET
     else:
         try:
             interval_km = float(interval_raw)
         except (TypeError, ValueError):
             interval_km = _UNSET
 
-    # A key that's absent entirely (the plain "Edit" form doesn't carry one)
-    # keeps the existing link; present-but-empty (the "Link component" form's
-    # "custom, not tracked in Garmin" choice) explicitly clears/omits it.
+    # The "Link component" form's Garmin-gear <select> encodes each option's
+    # value as "<uuid>:<name>" so the chosen item's name travels with the
+    # submission — sparing a live Garmin lookup here purely to resolve a name
+    # the page already had at render time (that lookup was the dashboard's
+    # "Link" button feeling stuck/slow). A bare uuid (no colon) still works,
+    # e.g. a JSON API caller — upsert_component falls back to its own live
+    # lookup in that case. A key that's absent entirely (the plain "Edit"
+    # form doesn't carry one) keeps the existing link; present-but-empty (the
+    # "Custom, not tracked in Garmin" choice) explicitly clears it.
     linked_raw = fields.get("linked_gear_uuid")
-    linked_gear_uuid = _UNSET if linked_raw is None else (linked_raw or None)
+    linked_gear_name = None
+    if linked_raw is None:
+        linked_gear_uuid = _UNSET
+    elif not linked_raw:
+        linked_gear_uuid = None
+    else:
+        linked_gear_uuid, _, linked_gear_name = linked_raw.partition(":")
+        linked_gear_name = linked_gear_name or None
+
+    name = fields.get("name") or linked_gear_name or ""
 
     try:
         component = upsert_component(
             bike_uuid=fields.get("bike_uuid") or "",
-            name=fields.get("name") or "",
+            name=name,
             bike_name=fields.get("bike_name") or None,
             install_date=fields.get("install_date") or None,
             install_distance_km=float(fields.get("install_distance_km") or 0.0),
             maintenance_interval_km=interval_km,
             component_id=component_id,
             linked_gear_uuid=linked_gear_uuid,
+            component_type=fields.get("component_type") or None,
         )
     except ValueError as e:
         return (JSONResponse({"error": str(e)}, status_code=400) if is_json

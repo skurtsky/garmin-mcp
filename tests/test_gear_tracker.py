@@ -175,6 +175,44 @@ def test_upsert_component_unlinked_by_default():
     assert c["linked_gear_uuid"] is None
 
 
+# ── COMPONENT TYPE DEFAULTS (issue 63 follow-up) ────────────────────────────
+
+def test_upsert_component_type_used_as_name_when_no_link_or_name():
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", component_type="Cassette")
+    assert c["name"] == "Cassette"
+
+
+def test_upsert_component_type_seeds_default_interval_when_unset():
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", component_type="Cassette")
+    assert c["maintenance_interval_km"] == 8000
+
+
+@pytest.mark.parametrize("type_, interval", [
+    ("Chain", 400), ("Cassette", 8000), ("Tire", 5000), ("Brakes", 2000),
+])
+def test_upsert_component_type_interval_matches_each_type(type_, interval):
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", component_type=type_)
+    assert c["maintenance_interval_km"] == interval
+
+
+def test_upsert_component_explicit_interval_overrides_type_default():
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", component_type="Chain",
+                                      maintenance_interval_km=999)
+    assert c["maintenance_interval_km"] == 999
+
+
+def test_upsert_component_explicit_name_overrides_type_default():
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", name="My Chain", component_type="Chain")
+    assert c["name"] == "My Chain"
+
+
+def test_upsert_component_linked_gear_name_wins_over_type_for_name(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    c = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1",
+                                      component_type="Chain")
+    assert c["name"] == "Shimano 12s Chain"
+
+
 # ── JSON STORAGE (issue #60) ────────────────────────────────────────────────
 
 def test_data_file_created_on_first_write(gear_db):
@@ -398,24 +436,28 @@ def test_build_gear_status_linked_component_uses_linked_gears_own_distance(monke
     assert chain["distance_since_km"] == 1969.7
 
 
-def test_build_gear_status_linked_component_interval_falls_back_to_gear_max_distance(monkeypatch):
+def test_build_gear_status_linked_component_interval_is_not_inherited_from_gear(monkeypatch):
+    """The service interval is always the plain stored value — never
+    re-derived from the linked gear's own max_distance_km (issue 63
+    follow-up: it's a service interval, not an override)."""
     _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
     gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
 
     status = gear_tracker.build_gear_status()
     chain = status["gear"][0]["components"][0]
-    assert chain["maintenance_interval_km"] is None  # no local override was set
-    assert chain["effective_interval_km"] == 3000.0  # the linked gear's max_distance_km
+    assert chain["maintenance_interval_km"] is None  # nothing set, nothing inherited
+    assert chain["status"] == "unknown"  # no interval to judge distance-since against
+    assert "effective_interval_km" not in chain
 
 
-def test_build_gear_status_linked_component_local_interval_overrides_gear_max_distance(monkeypatch):
+def test_build_gear_status_linked_component_uses_its_own_stored_interval(monkeypatch):
     _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
     gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1",
                                   maintenance_interval_km=2500)
 
     status = gear_tracker.build_gear_status()
     chain = status["gear"][0]["components"][0]
-    assert chain["effective_interval_km"] == 2500
+    assert chain["maintenance_interval_km"] == 2500
 
 
 def test_build_gear_status_linkable_gear_lists_unlinked_other_gear(monkeypatch):
@@ -578,6 +620,51 @@ def test_post_component_edit_form_without_linked_field_keeps_link(monkeypatch):
     }, follow_redirects=False)
     assert resp.status_code == 303
     assert gear_tracker.get_component(comp["id"])["linked_gear_uuid"] == "chain-1"
+
+
+def test_post_component_form_uuid_colon_name_value_needs_no_live_gear_lookup(monkeypatch):
+    """The dashboard's Link form encodes each option as '<uuid>:<name>' so the
+    submission carries the name it already rendered — the Link button was
+    slow/stuck because upsert_component used to make a live get_gear() call
+    just to resolve a name the page already had. Proven here by making any
+    get_gear() call blow up: the POST must still succeed."""
+    def _boom():
+        raise AssertionError("get_gear() should not be called for this submission")
+    monkeypatch.setattr(profile, "get_gear", _boom)
+    link_client = TestClient(gear_tracker.create_app())
+
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "bike_uuid": "bike-1", "linked_gear_uuid": "chain-1:Shimano 12s Chain",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    comp = gear_tracker.find_component("bike-1", "Shimano 12s Chain")
+    assert comp is not None
+    assert comp["linked_gear_uuid"] == "chain-1"
+
+
+def test_post_component_form_custom_uses_type_for_name_and_interval(client):
+    """The Link form's Type dropdown replaces free-text Name for the
+    'Custom' (no Garmin link) path: it becomes the name, and seeds the
+    Service interval default when that field is left blank."""
+    resp = client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "bike_uuid": "bike-1", "component_type": "Tire",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    comp = gear_tracker.find_component("bike-1", "Tire")
+    assert comp is not None
+    assert comp["maintenance_interval_km"] == 5000
+
+
+def test_post_component_form_blank_interval_on_create_does_not_force_none(client):
+    """Regression check: a blank Service interval field on create used to be
+    sent as an explicit None, which permanently skipped any default (Type's
+    or the name-matched DEFAULT_INTERVALS_KM). It must default instead."""
+    resp = client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "bike_uuid": "bike-1", "name": "Chain", "maintenance_interval_km": "",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    comp = gear_tracker.find_component("bike-1", "Chain")
+    assert comp["maintenance_interval_km"] == 400  # DEFAULT_INTERVALS_KM["chain"]
 
 
 def test_post_component_form_empty_linked_field_clears_link(monkeypatch):
