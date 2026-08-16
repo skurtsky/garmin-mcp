@@ -1,4 +1,5 @@
 # tools/trends.py
+from concurrent.futures import ThreadPoolExecutor
 from garmin_client import get_client
 from datetime import date, timedelta
 from calendar import monthrange
@@ -298,6 +299,51 @@ def _extract_training_load(training_raw: dict):
     return None
 
 
+# rhr/hrv/sleep_score/stress/training_load have no batch/range endpoint in the
+# Garmin client (unlike body_battery/steps below) — each day needs its own
+# request. One fetcher per metric, run concurrently in _fetch_per_day_metrics
+# so a wide window doesn't serialize into hundreds of sequential round-trips.
+_PER_DAY_FETCHERS = {
+    'rhr': lambda client, d: (client.get_heart_rates(d) or {}).get('restingHeartRate'),
+    'hrv': lambda client, d: ((client.get_hrv_data(d) or {}).get('hrvSummary') or {}).get('lastNightAvg'),
+    'sleep_score': lambda client, d: (
+        ((client.get_sleep_data(d) or {}).get('dailySleepDTO') or {}).get('sleepScores', {}) or {}
+    ).get('overall', {}).get('value'),
+    'stress': lambda client, d: (client.get_all_day_stress(d) or {}).get('avgStressLevel'),
+    'training_load': lambda client, d: _extract_training_load(client.get_training_status(d) or {}),
+}
+
+# Bounded so a wide window (e.g. 90+ days) doesn't fire hundreds of concurrent
+# requests at Garmin at once and risk tripping their rate limiting.
+_MAX_WORKERS = 10
+
+
+def _fetch_per_day_metrics(client, dates: list, metrics: list) -> dict:
+    """Fetch every (metric, day) pair concurrently.
+
+    These are independent, blocking network calls — running them on a bounded
+    thread pool cuts wall-clock time by roughly the pool size versus the fully
+    serial loop this replaces (a 30-day x 5-metric fetch went from ~150
+    sequential round-trips to ~15 batches of 10 concurrent ones).
+    """
+    values = {m: {} for m in metrics}
+    if not metrics:
+        return values
+
+    def fetch_one(metric, d):
+        try:
+            return metric, d, _PER_DAY_FETCHERS[metric](client, d)
+        except Exception:
+            return metric, d, None
+
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        futures = [pool.submit(fetch_one, m, d) for m in metrics for d in dates]
+        for future in futures:
+            metric, d, value = future.result()
+            values[metric][d] = value
+    return values
+
+
 def get_trends(period: str = '1m', metrics: Optional[list] = None) -> dict:
     """
     Aggregate health & performance metrics over a trailing window with rolling
@@ -337,48 +383,9 @@ def get_trends(period: str = '1m', metrics: Optional[list] = None) -> dict:
 
     client = get_client()
 
-    # Per-day scalar metrics — one dedicated lookup per day, degrading to None.
-    per_day_values = {
-        'rhr':           {},
-        'hrv':           {},
-        'sleep_score':   {},
-        'stress':        {},
-        'training_load': {},
-    }
-    per_day_active = [m for m in per_day_values if m in requested]
-
-    for d in dates:
-        if 'rhr' in requested:
-            try:
-                hr = client.get_heart_rates(d) or {}
-                per_day_values['rhr'][d] = hr.get('restingHeartRate')
-            except Exception:
-                pass
-        if 'hrv' in requested:
-            try:
-                hrv = (client.get_hrv_data(d) or {}).get('hrvSummary', {}) or {}
-                per_day_values['hrv'][d] = hrv.get('lastNightAvg')
-            except Exception:
-                pass
-        if 'sleep_score' in requested:
-            try:
-                dto = (client.get_sleep_data(d) or {}).get('dailySleepDTO', {}) or {}
-                per_day_values['sleep_score'][d] = \
-                    (dto.get('sleepScores', {}) or {}).get('overall', {}).get('value')
-            except Exception:
-                pass
-        if 'stress' in requested:
-            try:
-                stress = client.get_all_day_stress(d) or {}
-                per_day_values['stress'][d] = stress.get('avgStressLevel')
-            except Exception:
-                pass
-        if 'training_load' in requested:
-            try:
-                per_day_values['training_load'][d] = \
-                    _extract_training_load(client.get_training_status(d) or {})
-            except Exception:
-                pass
+    # Per-day scalar metrics — fetched concurrently (see _fetch_per_day_metrics).
+    per_day_active = [m for m in _PER_DAY_FETCHERS if m in requested]
+    per_day_values = _fetch_per_day_metrics(client, dates, per_day_active)
 
     out_metrics: dict = {}
     for key in per_day_active:

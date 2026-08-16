@@ -154,7 +154,10 @@ http://localhost:8000/dashboard?token=YOUR_TOKEN
 It's a single self-contained HTML page (inline CSS, no external requests —
 `?tab=` selects which one opens, and switching between them client-side is
 pure CSS via `:checked` radio inputs, no JS) that fetches fresh data
-server-side on each load. Five tabs:
+server-side on each load — all sections concurrently (a thread pool), since
+they're independent Garmin API calls with no batch/range endpoint for most of
+them; a cold load is still on the order of a few seconds rather than the
+minute-plus a fully serial fetch would take. Five tabs:
 
 - **Today** — training readiness (score, level, contributing factors), body
   battery, steps vs. goal, resting HR with a 14-day sparkline, HRV status,
@@ -178,7 +181,7 @@ Optional environment variables:
 |---|---|---|
 | `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Offset from UTC for the "today" date and displayed local time (e.g. `-4`) |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | Browser auto-refresh interval; set `0` to disable |
-| `DASHBOARD_TREND_PERIOD` | `1m` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window |
+| `DASHBOARD_TREND_PERIOD` | `14d` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window. `get_trends` fetches its per-day metrics concurrently, but there's no batch endpoint for most of them, so wider windows still add latency; `1m` (30d) restores the full toggle at the cost of a slower load |
 | `DASHBOARD_STEP_GOAL` | `10000` | Fallback daily step goal used when there's no active Garmin step goal |
 
 ## Training Plan Viewer

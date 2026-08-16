@@ -1,4 +1,5 @@
 # tools/profile.py
+from concurrent.futures import ThreadPoolExecutor
 from garmin_client import get_client
 from datetime import date as _date
 
@@ -57,12 +58,26 @@ def get_gear() -> list[dict]:
         return []
 
     gear_raw = client.get_gear(user_profile_number) or []
+    if not gear_raw:
+        return []
+
+    # One get_gear_stats call per item — fetched concurrently so a bike/shoe
+    # collection of any size costs one round-trip's worth of wall-clock time
+    # instead of stacking them up serially.
+    def fetch_stats(g):
+        uuid = g.get('uuid')
+        if not uuid:
+            return g, {}
+        try:
+            return g, (client.get_gear_stats(uuid) or {})
+        except Exception:
+            return g, {}
+
+    with ThreadPoolExecutor(max_workers=min(len(gear_raw), 10)) as pool:
+        pairs = list(pool.map(fetch_stats, gear_raw))
 
     items = []
-    for g in gear_raw:
-        uuid = g.get('uuid')
-        stats = (client.get_gear_stats(uuid) or {}) if uuid else {}
-
+    for g, stats in pairs:
         name = g.get('displayName') or g.get('customMakeModel')
         model = g.get('customMakeModel') if g.get('displayName') else None
         max_meters = g.get('maximumMeters') or 0
@@ -72,7 +87,7 @@ def get_gear() -> list[dict]:
         items.append({
             'name':             name,
             'model':            model,
-            'uuid':             uuid,
+            'uuid':             g.get('uuid'),
             'activity_type':    g.get('gearTypeName'),
             'status':           g.get('gearStatusName'),
             'distance_km':      round(total_distance / 1000, 2),
