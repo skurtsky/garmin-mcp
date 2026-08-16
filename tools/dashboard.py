@@ -27,6 +27,7 @@ import base64
 import html
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -34,11 +35,14 @@ from urllib.parse import urlencode
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 
 # The Trends tab's range toggle (7d/14d/30d) is backed by one get_trends() call
-# fetched at this period; each extra day costs a handful of per-day Garmin
-# lookups per metric, so this is the knob for trading trend depth for a faster
-# page load. Any of get_trends' periods works; only ranges <= the fetched
-# window actually show a toggle button.
-TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "1m")
+# fetched at this period; get_trends fetches its per-day metrics concurrently,
+# but rhr/hrv/sleep_score/stress/training_load have no batch endpoint in the
+# Garmin client, so each extra day still costs one more round-trip per metric.
+# Defaults to 14d (2/3 of the toggle) rather than the full 30d/1m so a cold
+# page load stays fast; bump to "1m" for the full 30d option if you don't mind
+# the extra latency. Any of get_trends' periods works; only ranges <= the
+# fetched window actually show a toggle button.
+TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "14d")
 
 # Fallback daily step goal when the athlete has no active Garmin step goal.
 DEFAULT_STEP_GOAL = int(os.environ.get("DASHBOARD_STEP_GOAL", "10000"))
@@ -82,8 +86,25 @@ def _fetch_last_sync() -> dict:
     }
 
 
+def _fetch_parallel(tasks: dict) -> dict:
+    """Run independent ``_safe()`` fetches concurrently.
+
+    Each dashboard section is its own blocking network call (or, for trends/
+    gear, a batch of them) with no dependency on any other section — running
+    them one after another just adds up their latencies instead of
+    overlapping them. ``tasks`` maps a result key to ``(fn, args, kwargs)``;
+    returns a dict of the same keys to ``(result, error_message)`` pairs.
+    """
+    with ThreadPoolExecutor(max_workers=len(tasks) or 1) as pool:
+        futures = {
+            key: pool.submit(_safe, fn, *args, **kwargs)
+            for key, (fn, args, kwargs) in tasks.items()
+        }
+        return {key: future.result() for key, future in futures.items()}
+
+
 def build_dashboard_data() -> dict:
-    """Fetch every dashboard section from the Garmin client.
+    """Fetch every dashboard section from the Garmin client, concurrently.
 
     Each section is fetched independently and its failure is captured rather
     than raised, so one unavailable metric never blanks the whole page.
@@ -107,38 +128,32 @@ def build_dashboard_data() -> dict:
     now = _local_now()
     today = now.date().isoformat()
 
-    readiness, readiness_err = _safe(get_daily_readiness, today)
-    health, health_err = _safe(get_daily_health, today)
-    sleep, sleep_err = _safe(get_sleep, today)
-    training, training_err = _safe(get_training_readiness, today)
-    training_status, training_status_err = _safe(get_training_status, today)
-    activities, activities_err = _safe(get_activities, limit=20)
-    week, week_err = _safe(get_weekly_summary)
-    trends, trends_err = _safe(get_trends, period=TREND_PERIOD, metrics=_TREND_METRICS)
-    personal_records, personal_records_err = _safe(get_personal_records)
-    active_goals, active_goals_err = _safe(get_active_goals)
-    athlete, athlete_err = _safe(get_athlete_profile)
-    last_sync, last_sync_err = _safe(_fetch_last_sync)
-    gear_status, gear_status_err = _safe(build_gear_status)
+    tasks = {
+        "readiness":        (get_daily_readiness, (today,), {}),
+        "health":           (get_daily_health, (today,), {}),
+        "sleep":            (get_sleep, (today,), {}),
+        "training":         (get_training_readiness, (today,), {}),
+        "training_status":  (get_training_status, (today,), {}),
+        "activities":       (get_activities, (), {"limit": 20}),
+        "week":             (get_weekly_summary, (), {}),
+        "trends":           (get_trends, (), {"period": TREND_PERIOD, "metrics": _TREND_METRICS}),
+        "personal_records": (get_personal_records, (), {}),
+        "active_goals":     (get_active_goals, (), {}),
+        "athlete":          (get_athlete_profile, (), {}),
+        "last_sync":        (_fetch_last_sync, (), {}),
+        "gear_status":      (build_gear_status, (), {}),
+    }
+    results = _fetch_parallel(tasks)
 
-    return {
+    data = {
         "date": today,
         "generated_at": now.strftime("%Y-%m-%d %H:%M"),
         "tz_offset_hours": _tz_offset_hours(),
-        "readiness": readiness, "readiness_err": readiness_err,
-        "health": health, "health_err": health_err,
-        "sleep": sleep, "sleep_err": sleep_err,
-        "training": training, "training_err": training_err,
-        "training_status": training_status, "training_status_err": training_status_err,
-        "activities": activities, "activities_err": activities_err,
-        "week": week, "week_err": week_err,
-        "trends": trends, "trends_err": trends_err,
-        "personal_records": personal_records, "personal_records_err": personal_records_err,
-        "active_goals": active_goals, "active_goals_err": active_goals_err,
-        "athlete": athlete, "athlete_err": athlete_err,
-        "last_sync": last_sync, "last_sync_err": last_sync_err,
-        "gear_status": gear_status, "gear_status_err": gear_status_err,
     }
+    for key, (value, err) in results.items():
+        data[key] = value
+        data[f"{key}_err"] = err
+    return data
 
 
 # ── FORMATTING HELPERS ──────────────────────────────────────────────────────
