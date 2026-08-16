@@ -83,7 +83,7 @@ import os
 import re
 import threading
 import uuid as uuid_module
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
@@ -157,6 +157,17 @@ def _validate_date(value: str, field: str = "date") -> str:
     except ValueError as e:
         raise ValueError(f"{field} must be YYYY-MM-DD, got {value!r}.") from e
     return value
+
+
+def _iso_date_only(value) -> str | None:
+    """The 'YYYY-MM-DD' prefix of an ISO date/datetime string (Garmin's
+    gear ``dateBegin`` comes back as e.g. '2026-02-22T00:00:00.0'), or None
+    when it's missing or doesn't look like one — callers treat that as
+    "ignore, fall back to the default" rather than an error."""
+    if not value or not isinstance(value, str) or len(value) < 10:
+        return None
+    candidate = value[:10]
+    return candidate if _DATE_RE.match(candidate) else None
 
 
 def _load_default_intervals() -> dict:
@@ -538,6 +549,7 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
                 "model": g.get("model"),
                 "distance_km": g.get("distance_km"),
                 "max_distance_km": g.get("max_distance_km"),
+                "date_begin": _iso_date_only(g.get("date_begin")),
             }
             for g in all_gear
             if g.get("uuid") and g["uuid"] not in linked_uuids
@@ -739,6 +751,43 @@ async def _request_fields(request) -> dict:
     return dict(form)
 
 
+_BACKDATE_LOOKBACK_CAP_DAYS = 120
+
+
+def _distance_ridden_since(gear_uuid: str, since_date: str) -> float:
+    """Distance (km) this specific gear item covered in activities from the
+    day after ``since_date`` through today, inclusive.
+
+    Backdating a maintenance log entry (e.g. "lubed the chain last Sunday")
+    needs the anchor distance *as of that day*, but Garmin's gear stats
+    (profile.get_gear) only ever expose a live current total, never a
+    historical one — so it's reconstructed here as
+    ``current_total - distance_ridden_since``.
+
+    Garmin has no "activities for this gear" filter, so each candidate
+    activity in the date range needs its own get_activity_gear call to check
+    whether it used this gear at all — capped at _BACKDATE_LOOKBACK_CAP_DAYS
+    of range so a far-backdated entry can't turn into dozens of sequential
+    Garmin round trips on a form submission. Returns 0.0 past the cap (and
+    for a same-day/future date) — the caller then falls back to the plain
+    live-total anchor, same as before this correction existed.
+    """
+    start = date.fromisoformat(since_date) + timedelta(days=1)
+    today = date.today()
+    if start > today or (today - start).days > _BACKDATE_LOOKBACK_CAP_DAYS:
+        return 0.0
+
+    from tools.activities import get_activities
+    from tools.profile import get_activity_gear
+
+    activities = get_activities(start_date=start.isoformat(), end_date=today.isoformat())
+    total = 0.0
+    for a in activities:
+        if gear_uuid in {g.get("uuid") for g in get_activity_gear(a["id"])}:
+            total += a.get("distance_km") or 0.0
+    return round(total, 2)
+
+
 async def post_maintenance(request):
     """POST /api/gear/maintenance — log a maintenance action.
 
@@ -777,10 +826,17 @@ async def post_maintenance(request):
             if basis_gear is None:
                 raise ValueError("That component's linked gear is no longer registered in Garmin.")
 
+        service_date = fields.get("date") or date.today().isoformat()
+        current_distance = basis_gear.get("distance_km") or 0.0
+        distance_at_service = current_distance
+        if service_date < date.today().isoformat():
+            ridden_since = _distance_ridden_since(basis_gear.get("uuid"), service_date)
+            distance_at_service = max(current_distance - ridden_since, 0.0)
+
         entry = log_maintenance_entry(
             component_id=component_id,
             action=fields.get("action") or "",
-            distance_at_service_km=basis_gear.get("distance_km") or 0.0,
+            distance_at_service_km=distance_at_service,
             date_=fields.get("date") or None,
             notes=fields.get("notes") or None,
         )
@@ -820,32 +876,40 @@ async def post_component(request):
             interval_km = _UNSET
 
     # The "Link component" form's Garmin-gear <select> encodes each option's
-    # value as "<uuid>:<name>" so the chosen item's name travels with the
-    # submission — sparing a live Garmin lookup here purely to resolve a name
-    # the page already had at render time (that lookup was the dashboard's
-    # "Link" button feeling stuck/slow). A bare uuid (no colon) still works,
-    # e.g. a JSON API caller — upsert_component falls back to its own live
-    # lookup in that case. A key that's absent entirely (the plain "Edit"
-    # form doesn't carry one) keeps the existing link; present-but-empty (the
-    # "Custom, not tracked in Garmin" choice) explicitly clears it.
+    # value as "<uuid>:<name>:<date_begin>" so the chosen item's name and
+    # install date travel with the submission — sparing live Garmin lookups
+    # here purely to resolve values the page already had at render time
+    # (those lookups were the dashboard's "Link" button feeling stuck/slow).
+    # A bare uuid (no colon), or "uuid:name" (no date), still works, e.g. a
+    # JSON API caller — upsert_component falls back to its own live name
+    # lookup when linked_gear_uuid is given with no name, and a missing date
+    # just leaves install_date to its own "today" default. A key that's
+    # absent entirely (the plain "Edit" form doesn't carry one) keeps the
+    # existing link; present-but-empty (the "Custom, not tracked in Garmin"
+    # choice) explicitly clears it.
     linked_raw = fields.get("linked_gear_uuid")
     linked_gear_name = None
+    linked_gear_date_begin = None
     if linked_raw is None:
         linked_gear_uuid = _UNSET
     elif not linked_raw:
         linked_gear_uuid = None
     else:
-        linked_gear_uuid, _, linked_gear_name = linked_raw.partition(":")
-        linked_gear_name = linked_gear_name or None
+        parts = linked_raw.split(":", 2)
+        linked_gear_uuid = parts[0] or None
+        linked_gear_name = parts[1] if len(parts) > 1 and parts[1] else None
+        if len(parts) > 2 and parts[2] and _DATE_RE.match(parts[2]):
+            linked_gear_date_begin = parts[2]
 
     name = fields.get("name") or linked_gear_name or ""
+    install_date = fields.get("install_date") or linked_gear_date_begin or None
 
     try:
         component = upsert_component(
             bike_uuid=fields.get("bike_uuid") or "",
             name=name,
             bike_name=fields.get("bike_name") or None,
-            install_date=fields.get("install_date") or None,
+            install_date=install_date,
             install_distance_km=float(fields.get("install_distance_km") or 0.0),
             maintenance_interval_km=interval_km,
             component_id=component_id,

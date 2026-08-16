@@ -206,13 +206,38 @@ def test_render_gear_panel_link_form_lists_linkable_gear():
     data = {**SAMPLE, "gear_status": {
         **SAMPLE["gear_status"],
         "linkable_gear": [{"uuid": "chain-1", "name": "Shimano 12s Chain", "model": None,
-                           "distance_km": 1969.68, "max_distance_km": 3000.0}],
+                           "distance_km": 1969.68, "max_distance_km": 3000.0,
+                           "date_begin": "2026-02-22"}],
     }}
     html = dashboard.render_dashboard_html(data)
-    # The option's value carries "<uuid>:<name>" so the POST doesn't need a
-    # live Garmin lookup to resolve the name (issue 63 follow-up).
-    assert '<option value="chain-1:Shimano 12s Chain">' in html
+    # The option's value carries "<uuid>:<name>:<date_begin>" so the POST
+    # doesn't need a live Garmin lookup to resolve them (issue 63 follow-up).
+    assert '<option value="chain-1:Shimano 12s Chain:2026-02-22">' in html
     assert "Shimano 12s Chain" in html
+
+
+def test_render_gear_panel_link_form_option_tolerates_missing_date_begin():
+    data = {**SAMPLE, "gear_status": {
+        **SAMPLE["gear_status"],
+        "linkable_gear": [{"uuid": "chain-1", "name": "Shimano 12s Chain", "model": None,
+                           "distance_km": 1969.68, "max_distance_km": 3000.0,
+                           "date_begin": None}],
+    }}
+    html = dashboard.render_dashboard_html(data)
+    assert '<option value="chain-1:Shimano 12s Chain:">' in html
+
+
+def test_render_gear_panel_link_form_has_no_install_date_field():
+    """Install date is no longer a form field on the Link form (issue 63
+    follow-up) — it's sourced from the linked Garmin gear's own date, or
+    defaults to today for a Custom component, either way without asking."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "+ Link component" in html
+    # The Edit-component form (inside each component's modal) still has one;
+    # this only checks the Link form doesn't gain a second, redundant one.
+    link_form_start = html.index("+ Link component")
+    link_form_end = html.index("</details>", link_form_start)
+    assert "Install date" not in html[link_form_start:link_form_end]
 
 
 def test_render_gear_panel_link_form_offers_type_not_name():
@@ -230,6 +255,53 @@ def test_render_gear_panel_uses_service_interval_label_not_override():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "Service interval (km)" in html
     assert "Interval override" not in html
+
+
+def test_render_gear_panel_unlink_button_absent_for_unlinked_component():
+    """SAMPLE's Chain has no linked_gear_uuid — no Unlink button to show."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "Unlink" not in html
+
+
+def test_render_gear_panel_unlink_button_present_for_linked_component():
+    data = {**SAMPLE, "gear_status": {
+        **SAMPLE["gear_status"],
+        "gear": [
+            {**SAMPLE["gear_status"]["gear"][0], "components": [
+                {**SAMPLE["gear_status"]["gear"][0]["components"][0],
+                 "linked_gear_uuid": "chain-1"},
+            ]},
+            SAMPLE["gear_status"]["gear"][1],
+        ],
+    }}
+    html = dashboard.render_dashboard_html(data)
+    assert "Unlink" in html
+    assert '<input type="hidden" name="linked_gear_uuid" value="">' in html
+
+
+def test_render_gear_panel_history_bike_column_not_gear():
+    """The Maintenance History table's second column reads 'Bike', not the
+    more ambiguous 'Gear' (issue 63 follow-up)."""
+    data = {**SAMPLE, "gear_status": {
+        **SAMPLE["gear_status"],
+        "maintenance_log": [
+            {"id": 1, "component_id": 1, "date": "2026-07-10", "action": "lubed",
+             "distance_at_service_km": 5400.0, "notes": None,
+             "component_name": "Chain", "bike_name": "Canyon Ultimate", "bike_uuid": "bike-1"},
+        ],
+    }}
+    html = dashboard.render_dashboard_html(data)
+    assert "<th>Bike</th>" in html
+    assert "<th>Gear</th>" not in html
+
+
+def test_render_includes_gear_modal_reset_script():
+    """A component modal's 'Edit component' <details> is native, persistent
+    DOM state (the modal itself is CSS :target-toggled, not re-rendered per
+    open) — this script resets it closed on every modal navigation so it's
+    always collapsed on a fresh open (issue 63 follow-up)."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "gear-modal .gear-actions[open]" in html
 
 
 def test_render_gear_panel_component_row_opens_target_modal():

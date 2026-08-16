@@ -8,11 +8,12 @@ exercised with Starlette's TestClient.
 """
 import json
 import threading
+from datetime import date, timedelta
 
 import pytest
 from starlette.testclient import TestClient
 
-from tools import gear_tracker, profile
+from tools import activities, gear_tracker, profile
 
 
 @pytest.fixture(autouse=True)
@@ -466,6 +467,33 @@ def test_build_gear_status_linkable_gear_lists_unlinked_other_gear(monkeypatch):
     assert [g["uuid"] for g in status["linkable_gear"]] == ["chain-1"]
 
 
+def test_build_gear_status_linkable_gear_includes_date_begin(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    status = gear_tracker.build_gear_status()
+    assert status["linkable_gear"][0]["date_begin"] == "2026-02-22"
+
+
+def test_build_gear_status_linkable_gear_date_begin_none_when_missing(monkeypatch):
+    gear = GEAR_WITH_LINKABLE_CHAIN[:2] + [{**GEAR_WITH_LINKABLE_CHAIN[2], "date_begin": None}]
+    _patch_gear(monkeypatch, gear)
+    status = gear_tracker.build_gear_status()
+    assert status["linkable_gear"][0]["date_begin"] is None
+
+
+# ── _iso_date_only (issue 63 follow-up) ─────────────────────────────────────
+
+@pytest.mark.parametrize("value, expected", [
+    ("2026-02-22", "2026-02-22"),
+    ("2026-02-22T00:00:00.0", "2026-02-22"),
+    (None, None),
+    ("", None),
+    ("not a date", None),
+    ("26-2-22", None),
+])
+def test_iso_date_only(value, expected):
+    assert gear_tracker._iso_date_only(value) == expected
+
+
 def test_build_gear_status_linkable_gear_excludes_already_linked(monkeypatch):
     _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
     gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
@@ -682,6 +710,33 @@ def test_post_component_form_empty_linked_field_clears_link(monkeypatch):
     assert gear_tracker.get_component(comp["id"])["linked_gear_uuid"] is None
 
 
+def test_post_component_json_uses_linked_gears_date_begin_as_install_date(monkeypatch):
+    """The Link form has no Install date field (issue 63 follow-up) — it
+    comes from the linked Garmin gear's own dateBegin, carried in the
+    <select> option's encoded value."""
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "bike_uuid": "bike-1", "linked_gear_uuid": "chain-1:Shimano 12s Chain:2026-02-22",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    comp = gear_tracker.find_component("bike-1", "Shimano 12s Chain")
+    assert comp["install_date"] == "2026-02-22"
+
+
+def test_post_component_form_missing_date_begin_falls_back_to_today(monkeypatch):
+    """No dateBegin on the Garmin item ('ignored if not found on the API') —
+    falls back to the same 'today' default as before, not an error."""
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "bike_uuid": "bike-1", "linked_gear_uuid": "chain-1:Shimano 12s Chain:",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    comp = gear_tracker.find_component("bike-1", "Shimano 12s Chain")
+    assert comp["install_date"] == date.today().isoformat()
+
+
 def test_post_component_form_error_redirects_with_message(client):
     resp = client.post(f"{gear_tracker.API_PREFIX}/components", data={"name": "Chain"},
                        follow_redirects=False)
@@ -735,6 +790,92 @@ def test_post_maintenance_linked_component_uses_linked_gears_distance(monkeypatc
     })
     assert resp.status_code == 200
     assert resp.json()["distance_at_service_km"] == 1969.68
+
+
+# ── BACKDATED MAINTENANCE (issue 63 follow-up) ──────────────────────────────
+# Logging a service with a past date must anchor "distance since" at what the
+# gear's distance was *on that day*, not today's live total — otherwise
+# "distance since" reads as 0 right after logging even though rides happened
+# between the service date and today.
+
+def test_distance_ridden_since_returns_zero_for_today_or_future():
+    assert gear_tracker._distance_ridden_since("bike-1", date.today().isoformat()) == 0.0
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    assert gear_tracker._distance_ridden_since("bike-1", tomorrow) == 0.0
+
+
+def test_distance_ridden_since_sums_only_matching_gear_activities(monkeypatch):
+    since = (date.today() - timedelta(days=5)).isoformat()
+
+    def fake_get_activities(start_date=None, end_date=None, **kwargs):
+        return [
+            {"id": 1, "distance_km": 10.0},
+            {"id": 2, "distance_km": 5.0},   # different gear — excluded
+            {"id": 3, "distance_km": 7.0},
+        ]
+
+    def fake_get_activity_gear(activity_id):
+        return [{"uuid": "bike-1"}] if activity_id in (1, 3) else [{"uuid": "other-bike"}]
+
+    monkeypatch.setattr(activities, "get_activities", fake_get_activities)
+    monkeypatch.setattr(profile, "get_activity_gear", fake_get_activity_gear)
+
+    assert gear_tracker._distance_ridden_since("bike-1", since) == 17.0
+
+
+def test_distance_ridden_since_caps_lookback_without_calling_garmin(monkeypatch):
+    def _boom(*a, **kw):
+        raise AssertionError("get_activities should not be called past the lookback cap")
+    monkeypatch.setattr(activities, "get_activities", _boom)
+
+    far_past = (date.today() - timedelta(days=gear_tracker._BACKDATE_LOOKBACK_CAP_DAYS + 5)).isoformat()
+    assert gear_tracker._distance_ridden_since("bike-1", far_past) == 0.0
+
+
+def test_post_maintenance_backdated_date_subtracts_rides_since(monkeypatch):
+    _patch_gear(monkeypatch)  # SAMPLE_GEAR: bike-1 currently at 1000.0 km
+    service_date = (date.today() - timedelta(days=3)).isoformat()
+
+    def fake_get_activities(start_date=None, end_date=None, **kwargs):
+        return [{"id": 1, "distance_km": 30.0}, {"id": 2, "distance_km": 20.0}]
+
+    def fake_get_activity_gear(activity_id):
+        return [{"uuid": "bike-1"}]
+
+    monkeypatch.setattr(activities, "get_activities", fake_get_activities)
+    monkeypatch.setattr(profile, "get_activity_gear", fake_get_activity_gear)
+
+    comp = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    maint_client = TestClient(gear_tracker.create_app())
+    resp = maint_client.post(f"{gear_tracker.API_PREFIX}/maintenance", json={
+        "component_id": comp["id"], "action": "lubed", "date": service_date,
+    })
+    assert resp.status_code == 200
+    # 1000 (current) - 50 (30 + 20 ridden since the service date) = 950
+    assert resp.json()["distance_at_service_km"] == 950.0
+
+    status = gear_tracker.build_gear_status()
+    chain = status["gear"][0]["components"][0]
+    # distance since the (backdated) service = current 1000 - anchor 950 = 50,
+    # matching the rides that happened after it — not 0.
+    assert chain["distance_since_km"] == 50.0
+
+
+def test_post_maintenance_todays_date_is_unaffected_by_backdating_logic(monkeypatch):
+    """A same-day submission must not go through the ridden-since correction
+    at all (and shouldn't need get_activities called for it)."""
+    def _boom(*a, **kw):
+        raise AssertionError("get_activities should not be called for a same-day entry")
+    monkeypatch.setattr(activities, "get_activities", _boom)
+    _patch_gear(monkeypatch)
+
+    comp = gear_tracker.upsert_component(bike_uuid="bike-1", name="Chain")
+    maint_client = TestClient(gear_tracker.create_app())
+    resp = maint_client.post(f"{gear_tracker.API_PREFIX}/maintenance", json={
+        "component_id": comp["id"], "action": "lubed", "date": date.today().isoformat(),
+    })
+    assert resp.status_code == 200
+    assert resp.json()["distance_at_service_km"] == 1000.0
 
 
 def test_post_maintenance_redirect_preserves_token(client):

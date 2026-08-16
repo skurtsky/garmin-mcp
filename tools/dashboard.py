@@ -4,8 +4,8 @@
 Gathers a live overview from the Garmin client and renders it as a single,
 self-contained HTML page (inline CSS, no build step, no external requests —
 the Phosphor icon font is embedded as a subsetted base64 woff2, and the small
-amount of interactivity below is a single inline `<script>`, no CDN/library).
-Each request pulls fresh data server-side.
+amount of interactivity below is a handful of small inline `<script>` tags,
+no CDN/library). Each request pulls fresh data server-side.
 
 The four tabs (Today / Trends / Activity / Fitness) are all rendered into the
 page on every load; switching tabs, the trend range (7d/14d/30d), and the
@@ -1391,6 +1391,18 @@ def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], t
           {history_lines}
         </div>""" if history_lines else ""
 
+    unlink_form = ""
+    if c.get("linked_gear_uuid"):
+        unlink_form = f"""
+          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}" style="margin-top:6px">
+            <input type="hidden" name="component_id" value="{_e(c['id'])}">
+            <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
+            <input type="hidden" name="name" value="{_e(c['name'])}">
+            <input type="hidden" name="linked_gear_uuid" value="">
+            <div style="font-size:11px;color:var(--color-neutral-600);width:100%">Untrack the Garmin gear link — stays on this bike, tracked manually from here on.</div>
+            <button type="submit">Unlink</button>
+          </form>"""
+
     return f"""
     <div id="component-{_e(c['id'])}" class="gear-modal">
       <a href="#gm-modal-close" class="gear-modal-backdrop" aria-label="Close"></a>
@@ -1433,6 +1445,7 @@ def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], t
                 value="{interval_value}" placeholder="optional"></label>
             <button type="submit">Save</button>
           </form>
+          {unlink_form}
         </details>
         <a href="#gm-modal-close" style="align-self:flex-end;font-size:12px;color:var(--color-neutral-500);text-decoration:none">Close</a>
       </div>
@@ -1452,17 +1465,23 @@ def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | N
     the POST handler doesn't need to look it up live — see post_component),
     and a Custom one is named after the selected Type. Type also seeds the
     Service interval field's default when it's left blank.
+
+    There's no Install date field either, for the same reason: a linked
+    component's install date comes from that Garmin gear item's own
+    ``dateBegin`` — also carried in the option's value — falling back to
+    today when Garmin doesn't have one (see post_component). A Custom
+    component still just defaults to today, same as before.
     """
     from tools.gear_tracker import COMPONENT_TYPES
 
-    today_iso = date.today().isoformat()
     opts = ['<option value="">Custom (not tracked in Garmin)</option>']
     for lg in linkable_gear:
         gear_name = lg.get("name") or "Unnamed gear"
         label = gear_name
         if lg.get("distance_km") is not None:
             label += f" — {_fmt_km(lg['distance_km'])}"
-        opts.append(f'<option value="{_e(lg["uuid"])}:{_e(gear_name)}">{_e(label)}</option>')
+        value = f"{lg['uuid']}:{gear_name}:{lg.get('date_begin') or ''}"
+        opts.append(f'<option value="{_e(value)}">{_e(label)}</option>')
     options_html = "".join(opts)
     type_options = "".join(f'<option value="{t}">{t}</option>' for t in COMPONENT_TYPES)
     return f"""
@@ -1473,7 +1492,6 @@ def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | N
         <input type="hidden" name="bike_name" value="{_e(g.get('name') or '')}">
         <label>Garmin gear<select name="linked_gear_uuid">{options_html}</select></label>
         <label>Type<select name="component_type">{type_options}</select></label>
-        <label>Install date<input type="date" name="install_date" value="{today_iso}"></label>
         <label>Service interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km" placeholder="optional"></label>
         <button type="submit">Link</button>
       </form>
@@ -1572,7 +1590,7 @@ def _gear_history_section(log_entries: list[dict], bike_names: dict) -> str:
       </div>
       <div style="overflow-x:auto">
         <table class="gear-table">
-          <thead><tr><th>Date</th><th>Gear</th><th>Component</th><th>Action</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Date</th><th>Bike</th><th>Component</th><th>Action</th><th>Notes</th></tr></thead>
           <tbody>{rows_html}</tbody>
         </table>
       </div>
@@ -1782,6 +1800,19 @@ document.querySelectorAll('[data-sync-utc]').forEach(function (el) {
 });
 """
 
+# A component's modal (tools/dashboard.py's .gear-modal, shown via CSS
+# :target — see _gear_component_modal) is a single, persistent DOM node
+# toggled purely by visibility, not re-rendered each time it opens. Its
+# "Edit component" <details> is native HTML state, so once expanded it stays
+# expanded across later opens/closes within the same page load — this resets
+# it back closed on every navigation between (or out of) a component modal,
+# so "Edit component" is always collapsed on a fresh open.
+_GEAR_MODAL_JS = """
+window.addEventListener('hashchange', function () {
+  document.querySelectorAll('.gear-modal .gear-actions[open]').forEach(function (d) { d.open = false; });
+});
+"""
+
 
 def _fmt_sync_time(value):
     if value is None:
@@ -1920,5 +1951,6 @@ def render_dashboard_html(data: dict, token: str | None = None,
         f"{body}"
         f"<script>{_CHART_JS}</script>"
         f"<script>{_TZ_JS}</script>"
+        f"<script>{_GEAR_MODAL_JS}</script>"
         "</body></html>"
     )
