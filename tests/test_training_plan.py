@@ -15,10 +15,9 @@ from tools import navbar, training_plan
 
 PLAN_HTML = (
     "<!doctype html><html><head><title>Plan</title></head><body>"
-    '<script type="application/json" id="plan-data">{"weeks": 12}</script>'
+        '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>'
     "<div id=app></div></body></html>"
 )
-PLAN_JSON = json.dumps({"title": "Marathon build", "weeks": 12})
 
 
 @pytest.fixture(autouse=True)
@@ -34,10 +33,9 @@ def client():
     return TestClient(training_plan.create_app())
 
 
-def _upload_files(html_text=PLAN_HTML, json_text=PLAN_JSON):
+def _upload_files(html_text=PLAN_HTML):
     return {
         training_plan.HTML_FIELD: ("plan.html", html_text, "text/html"),
-        training_plan.JSON_FIELD: ("plan.json", json_text, "application/json"),
     }
 
 
@@ -49,51 +47,52 @@ def test_no_plan_by_default():
     assert training_plan.plan_info() is None
 
 
-def test_save_plan_writes_both_files_verbatim(plan_dir):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+def test_save_plan_extracts_embedded_json(plan_dir):
+    training_plan.save_plan(PLAN_HTML.encode())
 
     assert training_plan.plan_exists() is True
     assert (plan_dir / "plan.html").read_text() == PLAN_HTML
-    assert json.loads((plan_dir / "plan.json").read_text()) == json.loads(PLAN_JSON)
+    assert json.loads((plan_dir / "plan.json").read_text()) == {
+        "meta": {"event": "Marathon build", "athlete": "Alex"}, "weeks": 12
+    }
     # The embedded plan-data script survives the round trip untouched.
     assert training_plan.read_plan_html() == PLAN_HTML
 
 
 def test_save_plan_replaces_previous_plan():
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
-    newer = PLAN_HTML.replace("Plan", "Newer plan")
-    training_plan.save_plan(newer.encode(), json.dumps({"weeks": 8}).encode())
+    training_plan.save_plan(PLAN_HTML.encode())
+    newer = PLAN_HTML.replace('"weeks":12', '"weeks":8')
+    training_plan.save_plan(newer.encode())
 
     assert training_plan.read_plan_html() == newer
     with open(training_plan.plan_json_path()) as f:
-        assert json.load(f) == {"weeks": 8}
+        assert json.load(f)["weeks"] == 8
 
 
 def test_save_plan_leaves_no_temp_files(plan_dir):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
     assert sorted(p.name for p in plan_dir.iterdir()) == ["plan.html", "plan.json"]
 
 
-@pytest.mark.parametrize("html_bytes, json_bytes", [
-    (b"   ", PLAN_JSON.encode()),                       # empty HTML
-    (b"not html at all", PLAN_JSON.encode()),           # no markup
-    (PLAN_HTML.encode(), b"{not json"),                 # unparseable JSON
-    (PLAN_HTML.encode(), b"\xff\xfe not utf8"),         # undecodable JSON
+@pytest.mark.parametrize("html_bytes", [
+    b"   ",                                      # empty HTML
+    b"not html at all",                          # no markup
+    PLAN_HTML.replace('{"meta":', "{not json").encode(),  # invalid embedded JSON
 ])
-def test_save_plan_rejects_bad_uploads(html_bytes, json_bytes):
+def test_save_plan_rejects_bad_uploads(html_bytes):
     with pytest.raises(ValueError):
-        training_plan.save_plan(html_bytes, json_bytes)
+        training_plan.save_plan(html_bytes)
     assert training_plan.plan_exists() is False
 
 
 def test_save_plan_rejects_oversized_html(monkeypatch):
     monkeypatch.setattr(training_plan, "MAX_UPLOAD_BYTES", 10)
     with pytest.raises(ValueError):
-        training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+        training_plan.save_plan(PLAN_HTML.encode())
 
 
 def test_plan_info_reports_title_and_size():
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
     info = training_plan.plan_info()
 
     assert info["title"] == "Marathon build"
@@ -102,7 +101,7 @@ def test_plan_info_reports_title_and_size():
 
 
 def test_plan_info_tolerates_unparseable_json(plan_dir):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
     (plan_dir / "plan.json").write_text("{ broken")
 
     info = training_plan.plan_info()
@@ -111,7 +110,7 @@ def test_plan_info_tolerates_unparseable_json(plan_dir):
 
 
 def test_reset_plan_removes_files_and_is_idempotent():
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
 
     assert sorted(training_plan.reset_plan()) == ["plan.html", "plan.json"]
     assert training_plan.plan_exists() is False
@@ -130,14 +129,14 @@ def test_get_plan_without_upload_returns_no_plan_page(client):
 
 
 def test_get_plan_serves_stored_html_with_the_nav_injected(client):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
 
     r = client.get("/training-plan", params={"token": "t0k"})
 
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
     # The plan itself is untouched — only the nav bar is added inside <body>.
-    assert '<script type="application/json" id="plan-data">{"weeks": 12}</script>' in r.text
+    assert '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>' in r.text
     assert "<div id=app></div>" in r.text
     assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == PLAN_HTML
     assert 'href="/weekly-summary?token=t0k"' in r.text
@@ -150,19 +149,19 @@ def test_no_plan_page_carries_the_site_nav(client):
     assert 'href="/dashboard?token=t0k"' in r.text
 
 
-def test_upload_form_has_two_file_inputs_and_carries_token(client):
+def test_upload_form_has_one_file_input_and_carries_token(client):
     r = client.get("/training-plan/upload", params={"token": "t0k"})
 
     assert r.status_code == 200
     assert f'name="{training_plan.HTML_FIELD}" type="file"' in r.text
-    assert f'name="{training_plan.JSON_FIELD}" type="file"' in r.text
+    assert "plan_json" not in r.text
     assert 'enctype="multipart/form-data"' in r.text
     assert 'action="/training-plan/upload?token=t0k"' in r.text
     assert "No plan is active" in r.text
 
 
 def test_upload_form_shows_active_plan_and_reset_button(client):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
 
     r = client.get("/training-plan/upload", params={"token": "t0k"})
 
@@ -187,17 +186,17 @@ def test_post_upload_redirect_lands_on_the_plan(client):
     assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == PLAN_HTML
 
 
-def test_post_upload_with_invalid_json_returns_form_with_error(client):
+def test_post_upload_with_invalid_embedded_json_returns_form_with_error(client):
     r = client.post("/training-plan/upload", params={"token": "t0k"},
-                    files=_upload_files(json_text="{ nope"), follow_redirects=False)
+                    files=_upload_files(html_text=PLAN_HTML.replace('{"meta":', "{ nope")), follow_redirects=False)
 
     assert r.status_code == 400
-    assert "not valid JSON" in r.text
+    assert "embedded plan JSON" in r.text
     assert training_plan.plan_exists() is False
 
 
 def test_post_upload_keeps_previous_plan_when_new_one_is_invalid(client):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
 
     r = client.post("/training-plan/upload", params={"token": "t0k"},
                     files=_upload_files(html_text=""), follow_redirects=False)
@@ -206,16 +205,16 @@ def test_post_upload_keeps_previous_plan_when_new_one_is_invalid(client):
     assert training_plan.read_plan_html() == PLAN_HTML
 
 
-def test_post_upload_without_files_reports_both_are_required(client):
+def test_post_upload_without_files_reports_html_required(client):
     r = client.post("/training-plan/upload", params={"token": "t0k"},
                     data={"nothing": "here"}, follow_redirects=False)
 
     assert r.status_code == 400
-    assert "required" in r.text
+    assert "HTML file is required" in r.text
 
 
 def test_post_reset_deletes_the_plan(client):
-    training_plan.save_plan(PLAN_HTML.encode(), PLAN_JSON.encode())
+    training_plan.save_plan(PLAN_HTML.encode())
 
     r = client.post("/training-plan/reset", params={"token": "t0k"})
 

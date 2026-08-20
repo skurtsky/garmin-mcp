@@ -15,7 +15,7 @@ Routes (all behind the same ``?token=`` bearer auth as ``/mcp`` and
 ``/dashboard``, enforced by the wrapper in server.py):
 
     GET  /training-plan          — the current plan, or a "No plan active" page
-    GET  /training-plan/upload   — a minimal two-file upload form
+    GET  /training-plan/upload   — a minimal one-file upload form
     POST /training-plan/upload   — stores the upload, redirects to the plan
     POST /training-plan/reset    — deletes the stored plan
 """
@@ -23,6 +23,7 @@ import html
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from urllib.parse import urlencode
 
@@ -39,7 +40,10 @@ PLAN_JSON_NAME = "plan.json"
 
 # Form field names on the upload form.
 HTML_FIELD = "plan_html"
-JSON_FIELD = "plan_json"
+
+PLAN_DATA_RE = re.compile(
+    r'<script[^>]*id=["\']plan-data["\'][^>]*>(.*?)</script>', re.S | re.I
+)
 
 # Refuse absurd uploads rather than filling the file share. A compiled plan app
 # with embedded JSON is a few hundred KB.
@@ -96,36 +100,52 @@ def plan_info() -> dict | None:
         "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc)
                               .strftime("%Y-%m-%d %H:%M UTC"),
         "title": None,
+        "athlete": None,
     }
 
     try:
         with open(plan_json_path(), encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            for key in ("title", "name", "plan_name", "planName"):
-                if isinstance(data.get(key), str):
-                    info["title"] = data[key]
-                    break
+            meta = data.get("meta") or {}
+            if isinstance(meta, dict):
+                info["title"] = meta.get("event")
+                info["athlete"] = meta.get("athlete")
+            if not info["title"]:
+                for key in ("title", "name", "plan_name", "planName"):
+                    if isinstance(data.get(key), str):
+                        info["title"] = data[key]
+                        break
     except (OSError, ValueError):
         pass  # JSON missing or unparseable — the HTML is still servable
 
     return info
 
 
-def save_plan(html_bytes: bytes, json_bytes: bytes) -> None:
+def extract_plan_json(html_text: str) -> bytes | None:
+    """Return validated JSON embedded in the plan-data script, if present."""
+    match = PLAN_DATA_RE.search(html_text)
+    if not match:
+        return None
+    try:
+        json.loads(match.group(1))
+    except ValueError:
+        return None
+    return match.group(1).strip().encode("utf-8")
+
+
+def save_plan(html_bytes: bytes) -> None:
     """Store an uploaded plan, replacing any existing one.
 
+    The JSON source is extracted from the uploaded HTML and stored next to it.
     Both files are written via a temp file + rename so a partial write can
     never be served. Raises ValueError when the upload doesn't look like a
-    plan (empty HTML, or JSON that doesn't parse).
+    plan (empty HTML, or missing/invalid embedded JSON).
     """
     if not html_bytes.strip():
         raise ValueError("The HTML file is empty.")
     if len(html_bytes) > MAX_UPLOAD_BYTES:
         raise ValueError(f"The HTML file exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
-    if len(json_bytes) > MAX_UPLOAD_BYTES:
-        raise ValueError(f"The JSON file exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
-
     try:
         html_text = html_bytes.decode("utf-8")
     except UnicodeDecodeError as e:
@@ -134,10 +154,9 @@ def save_plan(html_bytes: bytes, json_bytes: bytes) -> None:
     if "<" not in html_text:
         raise ValueError("The HTML file doesn't look like HTML.")
 
-    try:
-        json.loads(json_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as e:
-        raise ValueError(f"The JSON file is not valid JSON: {e}") from e
+    json_bytes = extract_plan_json(html_text)
+    if json_bytes is None:
+        raise ValueError("The HTML file has no valid embedded plan JSON.")
 
     directory = plan_dir()
     os.makedirs(directory, exist_ok=True)
@@ -238,7 +257,7 @@ def render_no_plan_html(token: str | None = None) -> str:
         "<h1>No plan active</h1>"
         '<div class="meta">Nothing has been uploaded to this server yet.</div>'
         '<div class="card">'
-        "<p>Upload a compiled training-plan app (the HTML file plus its JSON) to "
+        "<p>Upload a compiled training-plan app to "
         "see it here.</p>"
         f'<a class="btn" href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
         "</div>"
@@ -247,7 +266,7 @@ def render_no_plan_html(token: str | None = None) -> str:
 
 
 def render_upload_form_html(token: str | None = None, error: str | None = None) -> str:
-    """The minimal two-file upload form — plain HTML, no framework."""
+    """The minimal one-file upload form — plain HTML, no framework."""
     info = plan_info()
     if info:
         title = f' &mdash; {_e(info["title"])}' if info.get("title") else ""
@@ -276,8 +295,6 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
         'enctype="multipart/form-data">'
         f'<label for="{HTML_FIELD}">Plan HTML file</label>'
         f'<input id="{HTML_FIELD}" name="{HTML_FIELD}" type="file" accept=".html,.htm,text/html" required>'
-        f'<label for="{JSON_FIELD}">Plan JSON file</label>'
-        f'<input id="{JSON_FIELD}" name="{JSON_FIELD}" type="file" accept=".json,application/json" required>'
         '<button type="submit">Upload</button>'
         "</form>"
         "</div>"
@@ -325,7 +342,7 @@ async def serve_plan(request):
 
 
 async def serve_upload_form(request):
-    """GET /training-plan/upload — the two-file form."""
+    """GET /training-plan/upload — the one-file form."""
     token = request.query_params.get("token")
     return HTMLResponse(render_upload_form_html(token), headers=_NO_STORE)
 
@@ -336,18 +353,16 @@ async def handle_upload(request):
 
     async with request.form() as form:
         html_upload = form.get(HTML_FIELD)
-        json_upload = form.get(JSON_FIELD)
-        if not hasattr(html_upload, "read") or not hasattr(json_upload, "read"):
+        if not hasattr(html_upload, "read"):
             return HTMLResponse(
-                render_upload_form_html(token, "Both an HTML file and a JSON file are required."),
+                render_upload_form_html(token, "An HTML file is required."),
                 status_code=400,
                 headers=_NO_STORE,
             )
         html_bytes = await html_upload.read()
-        json_bytes = await json_upload.read()
 
     try:
-        save_plan(html_bytes, json_bytes)
+        save_plan(html_bytes)
     except ValueError as e:
         return HTMLResponse(
             render_upload_form_html(token, str(e)), status_code=400, headers=_NO_STORE
