@@ -92,7 +92,7 @@ def test_nav_is_removed_from_normal_flow():
     base_rule = style[style.index("#gm-nav {"): style.index("#gm-nav .gm-nav__brand")]
 
     assert "position: fixed" in base_rule
-    assert "bottom: 0" not in style
+    assert "bottom: 0" not in style.replace("padding-bottom: 0", "")
 
 
 def test_inject_nav_goes_inside_the_body_tag():
