@@ -136,12 +136,18 @@ def test_render_is_a_complete_document():
     assert html.endswith("</html>")
 
 
-def test_render_includes_mobile_app_metadata_and_training_plan_link():
+def test_render_includes_mobile_app_metadata():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
     assert 'maximum-scale=1' in html
     assert 'apple-mobile-web-app-capable' in html
+    assert 'rel="manifest"' in html
+
+
+def test_render_includes_the_shared_dashboard_nav():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'id="gm-nav"' in html
+    assert 'href="/dashboard?token=t0k"' in html
     assert 'href="/training-plan?token=t0k"' in html
-    assert "View training plan" in html
 
 
 def test_render_includes_all_five_tabs():
@@ -500,16 +506,10 @@ def test_none_values_render_as_dash():
     assert "&mdash;" in html
 
 
-def test_footer_links_to_latest_weekly_report():
-    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    assert 'class="footer-link"' in html
-    assert 'href="/weekly-summary?token=t0k"' in html
-
-
-def test_footer_link_omits_token_param_when_none():
+def test_footer_links_are_removed_from_dashboard():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert 'href="/weekly-summary"' in html
-    assert "token=" not in html.split('class="footer-link"')[1].split("</a>")[0]
+    assert "Latest weekly report" not in html
+    assert "View training plan" not in html
 
 
 def test_no_external_requests():

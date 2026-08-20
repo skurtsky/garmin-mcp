@@ -23,18 +23,19 @@ fixed removes it from the flow entirely, so it can never be miscounted as a
 layout child; a ``body { padding-top / padding-bottom }`` rule reserves the
 room it would otherwise have taken instead.
 
-Layout follows the issue: a minimal horizontal bar on desktop, a bottom tab bar
-on mobile (three items, thumb-reachable, matching the app-like dashboard).
+Layout follows the issue: a minimal horizontal bar on desktop and at the top
+of mobile pages by default. Callers can opt into a floating bottom bar for
+pages whose host app already uses that navigation pattern.
 """
 import html
 import re
 from urllib.parse import urlencode
 
-# (key, label, path, icon) for each hosted page, in nav order.
+# (key, label, path, icon name) for each hosted page, in nav order.
 PAGES = (
-    ("dashboard", "Dashboard", "/dashboard", "\U0001F4CA"),
-    ("training-plan", "Training Plan", "/training-plan", "\U0001F5D3"),
-    ("weekly-summary", "Weekly Summary", "/weekly-summary", "\U0001F4C8"),
+  ("dashboard", "Dashboard", "/dashboard", "gauge"),
+  ("training-plan", "Training Plan", "/training-plan", "calendar"),
+  ("weekly-summary", "Weekly Summary", "/weekly-summary", "chart"),
 )
 
 BRAND = "Garmin MCP"
@@ -43,37 +44,39 @@ NAV_ID = "gm-nav"
 
 _BODY_TAG_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 
+_ICON_PATHS = {
+  "gauge": '<path d="M128 40a96 96 0 1 0 96 96 96.1 96.1 0 0 0-96-96Zm0 176a80 80 0 1 1 80-80 80.1 80.1 0 0 1-80 80Zm45.7-125.7a8 8 0 0 1 0 11.4L139.3 136a16 16 0 1 1-11.3-11.3l34.3-34.4a8 8 0 0 1 11.4 0Z"/>',
+  "calendar": '<path d="M208 32h-24v-8a8 8 0 0 0-16 0v8H88v-8a8 8 0 0 0-16 0v8H48a16 16 0 0 0-16 16v160a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16Zm0 176H48V96h160v112Zm0-128H48V48h24v8a8 8 0 0 0 16 0v-8h80v8a8 8 0 0 0 16 0v-8h24Z"/>',
+  "chart": '<path d="M40 216a8 8 0 0 1-8-8V48a8 8 0 0 1 16 0v152h168a8 8 0 0 1 0 16Zm40-40a8 8 0 0 1-8-8v-40a8 8 0 0 1 16 0v40a8 8 0 0 1-8 8Zm48 0a8 8 0 0 1-8-8V96a8 8 0 0 1 16 0v72a8 8 0 0 1-8 8Zm48 0a8 8 0 0 1-8-8V64a8 8 0 0 1 16 0v104a8 8 0 0 1-8 8Z"/>',
+}
+
 # Every rule is anchored on #gm-nav so the host page is untouched. The bar is
-# dark in both colour schemes — it reads as chrome around the page rather than
-# part of it, and it avoids inheriting whatever the host page does with themes.
+# Styled to match the training-plan app's own tab bar: a neutral dark surface,
+# thin border, evenly distributed buttons, and the plan's lavender accent.
 _NAV_STYLE = """
 #gm-nav, #gm-nav * { box-sizing: border-box; }
 #gm-nav {
-  display: flex; align-items: center; gap: .25rem;
-  margin: 0; padding: .2rem .75rem; width: 100%; min-height: 44px;
-  background: #171a21; border-bottom: 1px solid #232833;
+  display: flex; align-items: stretch; justify-content: center; gap: 0;
+  margin: 0; padding: 0; width: 100%; min-height: 52px;
+  background: #292b31; border-bottom: 1px solid #3f424d;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  font-size: .9rem; line-height: 1.2;
+  font-size: .8rem; line-height: 1.2;
   /* Out of normal flow on every screen size — see the module docstring for why
      this can't just sit in-flow as the host body's first child. */
   position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647;
 }
-#gm-nav .gm-nav__brand {
-  color: #e6e8eb; font-weight: 600; text-decoration: none; white-space: nowrap;
-  padding: .35rem .75rem .35rem 0; margin-right: .35rem;
-}
-#gm-nav .gm-nav__brand:hover { color: #5aa9e6; }
-#gm-nav .gm-nav__links { display: flex; align-items: center; gap: .25rem; }
+#gm-nav .gm-nav__brand { display: none; }
+#gm-nav .gm-nav__links { display: flex; align-items: stretch; justify-content: center; width: min(520px, 100%); }
 #gm-nav .gm-nav__link {
-  display: flex; align-items: center; gap: .4rem; white-space: nowrap;
-  color: #8b93a1; text-decoration: none; font: inherit;
-  padding: .35rem .7rem; border: 1px solid transparent; border-radius: 7px;
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 2px; min-width: 0; white-space: nowrap; color: #9397ab; text-decoration: none;
+  font: inherit; padding: 9px 6px 8px; border: 0; background: none;
 }
-#gm-nav .gm-nav__link:hover { color: #e6e8eb; background: #0f1115; }
+#gm-nav .gm-nav__link:hover { color: #e9e9ed; background: rgba(233, 233, 237, .07); }
 #gm-nav .gm-nav__link--active {
-  color: #5aa9e6; background: #0f1115; border-color: #232833;
+  color: #d2cefd; box-shadow: inset 0 -2px 0 #9184d9;
 }
-#gm-nav .gm-nav__icon { font-size: 1rem; line-height: 1; }
+#gm-nav .gm-nav__icon { font-size: 1.2rem; line-height: 1; }
 /* Reserve the room the fixed bar would otherwise cover. Only padding-top is
    forced (and only that one side) — padding can't corrupt a host's flex/grid
    layout the way an extra in-flow sibling can, so this stacks safely on top of
@@ -81,25 +84,33 @@ _NAV_STYLE = """
 body { padding-top: 52px !important; }
 @media (max-width: 640px) {
   #gm-nav {
-    padding: calc(.25rem + env(safe-area-inset-top, 0px)) .25rem .25rem;
+    padding: env(safe-area-inset-top, 0px) 0 0;
     box-shadow: 0 2px 12px rgba(0, 0, 0, .35);
     transition: transform .2s ease;
   }
   #gm-nav.gm-nav--hidden { transform: translateY(-110%); }
-  #gm-nav .gm-nav__brand { display: none; }
-  #gm-nav .gm-nav__links { flex: 1; gap: 0; }
-  #gm-nav .gm-nav__link {
-    flex: 1; flex-direction: column; justify-content: center; gap: .15rem;
-    padding: .35rem .25rem; font-size: .7rem; text-align: center;
-  }
-  #gm-nav .gm-nav__icon { font-size: 1.2rem; }
-  /* A pill would fill the whole bar height here — mark the tab with a rule
-     along the top edge instead. */
+  #gm-nav .gm-nav__links { width: 100%; }
+  #gm-nav .gm-nav__link { font-size: .7rem; text-align: center; }
   #gm-nav .gm-nav__link--active {
-    background: none; border-color: transparent; border-radius: 0;
-    box-shadow: inset 0 2px 0 #5aa9e6;
+    box-shadow: inset 0 -2px 0 #9184d9;
   }
   body { padding-top: 4.25rem !important; padding-bottom: 0 !important; }
+
+  #gm-nav.gm-nav--bottom-mobile {
+    top: auto; bottom: max(12px, env(safe-area-inset-bottom, 0px));
+    left: 50%; right: auto; width: min(420px, calc(100% - 24px));
+    min-height: 0; transform: translateX(-50%);
+    border: 1px solid #3f424d; border-radius: 999px;
+    padding: 0 0 env(safe-area-inset-bottom, 0px);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, .4);
+    overflow: hidden;
+  }
+  #gm-nav.gm-nav--bottom-mobile.gm-nav--hidden {
+    transform: translateX(-50%) translateY(140%);
+  }
+  body:has(#gm-nav.gm-nav--bottom-mobile) {
+    padding-top: 0 !important; padding-bottom: 5.25rem !important;
+  }
 }
 """
 
@@ -126,7 +137,7 @@ def _url(path: str, token: str | None) -> str:
     """A route URL carrying the bearer token, when one was supplied.
 
     Appended with ``&`` rather than ``?`` when ``path`` already carries a
-    query string (the Gear entry links to ``/dashboard?tab=gear``).
+    query string.
     """
     if not token:
         return path
@@ -134,15 +145,26 @@ def _url(path: str, token: str | None) -> str:
     return f"{path}{sep}{urlencode({'token': token})}"
 
 
-def render_nav_html(active: str | None = None, token: str | None = None) -> str:
+def _icon(name: str) -> str:
+    path = _ICON_PATHS.get(name, _ICON_PATHS["chart"])
+    return f'<svg viewBox="0 0 256 256" width="20" height="20" fill="currentColor" aria-hidden="true">{path}</svg>'
+
+
+def render_nav_html(active: str | None = None, token: str | None = None,
+                    mobile_bottom: bool = False) -> str:
     """The site nav bar: a ``<style>`` block plus the ``#gm-nav`` element.
 
     ``active`` is one of the :data:`PAGES` keys (``dashboard``,
     ``training-plan``, ``weekly-summary``); the matching link is highlighted and
     marked ``aria-current``. Anything else — including None — simply highlights
     nothing. ``token`` is threaded through every link so navigating never drops
-    the ``?token=`` bearer auth.
+    the ``?token=`` bearer auth. ``mobile_bottom`` gives the nav a floating
+    bottom-bar layout on narrow screens; desktop placement is unchanged.
     """
+    nav_class = "gm-nav"
+    if mobile_bottom:
+        nav_class += " gm-nav--bottom-mobile"
+
     links = []
     for key, label, path, icon in PAGES:
         is_active = key == active
@@ -150,30 +172,32 @@ def render_nav_html(active: str | None = None, token: str | None = None) -> str:
         current = ' aria-current="page"' if is_active else ""
         links.append(
             f'<a class="{classes}" href="{_e(_url(path, token))}"{current}>'
-            f'<span class="gm-nav__icon" aria-hidden="true">{icon}</span>'
+            f'<span class="gm-nav__icon">{_icon(icon)}</span>'
             f'<span class="gm-nav__label">{_e(label)}</span></a>'
         )
 
     return (
         f"<style>{_NAV_STYLE}</style>"
-        f'<nav id="{NAV_ID}" aria-label="Site">'
+        f'<nav id="{NAV_ID}" class="{nav_class}" aria-label="Site">'
         f'<a class="gm-nav__brand" href="{_e(_url("/dashboard", token))}">{_e(BRAND)}</a>'
         f'<div class="gm-nav__links">{"".join(links)}</div>'
         f"</nav><script>{_NAV_SCRIPT}</script>"
     )
 
 
-def inject_nav(page: str, active: str | None = None, token: str | None = None) -> str:
+def inject_nav(page: str, active: str | None = None, token: str | None = None,
+               mobile_bottom: bool = False) -> str:
     """Put the nav bar at the top of a page's ``<body>``.
 
     The page is otherwise untouched. Pages with no ``<body>`` tag (a fragment
     rather than a full document) get the nav prepended, and a page that already
     carries the bar is returned unchanged so a second pass can't double it up.
+    ``mobile_bottom`` only changes narrow-screen placement.
     """
     if f'id="{NAV_ID}"' in page:
         return page
 
-    nav = render_nav_html(active, token)
+    nav = render_nav_html(active, token, mobile_bottom)
     match = _BODY_TAG_RE.search(page)
     if match:
         return page[: match.end()] + nav + page[match.end():]

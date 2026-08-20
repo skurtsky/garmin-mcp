@@ -23,6 +23,14 @@ def test_nav_links_all_hosted_pages():
     assert "Garmin MCP" in nav
 
 
+def test_nav_can_use_a_floating_mobile_bottom_layout():
+    nav = navbar.render_nav_html("training-plan", "t0k", mobile_bottom=True)
+
+    assert 'class="gm-nav gm-nav--bottom-mobile"' in nav
+    assert "bottom: max(12px" in nav
+    assert "border-radius: 999px" in nav
+
+
 def test_nav_does_not_duplicate_the_dashboard_gear_tab():
     nav = navbar.render_nav_html("dashboard")
 
@@ -76,7 +84,7 @@ def test_nav_styles_are_scoped_to_the_nav_id():
         if "{" in line and not line.strip().startswith(("@", "/*"))
     ]
     unscoped = [s for s in selectors if not s.startswith("#gm-nav")]
-    assert unscoped == ["body", "body"]
+    assert unscoped == ["body", "body", "body:has(#gm-nav.gm-nav--bottom-mobile)"]
 
 
 def test_nav_is_removed_from_normal_flow():

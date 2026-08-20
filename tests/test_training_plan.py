@@ -138,7 +138,7 @@ def test_get_plan_serves_stored_html_with_the_nav_injected(client):
     # The plan itself is untouched — only the nav bar is added inside <body>.
     assert '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>' in r.text
     assert "<div id=app></div>" in r.text
-    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == PLAN_HTML
+    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k", mobile_bottom=True), "") == PLAN_HTML
     assert 'href="/weekly-summary?token=t0k"' in r.text
 
 
@@ -183,7 +183,7 @@ def test_post_upload_redirect_lands_on_the_plan(client):
                     files=_upload_files())
 
     assert r.status_code == 200
-    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == PLAN_HTML
+    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k", mobile_bottom=True), "") == PLAN_HTML
 
 
 def test_post_upload_with_invalid_embedded_json_returns_form_with_error(client):

@@ -249,7 +249,7 @@ def _page(title: str, body: str, token: str | None = None) -> str:
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
-        f'{render_nav_html("training-plan", token)}'
+        f'{render_nav_html("training-plan", token, mobile_bottom=True)}'
         f"<main>{body}</main></body></html>"
     )
 
@@ -341,7 +341,7 @@ async def serve_plan(request):
     page = read_plan_html()
     if page is None:
         return HTMLResponse(render_no_plan_html(token), headers=_NO_STORE)
-    return HTMLResponse(inject_nav(page, "training-plan", token), headers=_NO_STORE)
+    return HTMLResponse(inject_nav(page, "training-plan", token, mobile_bottom=True), headers=_NO_STORE)
 
 
 async def serve_upload_form(request):
