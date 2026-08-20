@@ -662,9 +662,9 @@ def build_asgi_app():
     from urllib.parse import parse_qs
 
     from starlette.responses import Response as StarletteResponse
-    from starlette.responses import HTMLResponse
+    from starlette.responses import FileResponse, HTMLResponse, JSONResponse
 
-    from tools.dashboard import build_dashboard_data, render_dashboard_html
+    from tools.dashboard import get_dashboard_data, render_dashboard_html
     from tools import training_plan
     from tools import weekly_summaries
     from tools import gear_tracker
@@ -687,6 +687,30 @@ def build_asgi_app():
                 await response(scope, receive, send)
                 return
 
+        if scope["type"] == "http" and scope.get("path") == "/manifest.webmanifest":
+            query = parse_qs(scope.get("query_string", b"").decode())
+            token = query.get("token", [None])[0]
+            start_url = "/dashboard" + (f"?token={token}" if token else "")
+            response = JSONResponse({
+                "name": "Garmin MCP",
+                "short_name": "Garmin",
+                "start_url": start_url,
+                "scope": "/",
+                "display": "standalone",
+                "orientation": "any",
+                "background_color": "#161826",
+                "theme_color": "#161826",
+                "description": "A personal Garmin health dashboard",
+            })
+            await response(scope, receive, send)
+            return
+
+        if scope["type"] == "http" and scope.get("path") == "/sw.js":
+            response = FileResponse(os.path.join(os.path.dirname(__file__), "sw.js"),
+                                    media_type="application/javascript")
+            await response(scope, receive, send)
+            return
+
         # Server-rendered health dashboard — same container, same bearer-token
         # auth (via ?token=), just a different route. Data is fetched live on
         # each request.
@@ -700,7 +724,7 @@ def build_asgi_app():
                 token = query.get("token", [None])[0]
                 initial_tab = query.get("tab", [None])[0]
                 error = query.get("error", [None])[0]
-                page = render_dashboard_html(build_dashboard_data(), token, initial_tab, error)
+                page = render_dashboard_html(get_dashboard_data(), token, initial_tab, error)
                 response = HTMLResponse(page)
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Dashboard render failed")

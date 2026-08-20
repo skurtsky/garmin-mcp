@@ -35,7 +35,6 @@ PAGES = (
     ("dashboard", "Dashboard", "/dashboard", "\U0001F4CA"),
     ("training-plan", "Training Plan", "/training-plan", "\U0001F5D3"),
     ("weekly-summary", "Weekly Summary", "/weekly-summary", "\U0001F4C8"),
-    ("gear", "Gear", "/dashboard?tab=gear", "\U0001F527"),
 )
 
 BRAND = "Garmin MCP"
@@ -82,11 +81,11 @@ _NAV_STYLE = """
 body { padding-top: 52px !important; }
 @media (max-width: 640px) {
   #gm-nav {
-    left: 0; right: 0; bottom: 0; top: auto;
-    border-bottom: none; border-top: 1px solid #232833;
-    padding: .25rem .25rem calc(.25rem + env(safe-area-inset-bottom, 0px));
-    box-shadow: 0 -2px 12px rgba(0, 0, 0, .35);
+    padding: calc(.25rem + env(safe-area-inset-top, 0px)) .25rem .25rem;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, .35);
+    transition: transform .2s ease;
   }
+  #gm-nav.gm-nav--hidden { transform: translateY(-110%); }
   #gm-nav .gm-nav__brand { display: none; }
   #gm-nav .gm-nav__links { flex: 1; gap: 0; }
   #gm-nav .gm-nav__link {
@@ -100,10 +99,22 @@ body { padding-top: 52px !important; }
     background: none; border-color: transparent; border-radius: 0;
     box-shadow: inset 0 2px 0 #5aa9e6;
   }
-  /* The bar moves to the bottom on mobile — swap which side of the page it
-     reserves space on. */
-  body { padding-top: 0 !important; padding-bottom: 4.25rem !important; }
+  body { padding-top: 4.25rem !important; padding-bottom: 0 !important; }
 }
+"""
+
+_NAV_SCRIPT = """
+(function () {
+  var nav = document.getElementById('gm-nav');
+  if (!nav || !window.matchMedia('(max-width: 640px)').matches) return;
+  var lastY = window.scrollY;
+  window.addEventListener('scroll', function () {
+    var y = window.scrollY;
+    if (y > lastY + 4 && y > 56) nav.classList.add('gm-nav--hidden');
+    else if (y < lastY - 4) nav.classList.remove('gm-nav--hidden');
+    lastY = y;
+  }, {passive: true});
+}());
 """
 
 
@@ -148,7 +159,7 @@ def render_nav_html(active: str | None = None, token: str | None = None) -> str:
         f'<nav id="{NAV_ID}" aria-label="Site">'
         f'<a class="gm-nav__brand" href="{_e(_url("/dashboard", token))}">{_e(BRAND)}</a>'
         f'<div class="gm-nav__links">{"".join(links)}</div>'
-        "</nav>"
+        f"</nav><script>{_NAV_SCRIPT}</script>"
     )
 
 
