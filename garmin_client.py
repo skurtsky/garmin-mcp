@@ -1,6 +1,7 @@
 # garmin_client.py
 import os
 import logging
+import threading
 from garminconnect import Garmin
 import glob
 
@@ -8,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 TOKEN_DIR = os.path.expanduser("~/.garminconnect")
 _client: Garmin | None = None
+_client_init_lock = threading.Lock()
 
 # Corporate proxy SSL fix — only apply if the cert bundle actually exists
 ca_bundle = os.environ.get("REQUESTS_CA_BUNDLE")
@@ -23,28 +25,34 @@ def get_client() -> Garmin:
     if _client is not None:
         return _client
 
-    email    = os.environ.get("GARMIN_EMAIL")
-    password = os.environ.get("GARMIN_PASSWORD")
-    token_file = os.path.join(TOKEN_DIR, "garmin_tokens.json")
+    # Dashboard sections initialize in parallel. Only one thread may resume or
+    # create the shared Garmin session; otherwise every section logs in at once.
+    with _client_init_lock:
+        if _client is not None:
+            return _client
 
-    client = Garmin(email, password)
+        email    = os.environ.get("GARMIN_EMAIL")
+        password = os.environ.get("GARMIN_PASSWORD")
+        token_file = os.path.join(TOKEN_DIR, "garmin_tokens.json")
 
-    if os.path.exists(token_file):
-        try:
-            client.client.load(TOKEN_DIR)
-            logger.info("Resumed Garmin session from saved tokens")
-            prof = client.client.connectapi("/userprofile-service/socialProfile")
-            client.display_name = prof.get("displayName", client.username)
-            client.get_user_profile()  # verify tokens are still valid
-        except Exception as e:
-            logger.warning(f"Tokens invalid or expired ({e}), performing fresh login")
-            _clear_tokens()
+        client = Garmin(email, password)
+
+        if os.path.exists(token_file):
+            try:
+                client.client.load(TOKEN_DIR)
+                logger.info("Resumed Garmin session from saved tokens")
+                prof = client.client.connectapi("/userprofile-service/socialProfile")
+                client.display_name = prof.get("displayName", client.username)
+                client.get_user_profile()  # verify tokens are still valid
+            except Exception as e:
+                logger.warning(f"Tokens invalid or expired ({e}), performing fresh login")
+                _clear_tokens()
+                _fresh_login(client, token_file)
+        else:
             _fresh_login(client, token_file)
-    else:
-        _fresh_login(client, token_file)
 
-    _client = client
-    return _client
+        _client = client
+        return _client
 
 
 def _fresh_login(client: Garmin, token_file: str) -> None:
