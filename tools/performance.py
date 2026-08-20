@@ -152,6 +152,7 @@ _PR_TYPES: dict[int, dict] = {
     11: {'label': 'Fastest 40K',           'value_type': 'time_s'},
     17: {'label': 'Longest Swim',          'value_type': 'distance_m'},
     18: {'label': 'Fastest 100m Swim',     'value_type': 'time_s'},
+    20: {'label': 'Fastest 400m Swim',     'value_type': 'time_s'},
 }
 
 

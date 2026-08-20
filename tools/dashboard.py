@@ -766,7 +766,7 @@ def _panel_today(data: dict) -> str:
                    f'<path d="{rhr_spark["area"]}" fill="url(#gRhr)"></path>'
                    f'<path d="{rhr_spark["line"]}" fill="none" stroke="#cf5a4e" stroke-width="1.6" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path></svg>')
 
-    hrv_val = hrv.get("last_night_avg")
+    hrv_val = hrv.get("weekly_avg")
     hrv_lo, hrv_hi = hrv.get("baseline_low"), hrv.get("baseline_high")
     hrv_marker = 50.0
     if hrv_val is not None and hrv_lo is not None and hrv_hi is not None and hrv_hi > hrv_lo:

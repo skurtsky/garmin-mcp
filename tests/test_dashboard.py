@@ -369,6 +369,15 @@ def test_render_humanizes_enum_strings():
     assert "BALANCED" not in html
 
 
+def test_render_hrv_status_uses_weekly_average():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    hrv_card = html.split('<div class="kicker">HRV status</div>', 1)[1].split(
+        '<div class="card"', 1
+    )[0]
+    assert '>45<' in hrv_card
+    assert '>42<' not in hrv_card
+
+
 def test_render_last_sync_carries_utc_instant_for_client_side_conversion():
     """The "Last sync" time is server-rendered (offset by the operator's
     DASHBOARD_TZ_OFFSET_HOURS) as a no-JS fallback, but also carries the raw
