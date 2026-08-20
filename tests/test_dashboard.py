@@ -136,6 +136,14 @@ def test_render_is_a_complete_document():
     assert html.endswith("</html>")
 
 
+def test_render_includes_mobile_app_metadata_and_training_plan_link():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'maximum-scale=1' in html
+    assert 'apple-mobile-web-app-capable' in html
+    assert 'href="/training-plan?token=t0k"' in html
+    assert "View training plan" in html
+
+
 def test_render_includes_all_five_tabs():
     html = dashboard.render_dashboard_html(SAMPLE)
     for marker in ("tp-today", "tp-trends", "tp-activity", "tp-you", "tp-gear"):

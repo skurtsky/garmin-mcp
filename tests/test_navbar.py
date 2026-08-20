@@ -11,25 +11,22 @@ def _markup(nav: str) -> str:
     return nav[nav.index("</style>"):]
 
 
-def test_nav_links_all_four_pages():
+def test_nav_links_all_hosted_pages():
     nav = navbar.render_nav_html("dashboard", "t0k")
 
     assert 'href="/dashboard?token=t0k"' in nav
     assert 'href="/training-plan?token=t0k"' in nav
     assert 'href="/weekly-summary?token=t0k"' in nav
-    assert 'href="/dashboard?tab=gear&amp;token=t0k"' in nav
-    assert "Dashboard" in nav and "Training Plan" in nav and "Weekly Summary" in nav and "Gear" in nav
+    assert "Dashboard" in nav and "Training Plan" in nav and "Weekly Summary" in nav
+    assert "Gear" not in nav
     # Brand links home.
     assert "Garmin MCP" in nav
 
 
-def test_nav_gear_link_has_no_double_query_string_without_a_token():
-    """The Gear entry's path already carries ?tab=gear — appending the token
-    must use '&', not a second '?' (which would break the URL)."""
+def test_nav_does_not_duplicate_the_dashboard_gear_tab():
     nav = navbar.render_nav_html("dashboard")
 
-    assert 'href="/dashboard?tab=gear"' in nav
-    assert "?tab=gear?" not in nav
+    assert 'href="/dashboard?tab=gear"' not in nav
 
 
 def test_nav_highlights_the_active_page_only():
@@ -95,6 +92,7 @@ def test_nav_is_removed_from_normal_flow():
     base_rule = style[style.index("#gm-nav {"): style.index("#gm-nav .gm-nav__brand")]
 
     assert "position: fixed" in base_rule
+    assert "bottom: 0" not in style.replace("padding-bottom: 0", "")
 
 
 def test_inject_nav_goes_inside_the_body_tag():

@@ -27,6 +27,8 @@ import base64
 import html
 import json
 import os
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
@@ -46,8 +48,11 @@ TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "14d")
 
 # Fallback daily step goal when the athlete has no active Garmin step goal.
 DEFAULT_STEP_GOAL = int(os.environ.get("DASHBOARD_STEP_GOAL", "10000"))
+DASHBOARD_CACHE_SECONDS = int(os.environ.get("DASHBOARD_CACHE_SECONDS", "60"))
 
 _TREND_METRICS = ["rhr", "hrv", "sleep_score", "stress", "steps", "training_load"]
+_dashboard_cache: tuple[float, dict] | None = None
+_dashboard_cache_lock = threading.Lock()
 
 
 def _tz_offset_hours() -> float:
@@ -154,6 +159,19 @@ def build_dashboard_data() -> dict:
         data[key] = value
         data[f"{key}_err"] = err
     return data
+
+
+def get_dashboard_data() -> dict:
+    """Return a short-lived snapshot so route hops do not refetch Garmin data."""
+    global _dashboard_cache
+    now = time.monotonic()
+    with _dashboard_cache_lock:
+        if (_dashboard_cache is not None
+                and now - _dashboard_cache[0] < DASHBOARD_CACHE_SECONDS):
+            return _dashboard_cache[1]
+        data = build_dashboard_data()
+        _dashboard_cache = (now, data)
+        return data
 
 
 # ── FORMATTING HELPERS ──────────────────────────────────────────────────────
@@ -616,9 +634,10 @@ details.actcard summary { cursor:pointer; list-style:none; }
 details.actcard summary::-webkit-details-marker { display:none; }
 
 /* ── footer ── */
-.footer-link { display:block; text-align:center; padding:18px 16px 0; font-size:11px;
-               color:var(--color-neutral-600); text-decoration:none; }
-.footer-link:hover { color:var(--color-neutral-400); }
+.footer-actions { display:flex; justify-content:center; gap:8px; flex-wrap:wrap; padding:18px 16px 0; }
+.footer-link { display:inline-block; padding:8px 12px; border:1px solid var(--color-divider);
+               border-radius:7px; font-size:11px; color:var(--color-neutral-400); text-decoration:none; }
+.footer-link:hover { color:var(--color-text); border-color:var(--color-accent-700); }
 
 /* ── interactive charts (crosshair line/area + tappable bars) ── */
 .js-bar { cursor:pointer; }
@@ -1689,6 +1708,14 @@ def _weekly_report_url(token: str | None) -> str:
     return f"/weekly-summary?{urlencode({'token': token})}" if token else "/weekly-summary"
 
 
+def _training_plan_url(token: str | None) -> str:
+    return f"/training-plan?{urlencode({'token': token})}" if token else "/training-plan"
+
+
+def _pwa_asset_url(path: str, token: str | None) -> str:
+  return f"{path}?{urlencode({'token': token})}" if token else path
+
+
 def _gear_api_url(path: str, token: str | None) -> str:
     """A /api/gear/* route URL, carrying the bearer token when one was supplied."""
     return f"{path}?{urlencode({'token': token})}" if token else path
@@ -1936,7 +1963,10 @@ def render_dashboard_html(data: dict, token: str | None = None,
 
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
 
-  <a class="footer-link" href="{_e(_weekly_report_url(token))}">Latest weekly report &rarr;</a>
+  <div class="footer-actions">
+    <a class="footer-link" href="{_e(_weekly_report_url(token))}">Latest weekly report &rarr;</a>
+    <a class="footer-link" href="{_e(_training_plan_url(token))}">View training plan &rarr;</a>
+  </div>
 
   <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px 16px;pointer-events:none">
     <div style="pointer-events:auto;display:flex;gap:2px;padding:6px;border-radius:999px;width:min(420px,100%);
@@ -1958,7 +1988,11 @@ def render_dashboard_html(data: dict, token: str | None = None,
         "<!doctype html>"
         '<html lang="en"><head>'
         '<meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+        '<meta name="mobile-web-app-capable" content="yes">'
+        '<meta name="apple-mobile-web-app-capable" content="yes">'
+        '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
         f"{refresh_meta}"
         "<title>Garmin Health Dashboard</title>"
         f"<style>{_STYLE}</style>"
@@ -1967,5 +2001,6 @@ def render_dashboard_html(data: dict, token: str | None = None,
         f"<script>{_CHART_JS}</script>"
         f"<script>{_TZ_JS}</script>"
         f"<script>{_GEAR_MODAL_JS}</script>"
+        f'<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("{_e(_pwa_asset_url("/sw.js", token))}");</script>'
         "</body></html>"
     )
