@@ -3,6 +3,7 @@ from tools.performance import (
     get_running_tolerance,
     get_personal_records,
 )
+from tools import performance
 
 
 def test_get_endurance_score_returns_dict_default_range():
@@ -46,6 +47,14 @@ def test_get_running_tolerance_supports_today_yesterday():
 
 
 # ── PERSONAL RECORDS ──────────────────────────────────────────────────────────
+
+
+def test_swim_pr_type_20_is_fastest_400m_formatted_as_time():
+    assert performance._PR_TYPES[20] == {
+        'label': 'Fastest 400m Swim',
+        'value_type': 'time_s',
+    }
+    assert performance._fmt_pr_value(521.97, 'time_s') == '8:42'
 
 def test_get_personal_records_returns_dict():
     result = get_personal_records()
