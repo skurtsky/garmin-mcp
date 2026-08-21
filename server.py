@@ -17,6 +17,7 @@ from tools.activities import (
     get_weekly_summary,
     get_swim_records,
 )
+from tools.activity_route import get_activity_route
 from tools.health import (
     get_sleep,
     get_daily_readiness,
@@ -155,6 +156,28 @@ def activity_detail(activity_id: int) -> dict:
         activity_id: Garmin activity ID (get from recent_activities)
     """
     return get_activity(activity_id)
+
+
+@mcp.tool()
+def activity_route(activity_id: int) -> Optional[dict]:
+    """
+    Get the GPS route and elevation profile for an activity, parsed from its
+    GPX export (a separate download from the metric endpoints activity_detail
+    uses).
+
+    Returns None for activities with no GPS track (pool swims, strength
+    training, indoor trainer rides, ...) instead of erroring.
+
+    Returns a dict with:
+        points:            [{lat, lon}, ...] simplified route polyline
+        elevation_profile: [{distance_km, elevation_m}, ...] matching points
+        elevation_gain_m:  total ascent over the full track
+        elevation_loss_m:  total descent over the full track
+
+    Args:
+        activity_id: Garmin activity ID (get from recent_activities)
+    """
+    return get_activity_route(activity_id)
 
 
 @mcp.tool()
@@ -664,7 +687,12 @@ def build_asgi_app():
     from starlette.responses import Response as StarletteResponse
     from starlette.responses import FileResponse, HTMLResponse, JSONResponse
 
-    from tools.dashboard import get_dashboard_data, render_dashboard_html
+    from tools.dashboard import (
+        get_dashboard_data,
+        render_dashboard_html,
+        get_activity_detail_data,
+        render_activity_detail_html,
+    )
     from tools import training_plan
     from tools import weekly_summaries
     from tools import gear_tracker
@@ -729,6 +757,35 @@ def build_asgi_app():
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Dashboard render failed")
                 response = HTMLResponse(f"Dashboard error: {e}", status_code=500)
+            await response(scope, receive, send)
+            return
+
+        # Activity Detail — clicking an activity anywhere in the dashboard
+        # (Today or Activity tab, see tools/dashboard.py's _activity_row
+        # helper) navigates here (issue 74). Own full page rather than a
+        # panel: activity_detail() and activity_route() are extra Garmin API
+        # calls per activity, so this stays lazy — fetched only for the one
+        # activity actually opened, not preloaded for every row on the
+        # dashboard.
+        if scope["type"] == "http" and scope.get("path", "").startswith("/dashboard/activity/"):
+            path = scope["path"]
+            activity_id_str = path[len("/dashboard/activity/"):].split("/")[0]
+            query = parse_qs(scope.get("query_string", b"").decode())
+            token = query.get("token", [None])[0]
+            try:
+                activity_id = int(activity_id_str)
+            except ValueError:
+                response = HTMLResponse("Invalid activity id", status_code=400)
+                await response(scope, receive, send)
+                return
+            try:
+                page = render_activity_detail_html(
+                    get_activity_detail_data(activity_id), token
+                )
+                response = HTMLResponse(page)
+            except Exception as e:  # pragma: no cover — defensive
+                logger.exception("Activity detail render failed")
+                response = HTMLResponse(f"Activity detail error: {e}", status_code=500)
             await response(scope, receive, send)
             return
 
