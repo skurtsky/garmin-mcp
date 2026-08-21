@@ -138,7 +138,12 @@ def test_get_plan_serves_stored_html_with_the_nav_injected(client):
     # The plan itself is untouched — only the nav bar is added inside <body>.
     assert '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>' in r.text
     assert "<div id=app></div>" in r.text
-    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k", mobile_bottom=True), "") == PLAN_HTML
+    assert 'class="gm-nav gm-nav--bottom-mobile"' not in r.text
+    plan_with_meta = PLAN_HTML.replace(
+        '<head>',
+        '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">',
+    )
+    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == plan_with_meta
     assert 'href="/weekly-summary?token=t0k"' in r.text
 
 
@@ -183,7 +188,11 @@ def test_post_upload_redirect_lands_on_the_plan(client):
                     files=_upload_files())
 
     assert r.status_code == 200
-    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k", mobile_bottom=True), "") == PLAN_HTML
+    plan_with_meta = PLAN_HTML.replace(
+        '<head>',
+        '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">',
+    )
+    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == plan_with_meta
 
 
 def test_post_upload_with_invalid_embedded_json_returns_form_with_error(client):

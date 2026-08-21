@@ -534,7 +534,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .pillbar label { border:0; cursor:pointer; font:inherit; font-size:11px; padding:5px 13px;
                  border-radius:999px; color:var(--color-neutral-500); display:inline-flex;
                  align-items:center; gap:5px; }
-.tabpanel, .range-set, .pr-group { display:none; }
+.tabpanel, .range-set, .pr-group, .activity-filter-section { display:none; }
 #tab-today:checked ~ .tabpanels .tp-today,
 #tab-trends:checked ~ .tabpanels .tp-trends,
 #tab-activity:checked ~ .tabpanels .tp-activity,
@@ -543,6 +543,12 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #range-7:checked ~ .range-body .rs-7,
 #range-14:checked ~ .range-body .rs-14,
 #range-30:checked ~ .range-body .rs-30 { display:grid; }
+#activity-filter-all:checked ~ .tabpanels .activity-filter-all,
+#activity-filter-triathlon:checked ~ .tabpanels .activity-filter-triathlon,
+#activity-filter-bike:checked ~ .tabpanels .activity-filter-bike,
+#activity-filter-run:checked ~ .tabpanels .activity-filter-run,
+#activity-filter-strength:checked ~ .tabpanels .activity-filter-strength,
+#activity-filter-other:checked ~ .tabpanels .activity-filter-other { display:flex; }
 #prf-all:checked ~ .pr-body .pr-group,
 #prf-run:checked ~ .pr-body .pr-group.pr-running,
 #prf-bike:checked ~ .pr-body .pr-group.pr-cycling,
@@ -550,6 +556,12 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #range-7:checked ~ .rangebar label[for=range-7],
 #range-14:checked ~ .rangebar label[for=range-14],
 #range-30:checked ~ .rangebar label[for=range-30],
+#activity-filter-all:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-all],
+#activity-filter-triathlon:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-triathlon],
+#activity-filter-bike:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-bike],
+#activity-filter-run:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-run],
+#activity-filter-strength:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-strength],
+#activity-filter-other:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-other],
 #prf-all:checked ~ .prbar label[for=prf-all],
 #prf-run:checked ~ .prbar label[for=prf-run],
 #prf-bike:checked ~ .prbar label[for=prf-bike],
@@ -870,7 +882,7 @@ def _panel_today(data: dict) -> str:
         </div>
         <div style="display:flex;height:34px;gap:2px">{stage_bars or '<div class="muted" style="font-size:12px">No sleep data.</div>'}</div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;font-size:10px;color:var(--color-neutral-500)">{stage_legend}</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(76px,1fr));gap:10px;
+        <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;
             border-top:1px solid var(--color-divider);padding-top:12px">{sleep_stats_html}</div>
       </div>
     </div>"""
@@ -898,7 +910,7 @@ def _panel_today(data: dict) -> str:
     <div>
       <div style="display:flex;align-items:baseline;justify-content:space-between;margin-bottom:8px">
         <div class="section-title" style="margin-bottom:0">This week's load</div>
-        <div style="font-size:11px;color:var(--color-neutral-500)">{_num(week.get("total_training_load"))} · {_num(week.get("total_activities"))} days</div>
+        <div style="font-size:11px;color:var(--color-neutral-500)">{_num(week.get("total_training_load"))} · {_num(week.get("total_activities"))} activities</div>
       </div>
       <div class="card" style="padding:14px">
         <div style="display:flex;align-items:flex-end;gap:6px;height:92px">{week_bars or '<div class="muted" style="font-size:12px">No activity this week.</div>'}</div>
@@ -986,11 +998,11 @@ def _panel_trends(data: dict) -> str:
 
     metrics = trends.get("metrics") or {}
     available_days = trends.get("days") or 30
-    ranges = [r for r in (7, 14, 30) if r <= available_days] or [available_days]
+    ranges = [r for r in (7, 14, 30, 42, 90) if r <= available_days] or [available_days]
     default_range = max(ranges)
 
     range_pills = "".join(
-        f'<label for="range-{r}">{r}d</label>' for r in ranges
+        f'<label for="range-{r}">{"3 months" if r == 90 else f"{r}d"}</label>' for r in ranges
     )
     range_inputs = "".join(
         f'<input class="hide" type="radio" name="range" id="range-{r}"{" checked" if r == default_range else ""}>'
@@ -1081,6 +1093,76 @@ def _panel_trends(data: dict) -> str:
 
 # ── PANEL: ACTIVITY ──────────────────────────────────────────────────────────
 
+_ACTIVITY_FILTERS = ("all", "triathlon", "bike", "run", "strength", "other")
+_BIKE_TYPES = {"cycling", "road_biking", "virtual_ride", "indoor_cycling"}
+_RUN_TYPES = {"running"}
+_SWIM_TYPES = {"lap_swimming", "open_water_swimming", "swimming"}
+_TRIATHLON_TYPES = {"multi_sport", "triathlon", "duathlon"}
+_STRENGTH_TYPES = {"strength", "strength_training"}
+
+
+def _activity_filter_key(activity: dict) -> str:
+  activity_type = str(activity.get("type") or "").lower()
+  if activity_type in _STRENGTH_TYPES:
+    return "strength"
+  if activity_type in _TRIATHLON_TYPES:
+    return "triathlon"
+  if activity_type in _BIKE_TYPES:
+    return "bike"
+  if activity_type in _RUN_TYPES:
+    return "run"
+  if activity_type in _SWIM_TYPES:
+    return "other"
+  return "other"
+
+
+def _activity_filter_matches(activity: dict, filter_key: str) -> bool:
+  activity_type = str(activity.get("type") or "").lower()
+  if filter_key == "all":
+    return True
+  if filter_key == "triathlon":
+    return activity_type in (_TRIATHLON_TYPES | _BIKE_TYPES | _RUN_TYPES | _SWIM_TYPES)
+  return _activity_filter_key(activity) == filter_key
+
+
+def _activity_summary_card(activities: list[dict], split: list[tuple], summary: dict | None = None) -> str:
+  summary = summary or {}
+  total_distance = summary.get("total_distance_km", sum(a.get("distance_km") or 0 for a in activities))
+  total_duration = summary.get("total_duration_min", sum(a.get("duration_min") or 0 for a in activities))
+  total_load = summary.get("total_training_load", sum(a.get("training_load") or 0 for a in activities))
+  count = summary.get("total_activities", len(activities))
+  avg_load = total_load / count if count else None
+  total_dur = total_duration or 0
+  palette = ["#4fae72", "#d9a441", "#e2734a", "#4aa7d8", "#a07fe0", "#9397ab"]
+  split_items = []
+  for i, (label, duration) in enumerate(sorted(split, key=lambda item: -item[1])):
+    pct = duration / total_dur * 100 if total_dur else 0
+    color = palette[i % len(palette)]
+    split_items.append((label, pct, color))
+  split_bars = "".join(
+    f'<div title="{html.escape(label)}" style="width:{pct:.1f}%;background:{color}"></div>'
+    for label, pct, color in split_items
+  )
+  split_legend = "".join(
+    f'<span style="display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:2px;background:{color}"></span>{html.escape(label)}</span>'
+    for label, pct, color in split_items
+  )
+  return f"""
+  <div class="card" style="padding:16px;gap:14px">
+    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
+    <div><div class="kicker">Distance</div><div style="font-family:var(--font-heading);font-size:24px">{_trim(total_distance)}<span style="font-size:12px;color:var(--color-neutral-500)"> km</span></div></div>
+    <div><div class="kicker">Time</div><div style="font-family:var(--font-heading);font-size:24px">{_fmt_dur(total_duration)}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
+    <div><div class="kicker">Load</div><div style="font-family:var(--font-heading);font-size:24px">{_num(round(total_load))}</div></div>
+    <div><div class="kicker">Sessions</div><div style="font-family:var(--font-heading);font-size:24px">{_num(count)}</div></div>
+    <div><div class="kicker">Avg load/session</div><div style="font-family:var(--font-heading);font-size:20px">{_num(round(avg_load, 1) if avg_load is not None else None)}</div></div>
+    </div>
+    <div style="display:flex;height:10px;gap:2px;border-radius:999px;overflow:hidden">{split_bars}</div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px 14px;font-size:10px;color:var(--color-neutral-500)">{split_legend}</div>
+  </div>"""
+
+
 def _panel_activity(data: dict) -> str:
     week = data.get("week")
     activities = data.get("activities")
@@ -1089,39 +1171,52 @@ def _panel_activity(data: dict) -> str:
         return f'<section class="panel tabpanel tp-activity"><div class="err">Activity data unavailable — {_e(err)}</div></section>'
 
     week = week or {}
-    by_type = week.get("by_type") or {}
-    total_dur = week.get("total_duration_min") or 0
-    palette = ["#4fae72", "#d9a441", "#e2734a", "#4aa7d8", "#a07fe0", "#9397ab", "#7fc9b0", "#e0736f"]
-    split = []
-    for i, (t, v) in enumerate(sorted(by_type.items(), key=lambda kv: -(kv[1].get("duration_min") or 0))):
-        pct = (v.get("duration_min") or 0) / total_dur * 100 if total_dur else 0
-        split.append((f"{_sport_label(t)} {_fmt_dur(v.get('duration_min'))}", pct, palette[i % len(palette)]))
-    split_bars = "".join(f'<div title="{html.escape(t)}" style="width:{p:.1f}%;background:{c}"></div>' for t, p, c in split)
-    split_legend = "".join(
-        f'<span style="display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:2px;background:{c}"></span>{html.escape(t)}</span>'
-        for t, p, c in split
+
+    week_start = str(week.get("week_start") or "")[:10]
+    week_end = str(week.get("week_end") or "")[:10]
+    week_activities = [
+      a for a in (activities or [])
+      if week_start <= str(a.get("date") or "")[:10] <= week_end
+    ]
+    filter_labels = "".join(
+      f'<label for="activity-filter-{key}">{key.title()}</label>'
+      for key in _ACTIVITY_FILTERS
     )
-
-    totals_card = f"""
-    <div class="card" style="padding:16px;gap:14px">
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:12px">
-        <div><div class="kicker">Distance</div><div style="font-family:var(--font-heading);font-size:24px">{_trim(week.get("total_distance_km") or 0)}<span style="font-size:12px;color:var(--color-neutral-500)"> km</span></div></div>
-        <div><div class="kicker">Time</div><div style="font-family:var(--font-heading);font-size:24px">{_fmt_dur(week.get("total_duration_min"))}</div></div>
-        <div><div class="kicker">Load</div><div style="font-family:var(--font-heading);font-size:24px">{_num(round(week.get("total_training_load")) if week.get("total_training_load") is not None else None)}</div></div>
-        <div><div class="kicker">Sessions</div><div style="font-family:var(--font-heading);font-size:24px">{_num(week.get("total_activities"))}</div></div>
-      </div>
-      <div style="display:flex;height:10px;gap:2px;border-radius:999px;overflow:hidden">{split_bars or ''}</div>
-      <div style="display:flex;flex-wrap:wrap;gap:10px 14px;font-size:10px;color:var(--color-neutral-500)">{split_legend}</div>
-    </div>"""
-
-    max_load = max((a.get("training_load") or 0) for a in activities) or 1 if activities else 1
-    act_cards = "".join(_activity_row_expandable(a, max_load) for a in (activities or []))
+    all_source = week.get("activities") or []
+    summary_source = all_source or week_activities
+    sections = []
+    for key in _ACTIVITY_FILTERS:
+      selected_summary = summary_source if key == "all" else [a for a in summary_source if _activity_filter_matches(a, key)]
+      selected_list = [a for a in week_activities if _activity_filter_matches(a, key)]
+      split = []
+      if key == "all":
+        split = [
+          (f"{_sport_label(activity_type)} {_fmt_dur(values.get('duration_min'))}", values.get("duration_min") or 0)
+          for activity_type, values in (week.get("by_type") or {}).items()
+        ]
+      else:
+        for activity in selected_summary:
+          label = _sport_label(activity.get("type"))
+          existing = next((index for index, item in enumerate(split) if item[0] == label), None)
+          duration = activity.get("duration_min") or 0
+          if existing is None:
+            split.append((label, duration))
+          else:
+            split[existing] = (label, split[existing][1] + duration)
+      max_load = max((a.get("training_load") or 0) for a in selected_list) or 1 if selected_list else 1
+      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_list)
+      empty = '<div class="muted" style="font-size:13px">No activities for this filter this week.</div>'
+      view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_list else ""
+      sections.append(
+        f'<div class="activity-filter-section activity-filter-{key}" style="flex-direction:column;gap:8px">'
+        f'{_activity_summary_card(selected_summary, split, week if key == "all" else None)}{cards or empty}{view_more}</div>'
+      )
 
     return f"""
     <section class="panel tabpanel tp-activity" style="flex-direction:column;gap:16px">
       <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
-      {totals_card}
-      <div style="display:flex;flex-direction:column;gap:8px">{act_cards or '<div class="muted" style="font-size:13px">No recent activities.</div>'}</div>
+      <div class="activity-filterbar pillbar">{filter_labels}</div>
+      {"".join(sections)}
     </section>"""
 
 
@@ -1917,6 +2012,10 @@ def render_dashboard_html(data: dict, token: str | None = None,
     )
 
     active_tab_id = _TAB_IDS.get(initial_tab, _TAB_IDS[_DEFAULT_TAB])
+    activity_filter_inputs = "".join(
+      f'<input class="hide" type="radio" name="activity-filter" id="activity-filter-{key}"{" checked" if key == "all" else ""}>'
+      for key in _ACTIVITY_FILTERS
+    )
 
     panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data)
              + _panel_fitness(data) + _panel_gear(data, token, error))
@@ -1943,6 +2042,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
   <input class="hide" type="radio" name="tab" id="tab-activity"{" checked" if active_tab_id == "tab-activity" else ""}>
   <input class="hide" type="radio" name="tab" id="tab-you"{" checked" if active_tab_id == "tab-you" else ""}>
   <input class="hide" type="radio" name="tab" id="tab-gear"{" checked" if active_tab_id == "tab-gear" else ""}>
+  {activity_filter_inputs}
 
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
 
