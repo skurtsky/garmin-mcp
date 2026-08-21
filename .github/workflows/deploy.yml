@@ -69,3 +69,13 @@ jobs:
               --resource-group ${{ env.RESOURCE_GROUP }} \
               --image ${{ needs.build-and-push.outputs.image }} \
               --set-env-vars DEPLOY_TIME="$(date +%Y%m%d%H%M%S)"
+
+      - name: Update Sync Job with new image
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            az containerapp job update \
+              --name garmin-sync \
+              --resource-group ${{ env.RESOURCE_GROUP }} \
+              --image ${{ needs.build-and-push.outputs.image }} \
+            2>/dev/null || echo "Sync job not yet created — skipping"

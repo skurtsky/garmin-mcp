@@ -10,6 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY garmin_client.py .
 COPY server.py .
+COPY db.py .
+COPY sync_garmin.py .
 COPY tools/ ./tools/
 
 # Create token directory

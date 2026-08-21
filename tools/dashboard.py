@@ -175,12 +175,112 @@ def _refresh_section(key: str, fn, args, kwargs):
             _refresh_in_progress.discard(key)
 
 
+def _build_trends_from_db(rows: list[dict], days: int) -> dict:
+    """Reshape daily_metrics DB rows into the format _panel_trends expects."""
+    metrics: dict[str, dict] = {}
+    key_map = {
+        "rhr": ("resting_hr", "bpm"),
+        "hrv": ("hrv", "ms"),
+        "sleep_score": ("sleep_score", "score"),
+        "stress": ("stress", "level"),
+        "steps": ("steps", "steps"),
+        "training_load": ("training_load", "load"),
+    }
+    for key, (col, unit) in key_map.items():
+        daily = [
+            {"date": str(r["metric_date"]), "value": r.get(col)}
+            for r in rows
+        ]
+        metrics[key] = {"unit": unit, "daily": daily}
+    return {"period": TREND_PERIOD, "days": days, "metrics": metrics}
+
+
+def _build_dashboard_data_from_db() -> dict | None:
+    """Try to build dashboard data from PostgreSQL. Returns None if DB is
+    empty or unavailable, signalling the caller to fall back to Garmin."""
+    import db
+    if not db.is_configured():
+        return None
+
+    try:
+        now = _local_now()
+        today = now.date().isoformat()
+
+        today_metrics = db.get_today_metrics(today)
+        if today_metrics is None:
+            return None  # DB has no data yet, fall back to Garmin
+
+        # Trends: fetch 180 days from DB
+        trend_start = (now.date() - timedelta(days=179)).isoformat()
+        trend_rows = db.get_trend_metrics(trend_start, today)
+
+        # Activities
+        activities_rows = db.get_recent_activities(limit=20)
+        activities = [r["summary"] for r in activities_rows if r.get("summary")]
+
+        # Weekly summary: compute from DB activities
+        from tools.activities import get_weekly_summary
+        week_data, _ = _safe(get_weekly_summary)
+
+        # Profile, records, goals from DB
+        personal_records = db.get_personal_records_from_db()
+        athlete = db.get_athlete_profile_from_db()
+        active_goals = db.get_active_goals_from_db()
+
+        # Gear and last_sync still come live (local/cheap)
+        from tools.gear_tracker import build_gear_status
+        gear_status, gear_err = _safe(build_gear_status)
+        last_sync, sync_err = _safe(_fetch_last_sync)
+
+        data = {
+            "date": today,
+            "generated_at": now.strftime("%Y-%m-%d %H:%M"),
+            "tz_offset_hours": _tz_offset_hours(),
+            "readiness": today_metrics.get("readiness_data"),
+            "readiness_err": None,
+            "health": today_metrics.get("health_data"),
+            "health_err": None,
+            "sleep": today_metrics.get("sleep_data"),
+            "sleep_err": None,
+            "training": today_metrics.get("training_data"),
+            "training_err": None,
+            "training_status": today_metrics.get("training_status_data"),
+            "training_status_err": None,
+            "activities": activities,
+            "activities_err": None,
+            "week": week_data,
+            "week_err": None,
+            "trends": _build_trends_from_db(trend_rows, len(trend_rows)),
+            "trends_err": None,
+            "personal_records": personal_records or {},
+            "personal_records_err": None,
+            "active_goals": active_goals or [],
+            "active_goals_err": None,
+            "athlete": athlete,
+            "athlete_err": None,
+            "last_sync": last_sync,
+            "last_sync_err": sync_err,
+            "gear_status": gear_status,
+            "gear_status_err": gear_err,
+        }
+        return data
+    except Exception as e:
+        logger.warning(f"DB read failed, falling back to Garmin: {e}")
+        return None
+
+
 def build_dashboard_data() -> dict:
     """Fetch every dashboard section from the Garmin client, concurrently.
 
     Each section is fetched independently and its failure is captured rather
     than raised, so one unavailable metric never blanks the whole page.
     """
+    # Try PostgreSQL first (fast — no Garmin API calls for cached data)
+    db_data = _build_dashboard_data_from_db()
+    if db_data is not None:
+        return db_data
+
+    # Fall back to Garmin live calls with per-section caching
     # Imported lazily so render_dashboard_html stays importable without a
     # configured Garmin client.
     from tools.health import (

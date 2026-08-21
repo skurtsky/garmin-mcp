@@ -651,6 +651,16 @@ if __name__ == "__main__":
     main()
 ```
 
+For a one-time historical trends backfill, run the sync job locally with a
+daily-metrics date range before creating the scheduled Azure job:
+
+```powershell
+.\.venv\Scripts\python.exe sync_garmin.py --since 2026-02-21 --daily-only
+```
+
+The scheduled Container Apps Job should run with no arguments; the default is
+to refresh the last 3 days plus the current activity/profile/goal data.
+
 ### 2.6  Update the dashboard to read from PostgreSQL
 
 **File: `tools/dashboard.py`** — replace `build_dashboard_data()`:
@@ -737,13 +747,17 @@ az containerapp job create `
 ### 2.8  Add DATABASE_URL to the Container App
 
 ```powershell
+# Store the PostgreSQL connection string as a Container App secret
+az containerapp secret set `
+--name garmin-mcp `
+--resource-group garmin-mcp-rg `
+--secrets database-url="postgresql://garminadmin:<PASS>@garmin-mcp-db.postgres.database.azure.com:5432/garmin?sslmode=require"
+
+# Expose the secret to the app as DATABASE_URL
 az containerapp update `
-  --name garmin-mcp `
-  --resource-group garmin-mcp-rg `
-  --set-env-vars `
-      DATABASE_URL=secretref:database-url `
-  --secrets `
-      database-url="postgresql://garminadmin:<PASS>@garmin-mcp-db.postgres.database.azure.com/garmin?sslmode=require"
+--name garmin-mcp `
+--resource-group garmin-mcp-rg `
+--set-env-vars DATABASE_URL=secretref:database-url
 ```
 
 ### 2.9  Mount the token share for the sync job
