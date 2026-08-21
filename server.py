@@ -668,6 +668,9 @@ def build_asgi_app():
     from tools import training_plan
     from tools import weekly_summaries
     from tools import gear_tracker
+    import db
+
+    db.ensure_schema()
 
     app = mcp.http_app()
     training_plan_app = training_plan.create_app()
