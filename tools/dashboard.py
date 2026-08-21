@@ -26,6 +26,8 @@ a data dict — can be imported and exercised without a live Garmin session.
 import base64
 import html
 import json
+import logging
+import math
 import os
 import threading
 import time
@@ -46,15 +48,48 @@ REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 # page load stays fast; bump to "1m" for the full 30d option if you don't mind
 # the extra latency. Any of get_trends' periods works; only ranges <= the
 # fetched window actually show a toggle button.
-TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "14d")
+TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "").strip() or "6m"
 
 # Fallback daily step goal when the athlete has no active Garmin step goal.
 DEFAULT_STEP_GOAL = int(os.environ.get("DASHBOARD_STEP_GOAL", "10000"))
-DASHBOARD_CACHE_SECONDS = int(os.environ.get("DASHBOARD_CACHE_SECONDS", "60"))
 
 _TREND_METRICS = ["rhr", "hrv", "sleep_score", "stress", "steps", "training_load"]
-_dashboard_cache: tuple[float, dict] | None = None
-_dashboard_cache_lock = threading.Lock()
+
+logger = logging.getLogger(__name__)
+
+# ── PER-SECTION CACHE WITH TIERED TTLS ──────────────────────────────────────
+# Each dashboard section has its own TTL based on how often its underlying
+# Garmin data actually changes.  Stale entries are served immediately while a
+# background thread refreshes them (stale-while-revalidate).
+
+_SECTION_CACHE_TTLS: dict[str, int] = {
+    "readiness":        120,
+    "health":           120,
+    "sleep":            300,
+    "training":         120,
+    "training_status":  300,
+    "activities":       300,
+    "week":             300,
+    "trends":           900,
+    "personal_records": 3600,
+    "active_goals":     1800,
+    "athlete":          3600,
+    "last_sync":        120,
+    "gear_status":      60,
+}
+
+# (timestamp, value, error_message) per section key
+_section_cache: dict[str, tuple[float, object, str | None]] = {}
+_section_cache_lock = threading.Lock()
+_refresh_in_progress: set[str] = set()
+_bg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cache-refresh")
+
+
+def _clear_section_cache():
+    """Drop all cached sections. Used by tests."""
+    with _section_cache_lock:
+        _section_cache.clear()
+        _refresh_in_progress.clear()
 
 
 def _tz_offset_hours() -> float:
@@ -110,6 +145,36 @@ def _fetch_parallel(tasks: dict) -> dict:
         return {key: future.result() for key, future in futures.items()}
 
 
+def _get_cached(key: str) -> tuple[object | None, str | None, bool]:
+    """Return (value, error, is_fresh). value is None when nothing is cached."""
+    with _section_cache_lock:
+        entry = _section_cache.get(key)
+        if entry is None:
+            return None, None, False
+        ts, value, err = entry
+        ttl = _SECTION_CACHE_TTLS.get(key, 120)
+        return value, err, (time.monotonic() - ts) < ttl
+
+
+def _set_cached(key: str, value, err: str | None = None):
+    with _section_cache_lock:
+        _section_cache[key] = (time.monotonic(), value, err)
+
+
+def _refresh_section(key: str, fn, args, kwargs):
+    """Background-refresh one section. Skips if already refreshing."""
+    with _section_cache_lock:
+        if key in _refresh_in_progress:
+            return
+        _refresh_in_progress.add(key)
+    try:
+        value, err = _safe(fn, *args, **kwargs)
+        _set_cached(key, value, err)
+    finally:
+        with _section_cache_lock:
+            _refresh_in_progress.discard(key)
+
+
 def build_dashboard_data() -> dict:
     """Fetch every dashboard section from the Garmin client, concurrently.
 
@@ -150,30 +215,40 @@ def build_dashboard_data() -> dict:
         "last_sync":        (_fetch_last_sync, (), {}),
         "gear_status":      (build_gear_status, (), {}),
     }
-    results = _fetch_parallel(tasks)
 
     data = {
         "date": today,
         "generated_at": now.strftime("%Y-%m-%d %H:%M"),
         "tz_offset_hours": _tz_offset_hours(),
     }
-    for key, (value, err) in results.items():
-        data[key] = value
-        data[f"{key}_err"] = err
+
+    # Serve cached values where available; schedule background refreshes for
+    # stale ones.  Only sections with no cached value at all are fetched
+    # synchronously (first load after a container restart).
+    missing_tasks: dict = {}
+    for key, (fn, args, kwargs) in tasks.items():
+        cached_value, cached_err, is_fresh = _get_cached(key)
+        if cached_value is not None or cached_err is not None:
+            data[key] = cached_value
+            data[f"{key}_err"] = cached_err
+            if not is_fresh:
+                _bg_executor.submit(_refresh_section, key, fn, args, kwargs)
+        else:
+            missing_tasks[key] = (fn, args, kwargs)
+
+    if missing_tasks:
+        results = _fetch_parallel(missing_tasks)
+        for key, (value, err) in results.items():
+            data[key] = value
+            data[f"{key}_err"] = err
+            _set_cached(key, value, err)
+
     return data
 
 
 def get_dashboard_data() -> dict:
-    """Return a short-lived snapshot so route hops do not refetch Garmin data."""
-    global _dashboard_cache
-    now = time.monotonic()
-    with _dashboard_cache_lock:
-        if (_dashboard_cache is not None
-                and now - _dashboard_cache[0] < DASHBOARD_CACHE_SECONDS):
-            return _dashboard_cache[1]
-        data = build_dashboard_data()
-        _dashboard_cache = (now, data)
-        return data
+    """Public entry point — returns a snapshot, warm or cold."""
+    return build_dashboard_data()
 
 
 # ── FORMATTING HELPERS ──────────────────────────────────────────────────────
@@ -432,8 +507,18 @@ def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
     s = _spark(vals)
     if s is None:
         return None
-    delta = s["last"] - s["first"]
-    good = delta <= 0 if lower_better else delta >= 0
+
+    # Compare this period's average to the previous period's average.
+    prev_sliced = daily[-(2 * days):-days] if len(daily) >= 2 * days else []
+    prev_vals = [p.get("value") for p in prev_sliced if p.get("value") is not None]
+    if prev_vals:
+        prev_avg = sum(prev_vals) / len(prev_vals)
+        delta = s["avg"] - prev_avg
+        good = delta <= 0 if lower_better else delta >= 0
+    else:
+        delta = None
+        good = True
+
     f = (lambda v: f"{round(v):,}") if big else (lambda v: str(round(v)))
     filled = _fill_gaps(vals)
     unit_suffix = f" {unit}" if unit else ""
@@ -442,10 +527,12 @@ def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
          "v": f"{f(filled[i])}{unit_suffix}"}
         for i, (x, y) in enumerate(s["points"])
     ]
+    delta_str = f"{'+' if delta > 0 else ''}{f(delta)}" if delta is not None else ""
     return {
         "label": label, "unit": unit,
-        "value": f(s["last"]), "avg": f(s["avg"]), "lo": f(s["min"]), "hi": f(s["max"]),
-        "delta": f"{'+' if delta > 0 else ''}{f(delta)}",
+        "value": f(s["avg"]), "current": f(s["last"]), "avg": f(s["avg"]),
+        "lo": f(s["min"]), "hi": f(s["max"]),
+        "delta": delta_str,
         "avgY": s["avgY"], "line": s["line"], "area": s["area"],
         "stroke": stroke or "var(--color-accent)", "fill": fill or "url(#gArea)",
         "deltaColor": "#7fc9b0" if good else "#cf8a80",
@@ -542,7 +629,9 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #tab-gear:checked ~ .tabpanels .tp-gear { display:flex; }
 #range-7:checked ~ .range-body .rs-7,
 #range-14:checked ~ .range-body .rs-14,
-#range-30:checked ~ .range-body .rs-30 { display:grid; }
+#range-30:checked ~ .range-body .rs-30,
+#range-42:checked ~ .range-body .rs-42,
+#range-90:checked ~ .range-body .rs-90 { display:grid; }
 #activity-filter-all:checked ~ .tabpanels .activity-filter-all,
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filter-triathlon,
 #activity-filter-bike:checked ~ .tabpanels .activity-filter-bike,
@@ -556,6 +645,8 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #range-7:checked ~ .rangebar label[for=range-7],
 #range-14:checked ~ .rangebar label[for=range-14],
 #range-30:checked ~ .rangebar label[for=range-30],
+#range-42:checked ~ .rangebar label[for=range-42],
+#range-90:checked ~ .rangebar label[for=range-90],
 #activity-filter-all:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-all],
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-triathlon],
 #activity-filter-bike:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-bike],
@@ -985,7 +1076,7 @@ def _chart_card_html(c: dict) -> str:
         <rect class="chart-hit" x="0" y="0" width="300" height="78" style="fill:transparent;pointer-events:all;cursor:crosshair"></rect>
       </svg>
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
-        <span>{c["lo"]}</span><span>avg {c["avg"]}</span><span>{c["hi"]}</span>
+        <span>{c["lo"]}</span><span>today {c["current"]}</span><span>{c["hi"]}</span>
       </div>
     </div>"""
 
@@ -1001,8 +1092,9 @@ def _panel_trends(data: dict) -> str:
     ranges = [r for r in (7, 14, 30, 42, 90) if r <= available_days] or [available_days]
     default_range = max(ranges)
 
+    _RANGE_LABELS = {30: "1 month", 90: "3 months"}
     range_pills = "".join(
-        f'<label for="range-{r}">{"3 months" if r == 90 else f"{r}d"}</label>' for r in ranges
+        f'<label for="range-{r}">{_RANGE_LABELS.get(r, f"{r}d")}</label>' for r in ranges
     )
     range_inputs = "".join(
         f'<input class="hide" type="radio" name="range" id="range-{r}"{" checked" if r == default_range else ""}>'

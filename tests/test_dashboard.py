@@ -18,6 +18,7 @@ def gear_db(tmp_path, monkeypatch):
     (render_dashboard_html itself is a pure function of its data dict and
     doesn't touch gear_tracker — see issue #58.)"""
     monkeypatch.setenv("GEAR_TRACKER_DATA_PATH", str(tmp_path / "gear-tracker" / "gear_data.json"))
+    dashboard._clear_section_cache()
 
 
 def _trend_series(values, unit="bpm"):
