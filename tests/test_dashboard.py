@@ -474,6 +474,69 @@ def test_render_shows_activity_list_with_expandable_detail():
     assert "Avg HR" in html
 
 
+def test_render_activity_filters_include_all_requested_options():
+    html = dashboard.render_dashboard_html(SAMPLE)
+
+    for key in ("all", "triathlon", "bike", "run", "strength", "other"):
+        assert f'id="activity-filter-{key}"' in html
+        assert f'for="activity-filter-{key}"' in html
+    assert html.index('for="activity-filter-strength"') < html.index('for="activity-filter-other"')
+    assert "410" in html
+
+
+def test_strength_filter_section_is_rendered_and_selectable():
+    html = dashboard.render_dashboard_html(SAMPLE)
+
+    assert "activity-filter-strength" in html
+    assert "#activity-filter-strength:checked" in html
+
+
+def test_activity_filter_classifies_sports():
+    assert dashboard._activity_filter_key({"type": "multi_sport"}) == "triathlon"
+    assert dashboard._activity_filter_key({"type": "road_biking"}) == "bike"
+    assert dashboard._activity_filter_key({"type": "running"}) == "run"
+    assert dashboard._activity_filter_key({"type": "lap_swimming"}) == "other"
+    assert dashboard._activity_filter_key({"type": "strength_training"}) == "strength"
+
+
+def test_triathlon_filter_includes_all_endurance_sports_but_not_strength():
+    for activity_type in ("multi_sport", "triathlon", "duathlon", "cycling",
+                          "road_biking", "running", "lap_swimming"):
+        assert dashboard._activity_filter_matches({"type": activity_type}, "triathlon")
+    assert not dashboard._activity_filter_matches({"type": "strength_training"}, "triathlon")
+
+
+def test_render_activity_list_is_limited_to_current_week():
+    data = {**SAMPLE, "activities": SAMPLE["activities"] + [
+        {"id": 3, "date": "2026-07-10T06:00:00", "name": "Older Run",
+         "type": "running", "distance_km": 5, "duration_min": 30,
+         "training_load": 50},
+    ]}
+    html = dashboard.render_dashboard_html(data)
+
+    assert "Pool Swim" in html
+    assert "Older Run" not in html
+    assert "View More" in html
+
+
+def test_render_compact_mobile_metric_layouts():
+    html = dashboard.render_dashboard_html(SAMPLE)
+
+    assert 'grid-template-columns:repeat(4,minmax(0,1fr))' in html
+    assert 'grid-template-columns:repeat(2,minmax(0,1fr))' in html
+    assert 'grid-template-columns:repeat(3,minmax(0,1fr))' in html
+    assert "Avg load/session" in html
+
+
+def test_render_includes_longer_trend_ranges_when_data_is_available():
+    data = {**SAMPLE, "trends": {**SAMPLE["trends"], "days": 90}}
+    html = dashboard.render_dashboard_html(data)
+
+    assert 'id="range-42"' in html
+    assert 'id="range-90"' in html
+    assert ">3 months<" in html
+
+
 def test_render_uses_step_goal_from_active_goals():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "12,000" in html or "12000" in html

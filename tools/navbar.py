@@ -43,6 +43,9 @@ BRAND = "Garmin MCP"
 NAV_ID = "gm-nav"
 
 _BODY_TAG_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
+_HEAD_TAG_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
+_VIEWPORT_TAG_RE = re.compile(r"<meta\b(?=[^>]*\bname=[\"']viewport[\"'])[^>]*>", re.IGNORECASE)
+_NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
 
 _ICON_PATHS = {
   "gauge": '<path d="M128 40a96 96 0 1 0 96 96 96.1 96.1 0 0 0-96-96Zm0 176a80 80 0 1 1 80-80 80.1 80.1 0 0 1-80 80Zm45.7-125.7a8 8 0 0 1 0 11.4L139.3 136a16 16 0 1 1-11.3-11.3l34.3-34.4a8 8 0 0 1 11.4 0Z"/>',
@@ -196,6 +199,13 @@ def inject_nav(page: str, active: str | None = None, token: str | None = None,
     """
     if f'id="{NAV_ID}"' in page:
         return page
+
+    if _VIEWPORT_TAG_RE.search(page):
+      page = _VIEWPORT_TAG_RE.sub(_NO_ZOOM_META, page, count=1)
+    else:
+      head_match = _HEAD_TAG_RE.search(page)
+      if head_match:
+        page = page[:head_match.end()] + _NO_ZOOM_META + page[head_match.end():]
 
     nav = render_nav_html(active, token, mobile_bottom)
     match = _BODY_TAG_RE.search(page)
