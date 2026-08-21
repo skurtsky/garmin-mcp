@@ -2072,7 +2072,13 @@ _HR_ZONE_COLORS = ["#6f9ce8", "#4aa7d8", "#4fae72", "#d9a441", "#e2734a", "#cf5a
 
 
 def _full_datetime(value) -> str:
-    """A startTimeLocal-ish value -> 'Aug 21, 2026 at 05:46', or an em dash."""
+    """A startTimeLocal-ish value -> 'Aug 21, 2026 at 05:46', or an em dash.
+
+    Built without a no-leading-zero day directive (``%-d``/``%#d``) in the
+    strftime format — that's a platform-specific glibc/MSVCRT extension, not
+    a portable strftime flag, so a literal ``%-d`` raises ValueError on
+    Windows instead of formatting. ``dt.day`` is used directly instead.
+    """
     if not value:
         return "&mdash;"
     text = str(value).replace("T", " ")[:19]
@@ -2080,7 +2086,7 @@ def _full_datetime(value) -> str:
         dt = datetime.fromisoformat(text)
     except ValueError:
         return _e(text)
-    return html.escape(dt.strftime("%b %-d, %Y at %H:%M"))
+    return html.escape(f"{dt.strftime('%b')} {dt.day}, {dt.strftime('%Y at %H:%M')}")
 
 
 def get_activity_detail_data(activity_id: int) -> dict:
