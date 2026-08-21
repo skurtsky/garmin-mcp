@@ -753,7 +753,8 @@ def build_asgi_app():
 
         await app(scope, receive, send)
 
-    return auth_app
+    from starlette.middleware.gzip import GZipMiddleware
+    return GZipMiddleware(auth_app, minimum_size=500)
 
 
 if __name__ == "__main__":
