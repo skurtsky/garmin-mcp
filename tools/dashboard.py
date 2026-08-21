@@ -26,6 +26,7 @@ a data dict — can be imported and exercised without a live Garmin session.
 import base64
 import html
 import json
+import math
 import os
 import threading
 import time
@@ -346,31 +347,6 @@ def _sport_label(sport):
     return html.escape(str(sport or "activity").replace("_", " ").title())
 
 
-def _activity_detail(a: dict) -> list[tuple[str, str]]:
-    """(label, value) detail pairs for one activity — pace/speed matched to sport."""
-    sport = str(a.get("type") or "").lower()
-    dur, dist = a.get("duration_min"), a.get("distance_km")
-    detail = []
-    if sport in ("lap_swimming", "open_water_swimming", "swimming"):
-        pace = _pace_per_100m(dur, dist)
-        if pace:
-            detail.append(("Pace", pace))
-    elif sport in ("road_biking", "cycling", "indoor_cycling", "mountain_biking",
-                   "gravel_cycling", "virtual_ride"):
-        speed = _speed_kmh(dur, dist)
-        if speed:
-            detail.append(("Speed", speed))
-    elif dist:
-        pace = _pace_per_km(dur, dist)
-        if pace:
-            detail.append(("Pace", pace))
-    if a.get("avg_hr") is not None:
-        detail.append(("Avg HR", _num(a.get("avg_hr"))))
-    if a.get("training_load") is not None:
-        detail.append(("Load", _num(round(a.get("training_load")))))
-    return detail
-
-
 def _activity_big_stat(a: dict) -> tuple[str, str]:
     """(headline, sub) for an activity row — distance for most sports, duration
     for sports Garmin doesn't report distance for (strength, yoga, ...)."""
@@ -640,12 +616,8 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
                       overflow-y:auto; background:var(--color-surface); border-radius:var(--radius-md);
                       padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-md); }
 
-/* ── activity expand ── */
-details.actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
-                   box-shadow:var(--shadow-sm); }
-details.actcard[open] { box-shadow:0 0 0 1px var(--color-accent-700); }
-details.actcard summary { cursor:pointer; list-style:none; }
-details.actcard summary::-webkit-details-marker { display:none; }
+/* ── activity row (links to the Activity Detail page, issue 74) ── */
+.actlink:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
 
 /* ── interactive charts (crosshair line/area + tappable bars) ── */
 .js-bar { cursor:pointer; }
@@ -706,7 +678,7 @@ def _factor_bar(label, pct):
     )
 
 
-def _panel_today(data: dict) -> str:
+def _panel_today(data: dict, token: str | None = None) -> str:
     training = (data.get("training") or {}).get("readiness") or {}
     readiness = data.get("readiness") or {}
     health = data.get("health") or {}
@@ -918,7 +890,7 @@ def _panel_today(data: dict) -> str:
     </div>""" if week else ""
 
     today_acts = [a for a in activities if str(a.get("date") or "")[:10] == today][:3]
-    act_rows = "".join(_activity_row_compact(a) for a in today_acts)
+    act_rows = "".join(_activity_row(a, token) for a in today_acts)
     today_acts_card = f"""
     <div>
       <div class="section-title">Today &middot; {len(today_acts)} {'activity' if len(today_acts)==1 else 'activities'}</div>
@@ -934,22 +906,44 @@ def _panel_today(data: dict) -> str:
     )
 
 
-def _activity_row_compact(a: dict) -> str:
+def _activity_row(a: dict, token: str | None = None, load_bar: bool = False,
+                  max_load: float = 1) -> str:
+    """One activity row, linking to its Activity Detail page (issue 74).
+
+    Used for both the Today tab's compact list and the Activity tab's list
+    (``load_bar=True`` there adds the relative-training-load bar the
+    Activity tab used to show inside a click-to-expand ``<details>`` — now
+    that a click navigates to the full detail page instead, the bar stays as
+    an at-a-glance cue on the row itself).
+    """
     icon, tint = _sport_style(a.get("type"))
     big, sub = _activity_big_stat(a)
+    href = _e(_pwa_asset_url(f"/dashboard/activity/{a.get('id')}", token))
+    bar_html = ""
+    if load_bar:
+        load = a.get("training_load") or 0
+        load_w = max(2, round(load / max_load * 100)) if max_load else 2
+        bar_html = (
+            '<div style="margin-top:10px;height:3px;border-radius:999px;'
+            f'background:var(--color-neutral-800);overflow:hidden">'
+            f'<div style="height:100%;width:{load_w}%;background:{tint};border-radius:999px"></div></div>'
+        )
     return f"""
-    <div class="card" style="padding:12px;flex-direction:row;align-items:center;gap:12px">
-      <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
-          background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
-      <div style="flex:1;min-width:0">
-        <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
-        <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
+    <a class="card actlink" href="{href}" style="padding:12px;text-decoration:none;color:inherit">
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
+            background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
+        </div>
+        <div style="text-align:right;flex:0 0 auto">
+          <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
+          <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
+        </div>
       </div>
-      <div style="text-align:right">
-        <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
-        <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
-      </div>
-    </div>"""
+      {bar_html}
+    </a>"""
 
 
 # ── PANEL: TRENDS ────────────────────────────────────────────────────────────
@@ -1163,7 +1157,7 @@ def _activity_summary_card(activities: list[dict], split: list[tuple], summary: 
   </div>"""
 
 
-def _panel_activity(data: dict) -> str:
+def _panel_activity(data: dict, token: str | None = None) -> str:
     week = data.get("week")
     activities = data.get("activities")
     if not week and not activities:
@@ -1204,7 +1198,7 @@ def _panel_activity(data: dict) -> str:
           else:
             split[existing] = (label, split[existing][1] + duration)
       max_load = max((a.get("training_load") or 0) for a in selected_list) or 1 if selected_list else 1
-      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_list)
+      cards = "".join(_activity_row(a, token, load_bar=True, max_load=max_load) for a in selected_list)
       empty = '<div class="muted" style="font-size:13px">No activities for this filter this week.</div>'
       view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_list else ""
       sections.append(
@@ -1218,41 +1212,6 @@ def _panel_activity(data: dict) -> str:
       <div class="activity-filterbar pillbar">{filter_labels}</div>
       {"".join(sections)}
     </section>"""
-
-
-def _activity_row_expandable(a: dict, max_load: float) -> str:
-    icon, tint = _sport_style(a.get("type"))
-    big, sub = _activity_big_stat(a)
-    load = a.get("training_load") or 0
-    load_w = max(2, round(load / max_load * 100))
-    detail = _activity_detail(a)
-    detail_html = "".join(
-        f'<div><div style="font-size:10px;color:var(--color-neutral-500)">{html.escape(k)}</div>'
-        f'<div style="font-family:var(--font-heading);font-size:15px">{v}</div></div>'
-        for k, v in detail
-    )
-    return f"""
-    <details class="actcard">
-      <summary>
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
-              background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
-            <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
-          </div>
-          <div style="text-align:right;flex:0 0 auto">
-            <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
-            <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
-          </div>
-        </div>
-        <div style="margin-top:10px;height:3px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">
-          <div style="height:100%;width:{load_w}%;background:{tint};border-radius:999px"></div>
-        </div>
-      </summary>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:10px;margin-top:12px;
-          border-top:1px solid var(--color-divider);padding-top:10px">{detail_html or '<div class="muted" style="font-size:12px">No additional detail.</div>'}</div>
-    </details>"""
 
 
 # ── PANEL: FITNESS ───────────────────────────────────────────────────────────
@@ -1791,7 +1750,15 @@ _SVG_DEFS = """
 
 
 def _pwa_asset_url(path: str, token: str | None) -> str:
-  return f"{path}?{urlencode({'token': token})}" if token else path
+  """A route URL carrying the bearer token, when one was supplied.
+
+  Appended with ``&`` rather than ``?`` when ``path`` already carries a query
+  string (e.g. the Activity Detail page's back link, "/dashboard?tab=activity").
+  """
+  if not token:
+    return path
+  sep = "&" if "?" in path else "?"
+  return f"{path}{sep}{urlencode({'token': token})}"
 
 
 def _gear_api_url(path: str, token: str | None) -> str:
@@ -2017,7 +1984,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
       for key in _ACTIVITY_FILTERS
     )
 
-    panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data)
+    panels = (_panel_today(data, token) + _panel_trends(data) + _panel_activity(data, token)
              + _panel_fitness(data) + _panel_gear(data, token, error))
 
     body = f"""
@@ -2083,3 +2050,574 @@ def render_dashboard_html(data: dict, token: str | None = None,
         f'<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("{_e(_pwa_asset_url("/sw.js", token))}");</script>'
         "</body></html>"
     )
+
+
+# ── PAGE: ACTIVITY DETAIL (issue 74) ────────────────────────────────────────
+# Its own full page rather than a dashboard panel/modal: activity_detail()
+# and activity_route() are each an extra Garmin API call (the latter a GPX
+# download) that the Today/Activity tabs' rows don't pay for just to be
+# listed, so the fetch only happens for the one activity actually opened —
+# see server.py's /dashboard/activity/<id> route.
+
+_TE_LABELS = {
+    "AEROBIC_BASE": "Base", "RECOVERY": "Recovery", "TEMPO": "Tempo",
+    "LACTATE_THRESHOLD": "Threshold", "VO2MAX": "VO2 Max",
+    "ANAEROBIC_CAPACITY": "Anaerobic Capacity", "SPRINT_POWER": "Sprint Power",
+    "NO_BENEFIT": "No Benefit",
+}
+_TE_SEGMENT_COLORS = ["var(--color-neutral-800)", "var(--color-neutral-800)",
+                      "#6f9ce8", "#4fae72", "#d9a441", "#cf5a4e"]
+# HR zone colours, indexed by Garmin's zoneNumber (0-5, low to high effort).
+_HR_ZONE_COLORS = ["#6f9ce8", "#4aa7d8", "#4fae72", "#d9a441", "#e2734a", "#cf5a4e"]
+
+
+def _full_datetime(value) -> str:
+    """A startTimeLocal-ish value -> 'Aug 21, 2026 at 05:46', or an em dash."""
+    if not value:
+        return "&mdash;"
+    text = str(value).replace("T", " ")[:19]
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return _e(text)
+    return html.escape(dt.strftime("%b %-d, %Y at %H:%M"))
+
+
+def get_activity_detail_data(activity_id: int) -> dict:
+    """Fetch everything the Activity Detail page needs.
+
+    ``detail`` (summary, laps, HR zones, weather, gear, multisport legs) and
+    ``route`` (GPS polyline + elevation profile, parsed from the activity's
+    GPX export) are fetched independently and a failure captured rather than
+    raised — a missing/failed GPX (or an activity with no GPS track at all,
+    which surfaces as route=None with no error) never blanks the rest of the
+    page, and vice versa.
+    """
+    from tools.activities import get_activity
+    from tools.activity_route import get_activity_route
+
+    detail, detail_err = _safe(get_activity, activity_id)
+    route, route_err = _safe(get_activity_route, activity_id)
+    return {
+        "activity_id": activity_id,
+        "detail": detail, "detail_err": detail_err,
+        "route": route, "route_err": route_err,
+    }
+
+
+def _quick_stats(summary: dict, route: dict | None) -> list[tuple[str, str]]:
+    """(label, value) pairs for the Activity Detail quick-stat grid —
+    pace/speed matched to sport, elevation gain preferring the GPX-derived
+    figure (covers the full unsampled track) over Garmin's own summary."""
+    sport = str(summary.get("type") or "").lower()
+    dur, dist = summary.get("duration_min"), summary.get("distance_km")
+    stats = [("Duration", _fmt_dur(dur))]
+    if dist:
+        stats.append(("Distance", _fmt_km(dist)))
+    if sport in _SWIM_TYPES:
+        pace = _pace_per_100m(dur, dist)
+        if pace:
+            stats.append(("Avg Pace", pace))
+    elif sport in _BIKE_TYPES:
+        speed = _speed_kmh(dur, dist)
+        if speed:
+            stats.append(("Avg Speed", speed))
+    elif dist:
+        pace = _pace_per_km(dur, dist)
+        if pace:
+            stats.append(("Avg Pace", pace))
+    gain = (route or {}).get("elevation_gain_m")
+    if gain is None:
+        gain = summary.get("elevation_gain_m")
+    if gain is not None:
+        stats.append(("Elevation Gain", f"{round(gain)} m"))
+    if summary.get("calories") is not None:
+        stats.append(("Calories", f"{round(summary['calories']):,}"))
+    if summary.get("avg_hr") is not None:
+        stats.append(("Avg HR", f"{summary['avg_hr']} bpm"))
+    if summary.get("avg_power") is not None:
+        stats.append(("Avg Power", f"{summary['avg_power']} W"))
+    return stats
+
+
+def _weather_chip_items(weather: dict) -> str:
+    parts = []
+    if weather.get("temp_c") is not None:
+        parts.append(f"<span>{round(weather['temp_c'])}&deg;C</span>")
+    if weather.get("wind_speed") is not None:
+        direction = weather.get("wind_direction_compass") or ""
+        parts.append(f"<span>{round(weather['wind_speed'])} km/h {_e(direction)}</span>")
+    if weather.get("humidity_pct") is not None:
+        parts.append(f"<span>{round(weather['humidity_pct'])}% humidity</span>")
+    return "".join(parts)
+
+
+def _weather_chips(weather: dict | None) -> str:
+    """A standalone weather row for activities with no GPS track (the mockup
+    only shows weather as an overlay on the map, but hiding it entirely for
+    a strength session or pool swim would throw away real data we have)."""
+    if not weather:
+        return ""
+    items = _weather_chip_items(weather)
+    if not items:
+        return ""
+    return (
+        '<div class="card" style="flex-direction:row;gap:16px;padding:10px 14px;'
+        f'font-size:12px;color:var(--color-neutral-300);width:fit-content">{items}</div>'
+    )
+
+
+def _route_map_svg(points: list[dict], w: int = 600, h: int = 220, pad: int = 16) -> dict | None:
+    """Project a lat/lon polyline onto an aspect-correct SVG path.
+
+    There's no basemap/tile server here (this app makes no outbound requests
+    beyond the Garmin API) — this draws the actual recorded track shape, just
+    without street/terrain context underneath it.
+    """
+    if not points or len(points) < 2:
+        return None
+    lats = [p["lat"] for p in points]
+    lons = [p["lon"] for p in points]
+    lat_min, lat_max = min(lats), max(lats)
+    lon_min, lon_max = min(lons), max(lons)
+    lon_scale = math.cos(math.radians(sum(lats) / len(lats))) or 1e-6
+    proj_w = (lon_max - lon_min) * lon_scale or 1e-6
+    proj_h = (lat_max - lat_min) or 1e-6
+    avail_w, avail_h = w - 2 * pad, h - 2 * pad
+    scale = min(avail_w / proj_w, avail_h / proj_h)
+    off_x = pad + (avail_w - proj_w * scale) / 2
+    off_y = pad + (avail_h - proj_h * scale) / 2
+
+    def project(p):
+        x = off_x + (p["lon"] - lon_min) * lon_scale * scale
+        y = off_y + (lat_max - p["lat"]) * scale  # north up
+        return x, y
+
+    coords = [project(p) for p in points]
+    path = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f} {y:.1f}" for i, (x, y) in enumerate(coords))
+    return {"path": path, "start": coords[0], "end": coords[-1], "w": w, "h": h}
+
+
+def _elevation_svg(profile: list[dict], w: int = 600, h: int = 90, pad: int = 4) -> dict | None:
+    """An elevation-vs-sample-index area/line chart, mirroring _spark()'s
+    geometry. Sample points are evenly stride-sampled by index (see
+    tools/activity_route.py), not by equal distance, but close enough for a
+    small profile sparkline."""
+    elevations = [p.get("elevation_m") for p in profile]
+    present = [v for v in elevations if v is not None]
+    if len(present) < 2:
+        return None
+    vmin, vmax = min(present), max(present)
+    span = (vmax - vmin) or 1
+    n = len(elevations)
+
+    def sx(i):
+        return pad + i * (w - 2 * pad) / (n - 1)
+
+    def sy(v):
+        return h - pad - ((v - vmin) / span) * (h - 2 * pad)
+
+    pts = [(sx(i), sy(v)) for i, v in enumerate(elevations) if v is not None]
+    if len(pts) < 2:
+        return None
+    line = " ".join(f"{'M' if i == 0 else 'L'}{x:.1f} {y:.1f}" for i, (x, y) in enumerate(pts))
+    area = f"{line} L{pts[-1][0]:.1f} {h} L{pts[0][0]:.1f} {h} Z"
+    return {"line": line, "area": area, "w": w, "h": h, "min": round(vmin), "max": round(vmax)}
+
+
+def _route_section(route: dict | None, weather: dict | None) -> str:
+    """The route-map + elevation-profile card, or '' for an activity with no
+    GPS track (pool swim, strength, indoor trainer, ...) — hidden rather than
+    shown empty/erroring, per issue 74."""
+    if not route:
+        return ""
+    m = _route_map_svg(route.get("points") or [])
+    if not m:
+        return ""
+    elev = _elevation_svg(route.get("elevation_profile") or [])
+
+    weather_chip = ""
+    if weather:
+        items = _weather_chip_items(weather)
+        if items:
+            weather_chip = (
+                '<div style="position:absolute;top:10px;right:10px;display:flex;gap:10px;'
+                'background:color-mix(in srgb, var(--color-bg) 72%, transparent);'
+                'border:1px solid var(--color-divider);border-radius:6px;padding:6px 10px;'
+                f'backdrop-filter:blur(6px);font-size:12px">{items}</div>'
+            )
+
+    elev_html = ""
+    if elev:
+        elev_html = f"""
+        <div style="margin-top:8px">
+          <svg viewBox="0 0 {elev['w']} {elev['h']}" preserveAspectRatio="none" style="width:100%;height:64px;display:block">
+            <path d="{elev['area']}" fill="var(--color-accent)" opacity="0.14"></path>
+            <path d="{elev['line']}" fill="none" stroke="var(--color-accent)" stroke-width="1.5" vector-effect="non-scaling-stroke"></path>
+          </svg>
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
+            <span>{elev['min']} m</span><span>{elev['max']} m</span>
+          </div>
+        </div>"""
+
+    gain, loss = route.get("elevation_gain_m"), route.get("elevation_loss_m")
+    gain_loss = ""
+    if gain is not None or loss is not None:
+        gain_loss = (
+            '<div style="display:flex;gap:16px;font-size:11px;color:var(--color-neutral-500);margin-top:6px">'
+            f'<span>&uarr; {round(gain) if gain is not None else "&mdash;"} m</span>'
+            f'<span>&darr; {round(loss) if loss is not None else "&mdash;"} m</span></div>'
+        )
+
+    return f"""
+    <div>
+      <div style="position:relative;border-radius:var(--radius-md);overflow:hidden;background:var(--color-surface);padding:10px">
+        <svg viewBox="0 0 {m['w']} {m['h']}" style="width:100%;height:200px;display:block">
+          <path d="{m['path']}" fill="none" stroke="var(--color-accent)" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"></path>
+          <circle cx="{m['start'][0]:.1f}" cy="{m['start'][1]:.1f}" r="4" fill="#4fae72"></circle>
+          <circle cx="{m['end'][0]:.1f}" cy="{m['end'][1]:.1f}" r="4" fill="#cf5a4e"></circle>
+        </svg>
+        {weather_chip}
+        {elev_html}
+      </div>
+      {gain_loss}
+    </div>"""
+
+
+def _training_effect_card(summary: dict) -> str:
+    """Primary benefit / training load + aerobic & anaerobic TE gauges,
+    matching the mockup's Training Effect card."""
+    load = summary.get("training_load")
+    aerobic = summary.get("training_effect") or 0
+    anaerobic = summary.get("anaerobic_training_effect") or 0
+    if not load and not aerobic and not anaerobic:
+        return ""
+    segs = "".join(f'<div style="flex:1;border-radius:2px;background:{c}"></div>' for c in _TE_SEGMENT_COLORS)
+
+    def gauge(value):
+        bucket = min(int(value / 5 * 6), 5) if value else 0
+        pct = min(max(value, 0) / 5 * 100, 100)
+        color = _TE_SEGMENT_COLORS[bucket]
+        return (
+            f'<div style="position:relative;height:8px"><div style="position:absolute;inset:0;display:flex;gap:3px">{segs}</div>'
+            f'<div style="position:absolute;top:50%;left:{pct:.0f}%;transform:translate(-50%,-50%);width:14px;height:14px;'
+            f'border-radius:50%;background:{color};border:2px solid var(--color-bg)"></div></div>'
+        )
+
+    label = _TE_LABELS.get(summary.get("training_effect_label"), _label(summary.get("training_effect_label")))
+    return f"""
+    <div class="card" style="padding:16px;gap:14px">
+      <div class="section-title" style="margin-bottom:0">Training Effect</div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        <div><div class="kicker">Primary Benefit</div>
+          <div style="font-size:19px;font-weight:500;font-family:var(--font-heading)">{label}</div></div>
+        <div><div class="kicker">Training Load</div>
+          <div style="font-size:19px;font-weight:500;font-family:var(--font-heading)">{_trim(load, 1) if load is not None else "&mdash;"}</div></div>
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px">
+          <span style="color:var(--color-neutral-400)">Aerobic</span>
+          <span>{_trim(aerobic, 1)}</span>
+        </div>
+        {gauge(aerobic)}
+      </div>
+      <div>
+        <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:12px">
+          <span style="color:var(--color-neutral-400)">Anaerobic</span>
+          <span>{_trim(anaerobic, 1)}</span>
+        </div>
+        {gauge(anaerobic)}
+      </div>
+    </div>"""
+
+
+def _metric_series_chart(values: list, labels: list[str], stroke: str, fill: str,
+                         chart_id: str, unit: str = "") -> dict | None:
+    """Like _chart() but plots an arbitrary index-based series (per-lap
+    values here) with caller-supplied point labels instead of daily trend
+    dates — reuses _spark()'s geometry and the page's existing
+    js-linechart markup/interactivity (_CHART_JS)."""
+    s = _spark(values)
+    if s is None:
+        return None
+    filled = _fill_gaps(values)
+    unit_suffix = f" {unit}" if unit else ""
+    points = [
+        {"x": x, "y": y, "d": labels[i] if i < len(labels) else "", "v": f"{round(filled[i])}{unit_suffix}"}
+        for i, (x, y) in enumerate(s["points"])
+    ]
+    return {
+        "line": s["line"], "area": s["area"], "stroke": stroke, "fill": fill, "id": chart_id,
+        "points_json": html.escape(json.dumps(points), quote=True),
+    }
+
+
+def _lap_chart_svg(c: dict) -> str:
+    return f"""
+    <svg class="js-linechart" id="{c['id']}" data-points="{c['points_json']}"
+        viewBox="0 0 300 78" preserveAspectRatio="none" style="width:100%;height:120px;display:block">
+      <path d="{c['area']}" fill="{c['fill']}"></path>
+      <path d="{c['line']}" fill="none" stroke="{c['stroke']}" stroke-width="1.7" vector-effect="non-scaling-stroke" stroke-linejoin="round"></path>
+      <line class="chart-crosshair" x1="0" x2="0" y1="0" y2="78" stroke="var(--color-neutral-400)" stroke-width="1" vector-effect="non-scaling-stroke" style="opacity:0;pointer-events:none"></line>
+      <circle class="chart-dot" cx="0" cy="0" r="3" fill="{c['stroke']}" stroke="var(--color-bg)" stroke-width="1.5" style="opacity:0;pointer-events:none"></circle>
+      <rect class="chart-hit" x="0" y="0" width="300" height="78" style="fill:transparent;pointer-events:all;cursor:crosshair"></rect>
+    </svg>"""
+
+
+def _hr_zone_rows(hr_zones: list[dict]) -> str:
+    rows = ""
+    for z in hr_zones:
+        color = _HR_ZONE_COLORS[int(z.get("zone") or 0) % len(_HR_ZONE_COLORS)]
+        pct = z.get("pct_time") or 0
+        rows += (
+            '<div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--color-divider)">'
+            f'<span style="width:50px;font-size:13px;color:var(--color-neutral-400)">Zone {_e(z.get("zone"))}</span>'
+            f'<span style="width:80px;font-size:13px;font-weight:500">{_fmt_dur(z.get("time_min"))}</span>'
+            '<div style="flex:1;height:6px;border-radius:99px;background:var(--color-neutral-800);overflow:hidden">'
+            f'<div style="height:100%;border-radius:99px;background:{color};width:{pct}%"></div></div>'
+            f'<span style="width:44px;text-align:right;font-size:12px;color:var(--color-neutral-500)">{_trim(pct, 1)}%</span></div>'
+        )
+    return rows
+
+
+def _hr_section(summary: dict, laps: list[dict], hr_zones: list[dict]) -> str:
+    if not laps and not hr_zones:
+        return ""
+    chart_svg = ""
+    if laps:
+        hr_values = [l.get("avg_hr") for l in laps]
+        chart = _metric_series_chart(
+            hr_values, [f"Lap {l.get('lap')}" for l in laps],
+            "#cf5a4e", "url(#gRhr)", "adet-hr-chart", "bpm",
+        )
+        if chart:
+            chart_svg = _lap_chart_svg(chart)
+    zone_rows = _hr_zone_rows(hr_zones)
+    zone_block = ""
+    if zone_rows:
+        zone_block = f"""
+        <div class="card" style="padding:16px">
+          <div style="display:flex;gap:10px;font-size:11px;color:var(--color-neutral-500);text-transform:uppercase;
+              letter-spacing:.05em;padding-bottom:8px;border-bottom:1px solid var(--color-divider)">
+            <span style="width:50px">Zone</span><span style="width:80px">Duration</span><span style="flex:1"></span><span style="width:44px;text-align:right">%</span>
+          </div>
+          {zone_rows}
+        </div>"""
+    return f"""
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div class="section-title" style="margin-bottom:0">Heart Rate</div>
+      <div class="card" style="padding:16px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
+          <div><span style="font-family:var(--font-heading);font-size:28px">{_num(summary.get('avg_hr'))}</span>
+              <span style="font-size:13px;color:var(--color-neutral-500)">bpm avg</span></div>
+          <div style="font-size:12px;color:var(--color-neutral-500)">{_num(summary.get('max_hr'))} max</div>
+        </div>
+        {chart_svg or '<div class="muted" style="font-size:12px">No per-lap HR data.</div>'}
+      </div>
+      {zone_block}
+    </div>"""
+
+
+def _splits_table(laps: list[dict]) -> str:
+    if not laps:
+        return ""
+    has_power = any(l.get("avg_power_w") for l in laps)
+    cols = 5 if has_power else 4
+    headers = "<span>Lap</span><span>Distance</span><span>Pace</span><span>Avg HR</span>"
+    if has_power:
+        headers += "<span>Power</span>"
+    rows = ""
+    for l in laps:
+        cells = (
+            f"<span>{_e(l.get('lap'))}</span>"
+            f"<span>{_fmt_km(l.get('distance_km'))}</span>"
+            f"<span>{_e(l.get('avg_pace'))}</span>"
+            f"<span>{_num(l.get('avg_hr'))}</span>"
+        )
+        if has_power:
+            power_val = l.get("avg_power_w")
+            power_txt = f"{power_val} W" if power_val else "&mdash;"
+            cells += f"<span>{power_txt}</span>"
+        rows += (
+            f'<div style="display:grid;grid-template-columns:repeat({cols},1fr);gap:8px;padding:9px 0;'
+            f'border-bottom:1px solid var(--color-divider);font-size:13px">{cells}</div>'
+        )
+    return f"""
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div class="section-title" style="margin-bottom:0">Splits</div>
+      <div class="card" style="padding:16px">
+        <div style="display:grid;grid-template-columns:repeat({cols},1fr);gap:8px;font-size:11px;color:var(--color-neutral-500);
+            text-transform:uppercase;letter-spacing:.05em;padding-bottom:8px;border-bottom:1px solid var(--color-divider)">{headers}</div>
+        {rows}
+      </div>
+    </div>"""
+
+
+def _gear_table(gear: list[dict]) -> str:
+    if not gear:
+        return ""
+    rows = "".join(
+        '<div style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:8px;padding:9px 0;'
+        f'border-bottom:1px solid var(--color-divider);font-size:13px"><span>{_e(g.get("name"))}</span>'
+        f'<span style="color:var(--color-neutral-400)">{_e(g.get("type"))}</span>'
+        f'<span style="color:var(--color-neutral-400)">{_fmt_km(g.get("distance_km"))}</span></div>'
+        for g in gear
+    )
+    return f"""
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div class="section-title" style="margin-bottom:0">Gear</div>
+      <div class="card" style="padding:16px">
+        <div style="display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:8px;font-size:11px;color:var(--color-neutral-500);
+            text-transform:uppercase;letter-spacing:.05em;padding-bottom:8px;border-bottom:1px solid var(--color-divider)">
+          <span>Component</span><span>Type</span><span>Lifetime Distance</span>
+        </div>
+        {rows}
+      </div>
+    </div>"""
+
+
+def _sub_activity_metrics(sub: dict) -> list[tuple[str, str]]:
+    metrics = []
+    if sub.get("distance_km"):
+        metrics.append(("Distance", _fmt_km(sub["distance_km"])))
+    if sub.get("duration_s"):
+        metrics.append(("Time", _fmt_dur(sub["duration_s"] / 60)))
+    if sub.get("pace_per_100m"):
+        metrics.append(("Pace", f"{sub['pace_per_100m']} /100m"))
+    if sub.get("pace_per_km"):
+        metrics.append(("Pace", f"{sub['pace_per_km']} /km"))
+    if sub.get("avg_speed_kmh"):
+        metrics.append(("Speed", f"{sub['avg_speed_kmh']} km/h"))
+    if sub.get("avg_power"):
+        metrics.append(("Power", f"{sub['avg_power']} W"))
+    if sub.get("avg_hr") is not None:
+        metrics.append(("Avg HR", _num(sub["avg_hr"])))
+    return metrics
+
+
+def _sub_activities_section(sub_activities: list[dict], token: str | None) -> str:
+    """A per-leg breakdown for a multisport activity (swim/T1/bike/T2/run, ...
+    — see tools/activities.py's get_activity for the shape), each linking to
+    its own leg's Activity Detail page when it has meaningful metrics of its
+    own (a transition leg doesn't)."""
+    if not sub_activities:
+        return ""
+    cards = ""
+    for sub in sub_activities:
+        icon, tint = _sport_style(sub.get("type"))
+        metrics = _sub_activity_metrics(sub)
+        metric_html = "".join(
+            f'<div><div style="font-size:10px;color:var(--color-neutral-500)">{_e(k)}</div>'
+            f'<div style="font-family:var(--font-heading);font-size:15px">{v}</div></div>'
+            for k, v in metrics
+        )
+        link = ""
+        if metrics and sub.get("activity_id"):
+            href = _e(_pwa_asset_url(f"/dashboard/activity/{sub['activity_id']}", token))
+            link = f'<a href="{href}" style="font-size:11px;color:var(--color-accent-300);text-decoration:none">View leg &rarr;</a>'
+        cards += f"""
+        <div class="card" style="padding:12px;gap:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="width:30px;height:30px;border-radius:8px;display:grid;place-items:center;
+                background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:16px"><i class="ph">{icon}</i></div>
+            <div style="font-size:14px;font-weight:500">{_e(sub.get('name'))}</div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:10px">
+            {metric_html or '<div class="muted" style="font-size:12px">No additional detail.</div>'}
+          </div>
+          {link}
+        </div>"""
+    return f"""
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div class="section-title" style="margin-bottom:0">Legs</div>
+      {cards}
+    </div>"""
+
+
+def _detail_document(body: str, token: str | None) -> str:
+    return (
+        "<!doctype html>"
+        '<html lang="en"><head>'
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+        "<title>Activity Detail &middot; Garmin Health Dashboard</title>"
+        f"<style>{_STYLE}</style>"
+        "</head><body>"
+        f"{render_nav_html('dashboard', token)}"
+        f'<div style="min-height:100vh;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body)">'
+        f"{_SVG_DEFS}{body}</div>"
+        f"<script>{_CHART_JS}</script>"
+        "</body></html>"
+    )
+
+
+def render_activity_detail_html(data: dict, token: str | None = None) -> str:
+    """Render one activity's full Activity Detail page — header, GPS route +
+    elevation profile (hidden gracefully when there's no GPS track), quick
+    stats, training effect, heart-rate trend + zone breakdown, splits, gear,
+    and (for a multisport activity) a per-leg breakdown. Mirrors the
+    "Activity Detail" mockup attached to issue 74.
+    """
+    detail = data.get("detail")
+    back_href = _e(_pwa_asset_url("/dashboard?tab=activity", token))
+    back_link = f'<a href="{back_href}" style="font-size:13px;color:var(--color-accent-300);text-decoration:none">&larr; Back to Activity</a>'
+
+    if not detail:
+        body = (
+            '<div style="max-width:640px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px">'
+            f'{back_link}<div class="err">Activity unavailable &mdash; {_e(data.get("detail_err"))}</div></div>'
+        )
+        return _detail_document(body, token)
+
+    summary = detail.get("summary") or {}
+    laps = detail.get("laps") or []
+    hr_zones = detail.get("hr_zones") or []
+    weather = detail.get("weather")
+    gear = detail.get("gear") or []
+    sub_activities = detail.get("sub_activities") or []
+    route = data.get("route")
+
+    icon, tint = _sport_style(summary.get("type"))
+    header = f"""
+    <div style="display:flex;flex-direction:column;gap:10px">
+      {back_link}
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:38px;height:38px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;
+            background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:20px"><i class="ph">{icon}</i></div>
+        <div style="min-width:0">
+          <div style="font-size:21px;font-weight:500;font-family:var(--font-heading);overflow-wrap:break-word">{_e(summary.get('name'))}</div>
+          <div style="font-size:13px;color:var(--color-neutral-500)">{_full_datetime(summary.get('date'))}</div>
+        </div>
+      </div>
+    </div>"""
+
+    map_section = _route_section(route, weather)
+    if not map_section:
+        map_section = _weather_chips(weather)
+
+    quick_stats = _quick_stats(summary, route)
+    stat_grid = "".join(
+        '<div style="background:var(--color-surface);border-radius:var(--radius-md);padding:12px;'
+        'display:flex;flex-direction:column;gap:2px">'
+        f'<div style="font-size:11px;color:var(--color-neutral-500);text-transform:uppercase;letter-spacing:.06em">{_e(k)}</div>'
+        f'<div style="font-size:18px;font-weight:500;font-family:var(--font-heading)">{v}</div></div>'
+        for k, v in quick_stats
+    )
+    stat_section = (
+        f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px">{stat_grid}</div>'
+        if quick_stats else ""
+    )
+
+    body = f"""
+    <div style="max-width:640px;margin:0 auto;padding:16px 16px 48px;display:flex;flex-direction:column;gap:22px">
+      {header}
+      {map_section}
+      {stat_section}
+      {_training_effect_card(summary)}
+      {_sub_activities_section(sub_activities, token)}
+      {_hr_section(summary, laps, hr_zones)}
+      {_splits_table(laps)}
+      {_gear_table(gear)}
+    </div>"""
+
+    return _detail_document(body, token)

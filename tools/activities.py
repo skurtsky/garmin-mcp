@@ -72,6 +72,7 @@ def _extract_activity_summary(activity: dict) -> dict:
         'max_hr':                summary.get('maxHR'),
         'calories':              summary.get('calories'),
         'training_effect':       round(summary.get('trainingEffect') or 0, 1),
+        'anaerobic_training_effect': round(summary.get('anaerobicTrainingEffect') or 0, 1),
         'training_load':         round(summary.get('activityTrainingLoad') or 0, 1),
         'training_effect_label': summary.get('trainingEffectLabel'),
         'avg_respiration':       round(summary.get('avgRespirationRate') or 0, 1),
@@ -119,7 +120,6 @@ def _extract_activity_summary(activity: dict) -> dict:
             'avg_strokes_per_length':   round(summary.get('averageStrokes') or 0, 1),
             'swolf':                    summary.get('averageSWOLF'),
             'total_strokes':            summary.get('totalNumberOfStrokes'),
-            'anaerobic_training_effect':round(summary.get('anaerobicTrainingEffect') or 0, 1),
             'rpe':                      summary.get('directWorkoutRpe'),
         })
 

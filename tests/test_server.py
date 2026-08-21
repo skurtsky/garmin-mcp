@@ -6,7 +6,11 @@ the calling LLM actually sees, so it must be correct and self-contained.
 """
 import asyncio
 
+import pytest
+from starlette.testclient import TestClient
+
 import server
+from tools import dashboard
 
 
 def _get_tool_schema(tool_name: str) -> dict:
@@ -34,3 +38,58 @@ def test_create_workout_docstring_documents_repeat_and_targets():
     assert "target" in doc.lower()
     assert "pace" in doc.lower()
     assert "power" in doc.lower()
+
+
+# ── ROUTE: /dashboard/activity/<id> (issue 74) ──────────────────────────────
+
+def _fake_detail_data(activity_id: int) -> dict:
+    return {
+        "activity_id": activity_id,
+        "detail": {"summary": {"id": activity_id, "name": "Evening Run", "type": "running",
+                               "date": "2026-08-21 06:00:00", "distance_km": 10.0,
+                               "duration_min": 50.0}},
+        "detail_err": None, "route": None, "route_err": None,
+    }
+
+
+def test_activity_detail_route_renders_the_page(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_activity_detail_data", _fake_detail_data)
+    app = TestClient(server.build_asgi_app())
+
+    resp = app.get("/dashboard/activity/123")
+
+    assert resp.status_code == 200
+    assert "Evening Run" in resp.text
+
+
+def test_activity_detail_route_requires_the_bearer_token(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_activity_detail_data", _fake_detail_data)
+    monkeypatch.setattr(server, "BEARER_TOKEN", "s3cret")
+    app = TestClient(server.build_asgi_app())
+
+    assert app.get("/dashboard/activity/123").status_code == 401
+    assert app.get("/dashboard/activity/123", params={"token": "wrong"}).status_code == 401
+
+    ok = app.get("/dashboard/activity/123", params={"token": "s3cret"})
+    assert ok.status_code == 200
+    assert "Evening Run" in ok.text
+
+
+def test_activity_detail_route_rejects_a_non_numeric_id(monkeypatch):
+    monkeypatch.setattr(dashboard, "get_activity_detail_data", _fake_detail_data)
+    app = TestClient(server.build_asgi_app())
+
+    resp = app.get("/dashboard/activity/not-a-number")
+    assert resp.status_code == 400
+
+
+def test_activity_detail_route_surfaces_render_errors_as_500(monkeypatch):
+    def boom(activity_id):
+        raise RuntimeError("garmin down")
+
+    monkeypatch.setattr(dashboard, "get_activity_detail_data", boom)
+    app = TestClient(server.build_asgi_app())
+
+    resp = app.get("/dashboard/activity/123")
+    assert resp.status_code == 500
+    assert "garmin down" in resp.text

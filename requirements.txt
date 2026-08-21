@@ -1,5 +1,6 @@
 fastmcp==3.2.4
 garminconnect==0.3.2
+gpxpy==1.6.2
 python-dotenv==1.2.2
 uvicorn==0.44.0
 starlette==1.0.0

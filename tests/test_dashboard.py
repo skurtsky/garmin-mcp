@@ -467,11 +467,14 @@ def test_render_shows_thresholds_from_athlete_profile():
     assert "72.9" in html  # weight
 
 
-def test_render_shows_activity_list_with_expandable_detail():
-    html = dashboard.render_dashboard_html(SAMPLE)
-    assert '<details class="actcard">' in html
+def test_render_activity_rows_link_to_activity_detail_page():
+    """Clicking an activity row anywhere in the dashboard opens the full
+    Activity Detail page instead of an inline expandable summary (issue 74)."""
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert '<details class="actcard">' not in html
+    assert 'class="card actlink"' in html
+    assert 'href="/dashboard/activity/1?token=t0k"' in html  # Today row (Evening Run)
     assert "Pool Swim" in html
-    assert "Avg HR" in html
 
 
 def test_render_activity_filters_include_all_requested_options():
