@@ -810,8 +810,10 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
   border:none; background:var(--color-neutral-900); color:var(--color-neutral-400); font-size:15px;
   line-height:1; cursor:pointer; z-index:1; }
 .activity-modal-body { overflow-y:auto; padding:8px 16px 28px; -webkit-overflow-scrolling:touch; }
-.ad-stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(84px,1fr)); gap:12px; }
-.ad-zone-row { display:grid; grid-template-columns:48px 1fr 52px 44px; align-items:center; gap:8px; font-size:11px; }
+.ad-stat-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+.ad-zone-row { display:grid; grid-template-columns:48px 64px 1fr 44px; align-items:center; gap:8px;
+               font-size:11px; padding:4px 0; }
+.ad-zone-row-head { font-size:9px; letter-spacing:.05em; text-transform:uppercase; }
 .ad-zone-bar { height:6px; border-radius:999px; background:var(--color-neutral-800); overflow:hidden; }
 .ad-zone-bar > div { height:100%; }
 .ad-te-track { position:relative; height:6px; border-radius:999px; margin:8px 0 2px; }
@@ -820,8 +822,29 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
 .ad-splits-table th:first-child, .ad-splits-table td:first-child { text-align:left; }
 .ad-splits-table th { color:var(--color-neutral-500); font-weight:500; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
 .ad-splits-table tr:last-child td { border-bottom:none; }
-#activity-map { height:220px; border-radius:8px; overflow:hidden; background:var(--color-neutral-900); }
-#activity-map .leaflet-control-attribution { font-size:9px; }
+.ad-gear-row { display:grid; grid-template-columns:1fr 76px 100px; align-items:center; gap:8px;
+               font-size:12px; padding:7px 0; border-bottom:1px solid var(--color-divider); }
+.ad-gear-row-head { font-size:9px; letter-spacing:.05em; text-transform:uppercase; border-bottom:none; padding-bottom:2px; }
+.ad-gear-row:last-of-type { border-bottom:none; }
+
+/* ── HR/power chart card (issue 74 feedback) ── */
+.ad-chart-zone { font-family:var(--font-heading); font-size:14px; flex:0 0 auto; }
+.ad-bounds-bar { position:relative; display:flex; height:8px; border-radius:999px; overflow:visible; margin-top:6px; }
+.ad-bounds-bar > div:not(.ad-chart-marker) { height:100%; }
+.ad-bounds-bar > div:first-child { border-radius:999px 0 0 999px; }
+.ad-bounds-bar > div:not(.ad-chart-marker):last-child { border-radius:0 999px 999px 0; }
+.ad-chart-marker { position:absolute; top:50%; width:12px; height:12px; border-radius:50%;
+  transform:translate(-50%,-50%); border:2px solid var(--color-bg); box-shadow:0 0 0 1px var(--color-neutral-700);
+  transition:left .08s linear; }
+
+/* ── route map (issue 74 feedback) ── */
+#activity-map { height:220px; background:var(--color-neutral-900); }
+.ad-map-weather { position:absolute; top:10px; right:10px; z-index:400; display:flex; flex-direction:column; gap:4px;
+  background:rgba(10,11,16,.6); backdrop-filter:blur(6px); border-radius:8px; padding:6px 9px;
+  font-size:11px; color:var(--color-neutral-200); }
+@media (max-width:600px) {
+  #activity-map .leaflet-control-zoom, #activity-map .leaflet-control-attribution { display:none; }
+}
 """ + _ICON_CSS
 
 
@@ -2082,6 +2105,86 @@ _CHART_JS = """
   wireCharts(document);
   window.__wireCharts = wireCharts;
 
+  // The activity-detail HR/power charts (issue 74) read inline into the
+  // card itself (a big current value, a zone badge, a marker sliding along
+  // the zone-bounds bar) rather than the floating #chart-tooltip above —
+  // wired separately since it targets a different set of sibling elements.
+  function wireAdCharts(root) {
+    (root || document).querySelectorAll('svg.js-adchart').forEach(function (svg) {
+      if (svg.__wired) return;
+      svg.__wired = true;
+      var pts;
+      try { pts = JSON.parse(svg.getAttribute('data-points') || '[]'); } catch (err) { return; }
+      if (!pts.length) return;
+      var card = svg.closest('.ad-chart-card');
+      var hit = svg.querySelector('.chart-hit');
+      var crosshair = svg.querySelector('.chart-crosshair');
+      var dot = svg.querySelector('.chart-dot');
+      if (!card || !hit || !crosshair || !dot) return;
+      var vb = svg.viewBox.baseVal;
+      var numEl = card.querySelector('.ad-chart-num');
+      var capEl = card.querySelector('.ad-chart-caption');
+      var zoneEl = card.querySelector('.ad-chart-zone');
+      var markerEl = card.querySelector('.ad-chart-marker');
+      var avg = {
+        value: card.getAttribute('data-avg-value'),
+        caption: card.getAttribute('data-avg-caption'),
+        zoneLabel: card.getAttribute('data-avg-zone-label'),
+        zoneColor: card.getAttribute('data-avg-zone-color'),
+        marker: card.getAttribute('data-avg-marker'),
+      };
+
+      function nearest(clientX) {
+        var rect = svg.getBoundingClientRect();
+        var vx = rect.width ? (clientX - rect.left) / rect.width * vb.width : pts[0].x;
+        var best = pts[0], bestDist = Infinity;
+        for (var i = 0; i < pts.length; i++) {
+          var d = Math.abs(pts[i].x - vx);
+          if (d < bestDist) { bestDist = d; best = pts[i]; }
+        }
+        return best;
+      }
+
+      function apply(value, caption, zoneLabel, zoneColor, marker) {
+        if (numEl) numEl.textContent = value;
+        if (capEl) capEl.textContent = caption;
+        if (zoneEl && zoneLabel) { zoneEl.textContent = zoneLabel; zoneEl.style.color = zoneColor; }
+        if (markerEl && marker !== '' && marker != null) {
+          markerEl.style.left = marker + '%';
+          markerEl.style.background = zoneColor;
+        }
+      }
+
+      function update(e) {
+        var p = pointFromEvent(e);
+        var pt = nearest(p.clientX);
+        crosshair.setAttribute('x1', pt.x);
+        crosshair.setAttribute('x2', pt.x);
+        crosshair.style.opacity = 1;
+        dot.setAttribute('cx', pt.x);
+        dot.setAttribute('cy', pt.y);
+        dot.style.opacity = 1;
+        apply(pt.v, pt.t, pt.zl, pt.zc, pt.mp);
+      }
+
+      function reset() {
+        crosshair.style.opacity = 0;
+        dot.style.opacity = 0;
+        apply(avg.value, avg.caption, avg.zoneLabel, avg.zoneColor, avg.marker);
+      }
+
+      hit.addEventListener('mousemove', update);
+      hit.addEventListener('mousedown', update);
+      hit.addEventListener('mouseleave', reset);
+      hit.addEventListener('touchstart', function (e) { e.preventDefault(); update(e); }, { passive: false });
+      hit.addEventListener('touchmove', function (e) { e.preventDefault(); update(e); }, { passive: false });
+      hit.addEventListener('touchend', reset);
+    });
+  }
+
+  wireAdCharts(document);
+  window.__wireAdCharts = wireAdCharts;
+
   document.addEventListener('click', function (e) {
     if (!e.target.closest('.js-linechart') && !e.target.closest('.js-bar')) hideAll();
   });
@@ -2179,6 +2282,7 @@ _ACTIVITY_MODAL_JS = """
     fetch(url).then(function (res) { return res.text(); }).then(function (responseHtml) {
       body.innerHTML = responseHtml;
       window.__wireCharts && window.__wireCharts(body);
+      window.__wireAdCharts && window.__wireAdCharts(body);
       if (body.querySelector('#activity-map')) loadLeaflet().then(initMap);
     }).catch(function () {
       body.innerHTML = '<div class="muted" style="padding:32px 20px;text-align:center;font-size:13px">Couldn\\u2019t load this activity.</div>';

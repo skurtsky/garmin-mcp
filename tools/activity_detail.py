@@ -90,6 +90,26 @@ def _fmt_wind(kph, direction) -> str:
     return f"{round(kph)} km/h" + (f" {html.escape(direction)}" if direction else "")
 
 
+# Minimal 16x16 stroke icons for the map's weather overlay — the page's
+# embedded Phosphor font is subsetted to the sport/nav glyphs already used
+# elsewhere (see tools/dashboard.py's _ICON_CSS), so temp/wind/humidity need
+# their own small inline SVGs rather than another icon-font codepoint.
+_ICON_TEMP = (
+    '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+    'stroke-width="1.3" stroke-linecap="round"><path d="M7 2.5v6.9a2.5 2.5 0 1 0 2 0V2.5a1 1 0 0 0-2 0Z"/>'
+    '<circle cx="8" cy="11.5" r="1.4" fill="currentColor" stroke="none"/></svg>'
+)
+_ICON_WIND = (
+    '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+    'stroke-width="1.3" stroke-linecap="round"><path d="M2 6h7a1.8 1.8 0 1 0-1.6-2.7"/>'
+    '<path d="M2 10h9a1.8 1.8 0 1 1-1.6 2.7"/></svg>'
+)
+_ICON_HUMIDITY = (
+    '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" '
+    'stroke-width="1.3" stroke-linejoin="round"><path d="M8 2s4 4.6 4 7.5a4 4 0 0 1-8 0C4 6.6 8 2 8 2Z"/></svg>'
+)
+
+
 def _speed_label(kph) -> str:
     if not kph:
         return "&mdash;"
@@ -158,7 +178,7 @@ def _clock_hms(start_sec, offset_sec) -> str:
 
 def _anaerobic_label(v) -> str:
     if v is None:
-        return "&mdash;"
+        return "—"
     if v < 1:
         return "No Benefit"
     if v < 2:
@@ -198,6 +218,16 @@ def _power_bounds_from_ftp(ftp) -> list[int] | None:
     return [round(ftp * f) for f in fractions]
 
 
+def _marker_pct(value, bounds: list) -> float:
+    """Position (0-100) along the zone-bounds bar for a value — inside its
+    own zone's segment, proportional to how far through that zone it is."""
+    idx = _zone_index_for(value, bounds)
+    lo = bounds[idx]
+    hi = bounds[idx + 1] if idx + 1 < len(bounds) else lo * 1.15 + 10
+    frac = min(max((value - lo) / (hi - lo), 0), 1) if hi != lo else 0
+    return round((idx + frac) / len(bounds) * 100, 1)
+
+
 def _is_gap(prev_t, cur_t, pauses: list) -> bool:
     for p in pauses:
         if p.get("start_sec") is None or p.get("end_sec") is None:
@@ -230,14 +260,22 @@ def _downsample(run: list, max_points: int = _MAX_CHART_POINTS) -> list:
     return [run[i] for i in idxs if i < len(run)]
 
 
-def _smooth_run(run: list, radius: int = 3) -> list:
-    """Light moving-average smoothing so per-sample noise near a zone
-    boundary doesn't fragment the coloured line into hundreds of tiny
-    same-length path segments — cosmetic (matches the mockup's smoothed
-    line) and keeps fragment size bounded for a noisy raw series."""
+_SMOOTH_WINDOW_SEC = 60  # matches the mockup's ~50% smoothing on HR/power
+
+
+def _smooth_run(run: list, window_sec: float = _SMOOTH_WINDOW_SEC) -> list:
+    """Moving-average smoothing over a fixed *time* window (not a fixed
+    sample count) so a real per-second Garmin recording gets real noise
+    reduction — a raw HR/power trace spikes on almost every sample, and a
+    small index-based radius barely dents that at 1Hz. Cosmetic (matches the
+    mockup's smoothed line) and also keeps the zone-coloured path from
+    fragmenting into hundreds of tiny same-length segments."""
     n = len(run)
     if n < 3:
         return run
+    span_sec = run[-1]["t_offset_sec"] - run[0]["t_offset_sec"]
+    avg_dt = span_sec / (n - 1) if n > 1 else 1
+    radius = max(1, round(window_sec / 2 / max(avg_dt, 0.1)))
     values = [p["value"] for p in run]
     smoothed = []
     for i in range(n):
@@ -248,7 +286,8 @@ def _smooth_run(run: list, radius: int = 3) -> list:
 
 def _build_line_chart(series: list, pauses: list, bounds: list | None,
                        colors: list, unit_suffix: str, total_elapsed_sec: float,
-                       start_sec: float) -> dict | None:
+                       start_sec: float, avg_value: float | None = None,
+                       one_indexed: bool = False) -> dict | None:
     """SVG geometry + hover points for one HR/power chart, matching the
     dashboard's existing .js-linechart convention (see tools/dashboard.py's
     _CHART_JS) so hover tooltips work for free once wired."""
@@ -323,15 +362,27 @@ def _build_line_chart(series: list, pauses: list, bounds: list | None,
         )
     area_path = " ".join(area_parts)
 
-    hover_points = [
-        {
+    def zone_fields(v):
+        if not bounds:
+            return None, None, None
+        idx = _zone_index_for(v, bounds)
+        label = f"Zone {idx + 1}" if one_indexed else f"Zone {idx}"
+        return label, colors[idx], _marker_pct(v, bounds)
+
+    hover_points = []
+    for p in points_flat:
+        zl, zc, mp = zone_fields(p["value"])
+        hover_points.append({
             "x": round(x_for(p["t_offset_sec"]), 1),
             "y": round(y_for(p["value"]), 1),
-            "d": _clock_hms(start_sec, p["t_offset_sec"]),
-            "v": f"{round(p['value'])}{unit_suffix}",
-        }
-        for p in points_flat
-    ]
+            "t": _clock_hms(start_sec, p["t_offset_sec"]),
+            "v": round(p["value"]),
+            "zl": zl, "zc": zc, "mp": mp,
+        })
+
+    if avg_value is None:
+        avg_value = sum(values) / len(values)
+    avg_zone_label, avg_zone_color, avg_marker_pct = zone_fields(avg_value)
 
     return {
         "path_html": path_html,
@@ -343,6 +394,11 @@ def _build_line_chart(series: list, pauses: list, bounds: list | None,
         "x_label_mid": _clock_hm(start_sec, total_elapsed_sec / 2),
         "x_label_end": _clock_hm(start_sec, total_elapsed_sec),
         "points_json": html.escape(json.dumps(hover_points), quote=True),
+        "avg_value": round(avg_value),
+        "avg_zone_label": avg_zone_label,
+        "avg_zone_color": avg_zone_color,
+        "avg_marker_pct": avg_marker_pct,
+        "unit_suffix": unit_suffix,
     }
 
 
@@ -363,29 +419,67 @@ def _zone_minutes_from_series(series: list, pauses: list, bounds: list) -> list[
     return minutes
 
 
-def _zone_rows_html(rows: list[tuple], colors: list) -> str:
-    """rows: list of (zone_label, minutes, pct) tuples."""
-    items = "".join(
+def _zone_table_html(rows: list[tuple]) -> str:
+    """rows: list of (zone_label, minutes, pct, color) tuples — the color is
+    passed in explicitly per row rather than inferred from position, since a
+    zone's number and its index into the bounds/colour ramp aren't always
+    the same (Garmin's real HR zones are numbered 1-5 with no "zone 0"
+    row, but the chart's bounds ramp reserves index 0 for "below zone 1").
+    Column order is zone / duration / bar / % — a header-less bar column
+    between the duration and percentage figures."""
+    body = "".join(
         f'<div class="ad-zone-row">'
         f'<div class="muted">{html.escape(label)}</div>'
-        f'<div class="ad-zone-bar"><div style="width:{pct}%;background:{colors[i % len(colors)]}"></div></div>'
-        f'<div style="text-align:right">{_fmt_hms(minutes * 60)}</div>'
+        f'<div>{_fmt_hms(minutes * 60)}</div>'
+        f'<div class="ad-zone-bar"><div style="width:{pct}%;background:{color}"></div></div>'
         f'<div class="muted" style="text-align:right">{pct:.1f}%</div>'
         "</div>"
-        for i, (label, minutes, pct) in enumerate(rows)
+        for label, minutes, pct, color in rows
     )
-    return f'<div style="display:flex;flex-direction:column;gap:5px;margin-top:8px">{items}</div>'
+    header = (
+        '<div class="ad-zone-row ad-zone-row-head muted">'
+        '<div>ZONE</div><div>DURATION</div><div></div><div style="text-align:right">%</div></div>'
+    )
+    return f'<div class="card" style="padding:14px;gap:2px">{header}{body}</div>'
 
 
-def _chart_section_html(chart_id: str, title: str, avg_label: str, chart: dict,
-                         zone_rows_html: str) -> str:
+def _chart_card_html(chart_id: str, avg_label: str, chart: dict,
+                      bounds: list | None, bound_labels: list[str] | None,
+                      colors: list) -> str:
+    bounds_bar = ""
+    if bounds:
+        segs = "".join(
+            f'<div style="flex:1;background:{colors[i % len(colors)]}"></div>' for i in range(len(bounds))
+        )
+        labels = "".join(f"<span>{html.escape(lbl)}</span>" for lbl in (bound_labels or []))
+        bounds_bar = f"""
+        <div class="ad-bounds-bar">
+          {segs}
+          <div class="ad-chart-marker" style="left:{chart['avg_marker_pct']}%;background:{chart['avg_zone_color']}"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">{labels}</div>"""
+
+    zone_badge = (
+        f'<div class="ad-chart-zone" style="color:{chart["avg_zone_color"]}">{chart["avg_zone_label"]}</div>'
+        if chart.get("avg_zone_label") else ""
+    )
+
     return f"""
-    <div class="card" style="padding:14px;gap:10px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline">
-        <div class="section-title" style="margin-bottom:0">{html.escape(title)}</div>
-        <div class="muted" style="font-size:11px">{html.escape(avg_label)}</div>
+    <div class="card ad-chart-card" style="padding:14px;gap:10px"
+        data-avg-value="{chart['avg_value']}" data-unit="{html.escape(chart['unit_suffix'])}"
+        data-avg-caption="{html.escape(avg_label)}"
+        data-avg-zone-label="{html.escape(chart['avg_zone_label'] or '')}"
+        data-avg-zone-color="{html.escape(chart['avg_zone_color'] or '')}"
+        data-avg-marker="{chart['avg_marker_pct'] if chart['avg_marker_pct'] is not None else ''}">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div>
+          <div><span class="ad-chart-num" style="font-family:var(--font-heading);font-size:30px;line-height:1">{chart['avg_value']}</span><span
+              style="font-size:13px;color:var(--color-neutral-500)">{html.escape(chart['unit_suffix'])}</span></div>
+          <div class="ad-chart-caption muted" style="font-size:11px;margin-top:2px">{html.escape(avg_label)}</div>
+        </div>
+        {zone_badge}
       </div>
-      <svg class="js-linechart" id="{chart_id}" data-points="{chart['points_json']}"
+      <svg class="js-adchart" id="{chart_id}" data-points="{chart['points_json']}"
           viewBox="0 0 {_CHART_W} {_CHART_H}" preserveAspectRatio="none"
           style="width:100%;height:130px;display:block">
         <path d="{chart['area_path']}" fill="url(#gArea)"></path>
@@ -401,7 +495,16 @@ def _chart_section_html(chart_id: str, title: str, avg_label: str, chart: dict,
       <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
         <span>{chart['x_label_start']}</span><span>{chart['x_label_mid']}</span><span>{chart['x_label_end']}</span>
       </div>
-      {zone_rows_html}
+      {bounds_bar}
+    </div>"""
+
+
+def _hr_power_section_html(title: str, chart_card_html: str, zone_table_html: str) -> str:
+    return f"""
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="section-title" style="margin-bottom:0">{html.escape(title)}</div>
+      {chart_card_html}
+      {zone_table_html}
     </div>"""
 
 
@@ -436,19 +539,20 @@ def _num(v) -> str:
     return f"{round(v):,}" if isinstance(v, (int, float)) else html.escape(str(v))
 
 
-def _training_effect_html(detail: dict) -> str:
+def _training_effect_html(detail: dict, training_load) -> str:
     aerobic = detail.get("training_effect")
     anaerobic = detail.get("anaerobic_te")
-    load = detail.get("training_load")
     if aerobic is None and anaerobic is None:
         return ""
 
-    def bar(value, label, gradient):
+    primary_benefit = _humanize_label(detail.get("training_effect_label"))
+
+    def bar(value, label, sub_label, gradient):
         pct = min(max((value or 0) / 5 * 100, 0), 100)
         return f"""
         <div>
           <div style="display:flex;justify-content:space-between;font-size:11px">
-            <span class="muted">{html.escape(label)}</span><span>{value if value is not None else '&mdash;'}</span>
+            <span class="muted">{html.escape(label)}</span><span>{value if value is not None else '&mdash;'} &middot; {html.escape(sub_label)}</span>
           </div>
           <div class="ad-te-track" style="background:{gradient}">
             <div style="position:absolute;top:50%;left:{pct}%;transform:translate(-50%,-50%);width:12px;height:12px;
@@ -461,14 +565,15 @@ def _training_effect_html(detail: dict) -> str:
 
     return f"""
     <div class="card" style="padding:14px;gap:12px">
-      <div style="display:flex;justify-content:space-between;align-items:baseline">
-        <div class="section-title" style="margin-bottom:0">Training Effect</div>
-        <div class="muted" style="font-size:11px">Load {_num(load)}</div>
+      <div class="section-title" style="margin-bottom:0">Training Effect</div>
+      <div class="ad-stat-grid">
+        <div><div class="muted" style="font-size:10px">Primary Benefit</div>
+          <div style="font-family:var(--font-heading);font-size:16px">{_e(primary_benefit)}</div></div>
+        <div><div class="muted" style="font-size:10px">Training Load</div>
+          <div style="font-family:var(--font-heading);font-size:16px">{_num(training_load)}</div></div>
       </div>
-      {bar(aerobic, 'Aerobic', aerobic_gradient)}
-      <div class="muted" style="font-size:11px;margin-top:-6px">{_e(_humanize_label(detail.get('training_effect_label')))}</div>
-      {bar(anaerobic, 'Anaerobic', anaerobic_gradient)}
-      <div class="muted" style="font-size:11px;margin-top:-6px">{_anaerobic_label(anaerobic)}</div>
+      {bar(aerobic, 'Aerobic', primary_benefit or '—', aerobic_gradient)}
+      {bar(anaerobic, 'Anaerobic', _anaerobic_label(anaerobic), anaerobic_gradient)}
     </div>"""
 
 
@@ -527,7 +632,7 @@ def _splits_table_html(laps: list, sport) -> str:
     </div>"""
 
 
-def _gear_list_html(gear: list) -> str:
+def _gear_list_html(gear: list, token: str | None) -> str:
     if not gear:
         return ""
     rows = []
@@ -537,25 +642,55 @@ def _gear_list_html(gear: list) -> str:
         pct = min((distance / lifespan) * 100, 100) if lifespan else None
         color = ("var(--color-neutral-600)" if pct is None
                  else "#4fae72" if pct < 70 else "#d9a441" if pct < 90 else "#cf5a4e")
-        bar = (
-            f'<div class="gt-wearbar" style="margin-top:4px"><div style="width:{pct or 0}%;background:{color}"></div></div>'
-            if pct is not None else ""
+        life_cell = (
+            f'<div style="display:flex;align-items:center;gap:8px">'
+            f'<div class="gt-wearbar" style="flex:1"><div style="width:{pct}%;background:{color}"></div></div>'
+            f'<span class="muted" style="font-size:11px;flex:0 0 auto">{round(pct)}%</span></div>'
+            if pct is not None else '<span class="muted">&mdash;</span>'
         )
-        rows.append(f"""
-        <div style="padding:8px 0;border-bottom:1px solid var(--color-divider)">
-          <div style="display:flex;justify-content:space-between;font-size:13px">
-            <span>{_e(g.get('name'))}</span><span class="muted">{_fmt_km(distance)}</span>
-          </div>
-          {bar}
-        </div>""")
+        rows.append(
+            f'<div class="ad-gear-row">'
+            f'<div>{_e(g.get("name"))}</div>'
+            f'<div class="muted">{_fmt_km(distance)}</div>'
+            f'<div>{life_cell}</div>'
+            "</div>"
+        )
+    gear_tracker_url = "/dashboard?tab=gear" + (f"&token={html.escape(token, quote=True)}" if token else "")
     return f"""
-    <div class="card" style="padding:14px;gap:4px">
-      <div class="section-title" style="margin-bottom:0">Gear</div>
-      <div>{''.join(rows)}</div>
+    <div class="card" style="padding:14px;gap:2px">
+      <div class="section-title" style="margin-bottom:6px">Gear</div>
+      <div class="ad-gear-row ad-gear-row-head muted">
+        <div>COMPONENT</div><div>DISTANCE</div><div>LIFE USED</div></div>
+      {"".join(rows)}
+      <a href="{gear_tracker_url}" class="btn btn-secondary"
+          style="margin-top:10px;text-align:center;text-decoration:none;padding:10px;border-radius:8px;
+          border:1px solid var(--color-accent-700);color:var(--color-accent-200)">Open in Gear Tracker</a>
     </div>"""
 
 
-def _map_section_html(route: list | None) -> str:
+def _weather_overlay_html(weather: dict | None) -> str:
+    """The map's top-right weather badge — temp/wind/humidity, each with its
+    own icon, stacked over the tiles rather than a separate section."""
+    if not weather:
+        return ""
+    chips = []
+    if weather.get("temp_c") is not None:
+        chips.append((_ICON_TEMP, _fmt_temp(weather["temp_c"])))
+    wind = _fmt_wind(weather.get("wind_kph"), weather.get("wind_dir"))
+    if weather.get("wind_kph") is not None:
+        chips.append((_ICON_WIND, wind))
+    if weather.get("humidity_pct") is not None:
+        chips.append((_ICON_HUMIDITY, f"{round(weather['humidity_pct'])}%"))
+    if not chips:
+        return ""
+    rows = "".join(
+        f'<div style="display:flex;align-items:center;gap:4px">{icon}<span>{value}</span></div>'
+        for icon, value in chips
+    )
+    return f'<div class="ad-map-weather">{rows}</div>'
+
+
+def _map_section_html(route: list | None, weather: dict | None) -> str:
     if not route:
         return ""
     stride = max(1, len(route) // 300)
@@ -585,10 +720,12 @@ def _map_section_html(route: list | None) -> str:
         </div>"""
 
     return f"""
-    <div class="card" style="padding:14px;gap:8px">
-      <div class="section-title" style="margin-bottom:0">Route</div>
-      <div id="activity-map" data-route="{points_json}"></div>
-      {elev_svg}
+    <div class="card" style="padding:0;gap:0;overflow:hidden">
+      <div style="position:relative">
+        <div id="activity-map" data-route="{points_json}"></div>
+        {_weather_overlay_html(weather)}
+      </div>
+      {f'<div style="padding:8px 14px 12px">{elev_svg}</div>' if elev_svg else ""}
     </div>"""
 
 
@@ -628,11 +765,16 @@ def _empty_state_html(message: str) -> str:
 
 # ── TOP-LEVEL RENDER ─────────────────────────────────────────────────────────
 
-def render_activity_detail_fragment(row: dict) -> str:
+def _bound_labels(bounds: list) -> list[str]:
+    return [str(b) for b in bounds[:-1]] + [f"{bounds[-1]}+"]
+
+
+def render_activity_detail_fragment(row: dict, token: str | None = None) -> str:
     """The activity-detail modal body's inner HTML for one already-joined
     activities+activity_details row (see db.get_activity_with_detail)."""
     detail = row.get("detail") or {}
     route = row.get("route")
+    weather = detail.get("weather")
     sport = row.get("activity_type")
     icon, tint = _sport_style(sport)
 
@@ -654,10 +796,14 @@ def render_activity_detail_fragment(row: dict) -> str:
       </div>
     </div>"""
 
+    # The route map carries its own weather overlay (temp/wind/humidity); the
+    # standalone weather card is only a fallback for an indoor/no-GPS
+    # activity that still has weather (rare, but the data may exist).
+    map_section = _map_section_html(route, weather)
+    weather_fallback = "" if route else _weather_html(weather)
+
     quick_stats = _quick_stats_html(row, detail, total_elapsed_sec)
-    training_effect = _training_effect_html(detail)
-    weather = _weather_html(detail.get("weather"))
-    map_section = _map_section_html(route)
+    training_effect = _training_effect_html(detail, row.get("training_load"))
     sub_activities = _sub_activities_html(detail.get("sub_activities"))
 
     hr_zones = detail.get("hr_zones") or []
@@ -665,18 +811,27 @@ def render_activity_detail_fragment(row: dict) -> str:
     pauses = detail.get("pauses") or []
     hr_section = ""
     if hr_series and len(hr_series) > 1:
-        hr_bounds = [z["min_hr"] for z in hr_zones] if hr_zones else None
+        # Garmin's own zone breakdown is 5 zones numbered 1-5 (no "zone 0"
+        # row) — prepend the implicit 0-to-zone-1 floor so the chart/bounds
+        # bar's index 0 is a real "below zone 1" bucket, keeping the 6-colour
+        # _HR_ZONE_COLORS ramp aligned the same way the power zones already are.
+        hr_bounds = [0] + [z["min_hr"] for z in hr_zones] if hr_zones else None
+        avg_hr = row.get("avg_hr")
         chart = _build_line_chart(hr_series, pauses, hr_bounds, _HR_ZONE_COLORS, " bpm",
-                                   total_elapsed_sec, start_sec)
+                                   total_elapsed_sec, start_sec, avg_value=avg_hr)
         if chart:
-            zone_rows_html = ""
+            zone_table_html = ""
             if hr_zones:
-                rows = [(f"Zone {z['zone']}", z.get("time_min") or 0, z.get("pct_time") or 0) for z in hr_zones]
-                zone_rows_html = _zone_rows_html(rows, _HR_ZONE_COLORS)
-            avg_hr = row.get("avg_hr")
-            hr_section = _chart_section_html(
-                "activity-hr-chart", "Heart Rate",
-                f"Avg {avg_hr} bpm" if avg_hr is not None else "", chart, zone_rows_html)
+                zone_rows = [
+                    (f"Zone {z['zone']}", z.get("time_min") or 0, z.get("pct_time") or 0,
+                     _HR_ZONE_COLORS[z["zone"] % len(_HR_ZONE_COLORS)])
+                    for z in hr_zones
+                ]
+                zone_table_html = _zone_table_html(zone_rows)
+            card = _chart_card_html(
+                "activity-hr-chart", "Average HR", chart,
+                hr_bounds, _bound_labels(hr_bounds) if hr_bounds else None, _HR_ZONE_COLORS)
+            hr_section = _hr_power_section_html("Heart Rate", card, zone_table_html)
 
     power_series = detail.get("power_series") or []
     power_section = ""
@@ -684,23 +839,29 @@ def render_activity_detail_fragment(row: dict) -> str:
         power_bounds = _power_bounds_from_ftp(detail.get("ftp"))
         colors = _POWER_ZONE_COLORS if power_bounds else [_POWER_ZONE_COLORS[-1]]
         chart = _build_line_chart(power_series, pauses, power_bounds, colors, " W",
-                                   total_elapsed_sec, start_sec)
+                                   total_elapsed_sec, start_sec,
+                                   avg_value=detail.get("avg_power"), one_indexed=True)
         if chart:
-            zone_rows_html = ""
+            zone_table_html = ""
             if power_bounds:
                 minutes = _zone_minutes_from_series(power_series, pauses, power_bounds)
                 total_min = sum(minutes) or 1
-                rows = [(f"Zone {i + 1}", m, m / total_min * 100) for i, m in enumerate(minutes)]
-                zone_rows_html = _zone_rows_html(rows, _POWER_ZONE_COLORS)
-            power_section = _chart_section_html(
-                "activity-power-chart", "Power", f"Avg {detail['avg_power']} W", chart, zone_rows_html)
+                zone_rows = [
+                    (f"Zone {i + 1}", m, m / total_min * 100, _POWER_ZONE_COLORS[i % len(_POWER_ZONE_COLORS)])
+                    for i, m in enumerate(minutes)
+                ]
+                zone_table_html = _zone_table_html(zone_rows)
+            card = _chart_card_html(
+                "activity-power-chart", "Average Power", chart,
+                power_bounds, _bound_labels(power_bounds) if power_bounds else None, colors)
+            power_section = _hr_power_section_html("Power", card, zone_table_html)
 
     splits_section = _splits_table_html(detail.get("laps") or [], sport)
-    gear_section = _gear_list_html(detail.get("gear") or [])
+    gear_section = _gear_list_html(detail.get("gear") or [], token)
 
     sections = "".join(filter(None, [
-        header, quick_stats, training_effect, weather, sub_activities,
-        map_section, hr_section, power_section, splits_section, gear_section,
+        header, map_section, weather_fallback, quick_stats, training_effect,
+        sub_activities, hr_section, power_section, splits_section, gear_section,
     ]))
     return f'<div style="display:flex;flex-direction:column;gap:14px">{sections}</div>'
 
@@ -727,7 +888,7 @@ async def get_activity_fragment(request):
             headers=_NO_STORE)
 
     try:
-        fragment = render_activity_detail_fragment(row)
+        fragment = render_activity_detail_fragment(row, request.query_params.get("token"))
     except Exception:
         logging.getLogger(__name__).exception("Activity detail render failed for %s", garmin_id)
         return HTMLResponse(
