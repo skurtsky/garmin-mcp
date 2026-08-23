@@ -601,6 +601,12 @@ def test_get_activity_detail_row_includes_hr_zones(monkeypatch):
         {'zone': 2, 'min_hr': 140, 'time_min': 15.0, 'pct_time': 50.0},
     ]
     assert route is None
+    # Garmin's own elapsed vs moving time, distinct from each other — the
+    # activity-detail page's Total vs Active/Swim Duration stats read these
+    # directly rather than reconstructing "elapsed" from a pause-detection
+    # heuristic that isn't reliable for every sport (e.g. a pool swim).
+    assert detail['duration_elapsed_sec'] == 1800
+    assert detail['duration_active_sec'] == 1750
 
 
 def test_extract_hr_zones_skips_malformed_entries_instead_of_raising():

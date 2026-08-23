@@ -748,6 +748,7 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
     hr_series, power_series, pauses = _extract_series_and_pauses(details_raw)
 
     detail = {
+        'duration_elapsed_sec':  summary.get('duration'),
         'duration_active_sec':   summary.get('movingDuration'),
         'elevation_gain_m':      summary.get('elevationGain'),
         'calories':              summary.get('calories'),

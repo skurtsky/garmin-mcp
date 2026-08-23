@@ -538,10 +538,13 @@ def _hr_power_section_html(title: str, chart_card_html: str, zone_table_html: st
 # ── SECTIONS ─────────────────────────────────────────────────────────────────
 
 def _swim_duration_sec(laps: list) -> float | None:
-    """Sum of lap durations for laps that actually swam (distance >= 20m,
-    i.e. at least one pool length) — a rest lap at the wall between sets
-    shows 0m and would otherwise inflate 'swim duration' with rest time."""
-    swum = [lap for lap in laps if (lap.get("distance_m") or 0) >= 20]
+    """Sum of lap durations for laps that actually swam (distance > 0) — a
+    rest lap at the wall between sets shows exactly 0m and would otherwise
+    inflate 'swim duration' with rest time. distance > 0 (not some minimum
+    length) matches tools/activities.py's _swim_set_from_lap, which uses the
+    same real-vs-rest test for swim-set records, rather than guessing a
+    pool-length threshold that could be wrong for a short-course pool."""
+    swum = [lap for lap in laps if (lap.get("distance_m") or 0) > 0]
     if not swum:
         return None
     return sum(lap.get("duration_sec") or 0 for lap in swum)
@@ -853,7 +856,13 @@ def render_activity_detail_fragment(row: dict, token: str | None = None) -> str:
     pause_sec = sum(
         (p.get("end_sec") or 0) - (p.get("start_sec") or 0) for p in (detail.get("pauses") or [])
     )
-    total_elapsed_sec = active_sec + pause_sec
+    # Garmin's own elapsed duration is authoritative when we have it — the
+    # active+detected-pauses reconstruction below is a fallback for a detail
+    # row synced before duration_elapsed_sec existed. It also isn't reliable
+    # on its own for a sport like a pool swim: rest-at-the-wall time doesn't
+    # necessarily show up as a gap in the HR/power sample stream the way an
+    # outdoor pause does, so the fallback can under-count it.
+    total_elapsed_sec = detail.get("duration_elapsed_sec") or (active_sec + pause_sec)
     start_iso = _resolve_start_iso(row)
     start_sec = _parse_start_seconds(start_iso)
 

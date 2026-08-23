@@ -98,11 +98,11 @@ def test_resolve_start_iso_none_when_nothing_available():
 def test_swim_duration_sec_excludes_rest_laps():
     laps = [
         {"distance_m": 50, "duration_sec": 40},
-        {"distance_m": 0, "duration_sec": 15},   # rest at the wall
-        {"distance_m": 25, "duration_sec": 22},  # one length still counts
-        {"distance_m": 10, "duration_sec": 8},   # under 20m -> not a real length
+        {"distance_m": 0, "duration_sec": 15},   # rest at the wall -> excluded
+        {"distance_m": 25, "duration_sec": 22},  # a full length
+        {"distance_m": 10, "duration_sec": 8},   # a partial length still counts (short-course pool)
     ]
-    assert ad._swim_duration_sec(laps) == 40 + 22
+    assert ad._swim_duration_sec(laps) == 40 + 22 + 8
 
 
 def test_swim_duration_sec_none_when_nothing_qualifies():
@@ -266,6 +266,7 @@ def test_splits_table_keeps_lap_number_for_swim():
 
 def test_render_swim_quick_stats_show_swim_duration_strokes_and_swolf():
     detail = dict(_BASE_DETAIL)
+    detail["duration_elapsed_sec"] = 4000
     detail["duration_active_sec"] = 3600
     detail["avg_strokes_per_length"] = 14.5
     detail["avg_swolf"] = 38
@@ -277,11 +278,28 @@ def test_render_swim_quick_stats_show_swim_duration_strokes_and_swolf():
         _row(activity_type="lap_swimming", detail=detail, route=None))
     assert "Swim Duration" in html
     assert "Active Duration" not in html
-    assert "0:45" in html  # the 45s swum lap, not the 65s total incl. rest
+    assert ad._fmt_hms(4000) in html   # Total Duration: Garmin's own elapsed time
+    assert ad._fmt_hms(45) in html     # Swim Duration: the 45s swum lap, not the 65s incl. rest
+    # Total and Swim Duration must actually differ (this was the bug: both
+    # collapsed to the same number).
+    assert ad._fmt_hms(4000) != ad._fmt_hms(45)
     # Strokes/length, not the swim cadence *rate* (a different metric —
     # see the review comment this fixed)
     assert "Avg Strokes/Length" in html and "14.5 spl" in html
     assert "SWOLF" in html and "38" in html
+
+
+def test_render_swim_duration_falls_back_to_moving_time_without_lap_distance():
+    """When lap distances aren't available at all (no laps synced yet, or
+    every lap missing a distance reading), Swim Duration falls back to
+    Garmin's own moving-time figure rather than showing nothing."""
+    detail = dict(_BASE_DETAIL)
+    detail["duration_elapsed_sec"] = 4000
+    detail["duration_active_sec"] = 3600
+    detail["laps"] = []
+    html = ad.render_activity_detail_fragment(
+        _row(activity_type="lap_swimming", detail=detail, route=None))
+    assert ad._fmt_hms(3600) in html
 
 
 def test_render_includes_multisport_legs():
