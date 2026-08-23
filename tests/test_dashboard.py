@@ -5,6 +5,8 @@ These are offline unit tests: `render_dashboard_html` is a pure function of a
 data dict, and `build_dashboard_data` is exercised with the underlying tool
 functions monkeypatched, so no live Garmin session is needed.
 """
+import re
+
 import pytest
 
 from tools import dashboard
@@ -468,11 +470,13 @@ def test_render_shows_thresholds_from_athlete_profile():
     assert "72.9" in html  # weight
 
 
-def test_render_shows_activity_list_with_expandable_detail():
+def test_render_shows_activity_list_opening_the_detail_modal():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert '<details class="actcard">' in html
+    assert 'class="actcard actcard-click"' in html
     assert "Pool Swim" in html
-    assert "Avg HR" in html
+    assert "openActivityModal(2)" in html
+    assert 'id="activity-modal"' in html
+    assert 'id="activity-modal-body"' in html
 
 
 def test_render_activity_filters_include_all_requested_options():
@@ -585,14 +589,20 @@ def test_footer_links_are_removed_from_dashboard():
     assert "View training plan" not in html
 
 
-def test_no_external_requests():
-    """Tabs/range/PR-filter switching stays pure CSS (radio-driven visibility);
-    the only JS is the inline chart-interactivity module — no network requests
-    (fonts/icons are embedded, and the script has no external src)."""
+def test_no_external_requests_on_load():
+    """Tabs/range/PR-filter switching stays pure CSS (radio-driven visibility)
+    and the page itself never eagerly fetches anything external on load
+    (fonts/icons are embedded, and every <script> is inline) — Leaflet
+    (issue 74's route map) is the one exception, and even that is only
+    fetched lazily from JS when an activity with a GPS route is opened,
+    never as a static tag the page loads up front."""
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "<script src=" not in html
     assert "http://" not in html
-    assert "https://" not in html
+    external_urls = re.findall(r"https://\S+", html)
+    assert external_urls and all(
+        "unpkg.com/leaflet" in u or "cartocdn.com" in u for u in external_urls
+    )
 
 
 def test_render_includes_inline_chart_interactivity_script():

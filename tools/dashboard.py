@@ -430,32 +430,6 @@ def _fmt_hm_clock(hours: float):
     return h, m
 
 
-def _pace_per_km(duration_min, distance_km):
-    if not duration_min or not distance_km:
-        return None
-    secs = duration_min * 60 / distance_km
-    m, s = divmod(int(round(secs)), 60)
-    return f"{m}:{s:02d} /km"
-
-
-def _speed_kmh(duration_min, distance_km):
-    if not duration_min or not distance_km:
-        return None
-    kmh = distance_km / (duration_min / 60)
-    return f"{_trim(kmh, 1)} km/h"
-
-
-def _pace_per_100m(duration_min, distance_km):
-    if not duration_min or not distance_km:
-        return None
-    total_m = distance_km * 1000
-    if total_m <= 0:
-        return None
-    secs = duration_min * 60 / (total_m / 100)
-    m, s = divmod(int(round(secs)), 60)
-    return f"{m}:{s:02d} /100m"
-
-
 def _short_date(iso_date):
     """'2026-08-13...' -> '13 Aug'."""
     if not iso_date:
@@ -519,31 +493,6 @@ def _sport_style(sport):
 
 def _sport_label(sport):
     return html.escape(str(sport or "activity").replace("_", " ").title())
-
-
-def _activity_detail(a: dict) -> list[tuple[str, str]]:
-    """(label, value) detail pairs for one activity — pace/speed matched to sport."""
-    sport = str(a.get("type") or "").lower()
-    dur, dist = a.get("duration_min"), a.get("distance_km")
-    detail = []
-    if sport in ("lap_swimming", "open_water_swimming", "swimming"):
-        pace = _pace_per_100m(dur, dist)
-        if pace:
-            detail.append(("Pace", pace))
-    elif sport in ("road_biking", "cycling", "indoor_cycling", "mountain_biking",
-                   "gravel_cycling", "virtual_ride"):
-        speed = _speed_kmh(dur, dist)
-        if speed:
-            detail.append(("Speed", speed))
-    elif dist:
-        pace = _pace_per_km(dur, dist)
-        if pace:
-            detail.append(("Pace", pace))
-    if a.get("avg_hr") is not None:
-        detail.append(("Avg HR", _num(a.get("avg_hr"))))
-    if a.get("training_load") is not None:
-        detail.append(("Load", _num(round(a.get("training_load")))))
-    return detail
 
 
 def _activity_big_stat(a: dict) -> tuple[str, str]:
@@ -831,12 +780,9 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
                       overflow-y:auto; background:var(--color-surface); border-radius:var(--radius-md);
                       padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-md); }
 
-/* ── activity expand ── */
-details.actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
-                   box-shadow:var(--shadow-sm); }
-details.actcard[open] { box-shadow:0 0 0 1px var(--color-accent-700); }
-details.actcard summary { cursor:pointer; list-style:none; }
-details.actcard summary::-webkit-details-marker { display:none; }
+/* ── activity row (opens the activity-detail modal, issue 74) ── */
+.actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
+           box-shadow:var(--shadow-sm); }
 
 /* ── interactive charts (crosshair line/area + tappable bars) ── */
 .js-bar { cursor:pointer; }
@@ -845,6 +791,37 @@ details.actcard summary::-webkit-details-marker { display:none; }
   padding:6px 10px; box-shadow:var(--shadow-md); white-space:nowrap; }
 .chart-tooltip .tt-date { font-size:10px; color:var(--color-neutral-500); }
 .chart-tooltip .tt-val { font-family:var(--font-heading); font-size:13px; margin-top:1px; }
+
+/* ── activity rows (open the activity-detail modal, issue 74) ── */
+.actcard-click { cursor:pointer; }
+.actcard-click:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
+
+/* ── activity-detail modal (issue 74) ── */
+.activity-modal { display:none; position:fixed; inset:0; z-index:1000; }
+.activity-modal.open { display:block; }
+.activity-modal-backdrop { position:absolute; inset:0; background:rgba(10,11,16,.65); }
+.activity-modal-sheet { position:absolute; left:0; right:0; bottom:0; margin:0 auto; width:100%; max-width:520px;
+  max-height:92vh; background:var(--color-surface); border-radius:16px 16px 0 0; box-shadow:var(--shadow-md);
+  display:flex; flex-direction:column; transform:translateY(100%); transition:transform .25s ease; }
+.activity-modal.open .activity-modal-sheet { transform:translateY(0); }
+.activity-modal-handle { width:36px; height:4px; border-radius:999px; background:var(--color-neutral-700);
+  margin:10px auto 2px; flex:0 0 auto; }
+.activity-modal-close { position:absolute; top:8px; right:10px; width:28px; height:28px; border-radius:50%;
+  border:none; background:var(--color-neutral-900); color:var(--color-neutral-400); font-size:15px;
+  line-height:1; cursor:pointer; z-index:1; }
+.activity-modal-body { overflow-y:auto; padding:8px 16px 28px; -webkit-overflow-scrolling:touch; }
+.ad-stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(84px,1fr)); gap:12px; }
+.ad-zone-row { display:grid; grid-template-columns:48px 1fr 52px 44px; align-items:center; gap:8px; font-size:11px; }
+.ad-zone-bar { height:6px; border-radius:999px; background:var(--color-neutral-800); overflow:hidden; }
+.ad-zone-bar > div { height:100%; }
+.ad-te-track { position:relative; height:6px; border-radius:999px; margin:8px 0 2px; }
+.ad-splits-table { width:100%; border-collapse:collapse; font-size:12px; white-space:nowrap; }
+.ad-splits-table th, .ad-splits-table td { text-align:right; padding:6px 10px; border-bottom:1px solid var(--color-divider); }
+.ad-splits-table th:first-child, .ad-splits-table td:first-child { text-align:left; }
+.ad-splits-table th { color:var(--color-neutral-500); font-weight:500; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+.ad-splits-table tr:last-child td { border-bottom:none; }
+#activity-map { height:220px; border-radius:8px; overflow:hidden; background:var(--color-neutral-900); }
+#activity-map .leaflet-control-attribution { font-size:9px; }
 """ + _ICON_CSS
 
 
@@ -1128,8 +1105,15 @@ def _panel_today(data: dict) -> str:
 def _activity_row_compact(a: dict) -> str:
     icon, tint = _sport_style(a.get("type"))
     big, sub = _activity_big_stat(a)
+    activity_id = a.get("id")
+    click_attrs = (
+        f' onclick="openActivityModal({activity_id})" role="button" tabindex="0"'
+        f' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){{event.preventDefault();openActivityModal({activity_id})}}"'
+        if activity_id is not None else ""
+    )
+    click_class = " actcard-click" if activity_id is not None else ""
     return f"""
-    <div class="card" style="padding:12px;flex-direction:row;align-items:center;gap:12px">
+    <div class="card{click_class}"{click_attrs} style="padding:12px;flex-direction:row;align-items:center;gap:12px">
       <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
           background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
       <div style="flex:1;min-width:0">
@@ -1417,34 +1401,31 @@ def _activity_row_expandable(a: dict, max_load: float) -> str:
     big, sub = _activity_big_stat(a)
     load = a.get("training_load") or 0
     load_w = max(2, round(load / max_load * 100))
-    detail = _activity_detail(a)
-    detail_html = "".join(
-        f'<div><div style="font-size:10px;color:var(--color-neutral-500)">{html.escape(k)}</div>'
-        f'<div style="font-family:var(--font-heading);font-size:15px">{v}</div></div>'
-        for k, v in detail
+    activity_id = a.get("id")
+    click_attrs = (
+        f' onclick="openActivityModal({activity_id})" role="button" tabindex="0"'
+        f' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){{event.preventDefault();openActivityModal({activity_id})}}"'
+        if activity_id is not None else ""
     )
+    click_class = " actcard-click" if activity_id is not None else ""
     return f"""
-    <details class="actcard">
-      <summary>
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
-              background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
-          <div style="flex:1;min-width:0">
-            <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
-            <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
-          </div>
-          <div style="text-align:right;flex:0 0 auto">
-            <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
-            <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
-          </div>
+    <div class="actcard{click_class}"{click_attrs}>
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
+            background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
         </div>
-        <div style="margin-top:10px;height:3px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">
-          <div style="height:100%;width:{load_w}%;background:{tint};border-radius:999px"></div>
+        <div style="text-align:right;flex:0 0 auto">
+          <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
+          <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
         </div>
-      </summary>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:10px;margin-top:12px;
-          border-top:1px solid var(--color-divider);padding-top:10px">{detail_html or '<div class="muted" style="font-size:12px">No additional detail.</div>'}</div>
-    </details>"""
+      </div>
+      <div style="margin-top:10px;height:3px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">
+        <div style="height:100%;width:{load_w}%;background:{tint};border-radius:999px"></div>
+      </div>
+    </div>"""
 
 
 # ── PANEL: FITNESS ───────────────────────────────────────────────────────────
@@ -2038,59 +2019,68 @@ _CHART_JS = """
     activeBar = null;
   }
 
-  document.querySelectorAll('svg.js-linechart').forEach(function (svg) {
-    var pts;
-    try { pts = JSON.parse(svg.getAttribute('data-points') || '[]'); } catch (err) { return; }
-    if (!pts.length) return;
-    var hit = svg.querySelector('.chart-hit');
-    var crosshair = svg.querySelector('.chart-crosshair');
-    var dot = svg.querySelector('.chart-dot');
-    if (!hit || !crosshair || !dot) return;
-    var vb = svg.viewBox.baseVal;
+  function wireCharts(root) {
+    (root || document).querySelectorAll('svg.js-linechart').forEach(function (svg) {
+      if (svg.__wired) return;
+      svg.__wired = true;
+      var pts;
+      try { pts = JSON.parse(svg.getAttribute('data-points') || '[]'); } catch (err) { return; }
+      if (!pts.length) return;
+      var hit = svg.querySelector('.chart-hit');
+      var crosshair = svg.querySelector('.chart-crosshair');
+      var dot = svg.querySelector('.chart-dot');
+      if (!hit || !crosshair || !dot) return;
+      var vb = svg.viewBox.baseVal;
 
-    function nearest(clientX) {
-      var rect = svg.getBoundingClientRect();
-      var vx = rect.width ? (clientX - rect.left) / rect.width * vb.width : pts[0].x;
-      var best = pts[0], bestDist = Infinity;
-      for (var i = 0; i < pts.length; i++) {
-        var d = Math.abs(pts[i].x - vx);
-        if (d < bestDist) { bestDist = d; best = pts[i]; }
+      function nearest(clientX) {
+        var rect = svg.getBoundingClientRect();
+        var vx = rect.width ? (clientX - rect.left) / rect.width * vb.width : pts[0].x;
+        var best = pts[0], bestDist = Infinity;
+        for (var i = 0; i < pts.length; i++) {
+          var d = Math.abs(pts[i].x - vx);
+          if (d < bestDist) { bestDist = d; best = pts[i]; }
+        }
+        return best;
       }
-      return best;
-    }
 
-    function update(e) {
-      var p = pointFromEvent(e);
-      var pt = nearest(p.clientX);
-      crosshair.setAttribute('x1', pt.x);
-      crosshair.setAttribute('x2', pt.x);
-      crosshair.style.opacity = 1;
-      dot.setAttribute('cx', pt.x);
-      dot.setAttribute('cy', pt.y);
-      dot.style.opacity = 1;
-      activeBar = null;
-      activeLine = { crosshair: crosshair, dot: dot };
-      showTip(p.clientX, p.clientY, pt.d, pt.v, true);
-    }
+      function update(e) {
+        var p = pointFromEvent(e);
+        var pt = nearest(p.clientX);
+        crosshair.setAttribute('x1', pt.x);
+        crosshair.setAttribute('x2', pt.x);
+        crosshair.style.opacity = 1;
+        dot.setAttribute('cx', pt.x);
+        dot.setAttribute('cy', pt.y);
+        dot.style.opacity = 1;
+        activeBar = null;
+        activeLine = { crosshair: crosshair, dot: dot };
+        showTip(p.clientX, p.clientY, pt.d, pt.v, true);
+      }
 
-    hit.addEventListener('mousemove', update);
-    hit.addEventListener('mousedown', update);
-    hit.addEventListener('mouseleave', hideAll);
-    hit.addEventListener('touchstart', function (e) { e.preventDefault(); update(e); }, { passive: false });
-    hit.addEventListener('touchmove', function (e) { e.preventDefault(); update(e); }, { passive: false });
-  });
+      hit.addEventListener('mousemove', update);
+      hit.addEventListener('mousedown', update);
+      hit.addEventListener('mouseleave', hideAll);
+      hit.addEventListener('touchstart', function (e) { e.preventDefault(); update(e); }, { passive: false });
+      hit.addEventListener('touchmove', function (e) { e.preventDefault(); update(e); }, { passive: false });
+    });
 
-  document.querySelectorAll('.js-bar').forEach(function (bar) {
-    function activate(e) {
-      if (activeBar === bar) { hideAll(); return; }
-      hideAll();
-      activeBar = bar;
-      var p = pointFromEvent(e);
-      showTip(p.clientX, p.clientY, bar.getAttribute('data-date') || '', bar.getAttribute('data-value') || '');
-    }
-    bar.addEventListener('click', activate);
-    bar.addEventListener('touchstart', function (e) { e.preventDefault(); activate(e); }, { passive: false });
-  });
+    (root || document).querySelectorAll('.js-bar').forEach(function (bar) {
+      if (bar.__wired) return;
+      bar.__wired = true;
+      function activate(e) {
+        if (activeBar === bar) { hideAll(); return; }
+        hideAll();
+        activeBar = bar;
+        var p = pointFromEvent(e);
+        showTip(p.clientX, p.clientY, bar.getAttribute('data-date') || '', bar.getAttribute('data-value') || '');
+      }
+      bar.addEventListener('click', activate);
+      bar.addEventListener('touchstart', function (e) { e.preventDefault(); activate(e); }, { passive: false });
+    });
+  }
+
+  wireCharts(document);
+  window.__wireCharts = wireCharts;
 
   document.addEventListener('click', function (e) {
     if (!e.target.closest('.js-linechart') && !e.target.closest('.js-bar')) hideAll();
@@ -2123,6 +2113,105 @@ _GEAR_MODAL_JS = """
 window.addEventListener('hashchange', function () {
   document.querySelectorAll('.gear-modal .gear-actions[open]').forEach(function (d) { d.open = false; });
 });
+"""
+
+# The activity-detail modal (issue 74) — a single persistent bottom-sheet node
+# (#activity-modal), fetched-and-injected per open rather than pre-rendered
+# per activity, so opening it never pulls chart/lap/gear data for activities
+# the viewer hasn't clicked. Route map tiles need Leaflet, loaded lazily from
+# a CDN on first use rather than bundled, since most opens never show a map
+# (indoor/no-GPS activities hide that section entirely).
+_ACTIVITY_MODAL_JS = """
+(function () {
+  var modal = document.getElementById('activity-modal');
+  if (!modal) return;
+  var backdrop = modal.querySelector('.activity-modal-backdrop');
+  var body = document.getElementById('activity-modal-body');
+  var leafletMap = null;
+  var leafletLoading = null;
+
+  function token() { return document.body.getAttribute('data-token') || ''; }
+
+  function destroyMap() {
+    if (leafletMap) { leafletMap.remove(); leafletMap = null; }
+  }
+
+  function loadLeaflet() {
+    if (window.L) return Promise.resolve();
+    if (leafletLoading) return leafletLoading;
+    leafletLoading = new Promise(function (resolve) {
+      var link = document.createElement('link');
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+      document.head.appendChild(link);
+      var script = document.createElement('script');
+      script.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+      script.onload = function () { resolve(); };
+      script.onerror = function () { resolve(); };
+      document.head.appendChild(script);
+    });
+    return leafletLoading;
+  }
+
+  function initMap() {
+    var el = document.getElementById('activity-map');
+    if (!el || !window.L) return;
+    var pts;
+    try { pts = JSON.parse(el.getAttribute('data-route') || '[]'); } catch (err) { return; }
+    if (!pts.length) return;
+    destroyMap();
+    var map = L.map(el, { zoomControl: true, attributionControl: true, scrollWheelZoom: false });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap contributors &copy; CARTO', maxZoom: 19,
+    }).addTo(map);
+    var line = L.polyline(pts, { color: '#9184d9', weight: 3, opacity: 0.9 }).addTo(map);
+    map.fitBounds(line.getBounds(), { padding: [16, 16] });
+    L.circleMarker(pts[0], { radius: 6, color: '#4fae72', fillColor: '#4fae72', fillOpacity: 1 }).addTo(map);
+    L.circleMarker(pts[pts.length - 1], { radius: 6, color: '#cf5a4e', fillColor: '#cf5a4e', fillOpacity: 1 }).addTo(map);
+    leafletMap = map;
+  }
+
+  window.openActivityModal = function (id) {
+    modal.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    body.innerHTML = '<div class="muted" style="padding:32px 20px;text-align:center;font-size:13px">Loading…</div>';
+    var url = '/api/activity/' + id + (token() ? '?token=' + encodeURIComponent(token()) : '');
+    fetch(url).then(function (res) { return res.text(); }).then(function (responseHtml) {
+      body.innerHTML = responseHtml;
+      window.__wireCharts && window.__wireCharts(body);
+      if (body.querySelector('#activity-map')) loadLeaflet().then(initMap);
+    }).catch(function () {
+      body.innerHTML = '<div class="muted" style="padding:32px 20px;text-align:center;font-size:13px">Couldn\\u2019t load this activity.</div>';
+    });
+  };
+
+  window.closeActivityModal = function () {
+    modal.classList.remove('open');
+    document.body.style.overflow = '';
+    destroyMap();
+  };
+
+  backdrop.addEventListener('click', window.closeActivityModal);
+  var closeBtn = modal.querySelector('.activity-modal-close');
+  if (closeBtn) closeBtn.addEventListener('click', window.closeActivityModal);
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && modal.classList.contains('open')) window.closeActivityModal();
+  });
+
+  var dragStartY = null;
+  function dragStart(e) { dragStartY = (e.touches ? e.touches[0] : e).clientY; }
+  function dragEnd(e) {
+    if (dragStartY == null) return;
+    var endY = (e.changedTouches ? e.changedTouches[0] : e).clientY;
+    if (endY - dragStartY > 80) window.closeActivityModal();
+    dragStartY = null;
+  }
+  var handle = modal.querySelector('.activity-modal-handle');
+  if (handle) {
+    handle.addEventListener('touchstart', dragStart, { passive: true });
+    handle.addEventListener('touchend', dragEnd);
+  }
+})();
 """
 
 
@@ -2252,6 +2341,15 @@ def render_dashboard_html(data: dict, token: str | None = None,
   <div id="chart-tooltip" class="chart-tooltip" role="status" aria-live="polite">
     <div class="tt-date"></div><div class="tt-val"></div>
   </div>
+
+  <div id="activity-modal" class="activity-modal" role="dialog" aria-modal="true" aria-label="Activity detail">
+    <div class="activity-modal-backdrop"></div>
+    <div class="activity-modal-sheet">
+      <button type="button" class="activity-modal-close" aria-label="Close">&times;</button>
+      <div class="activity-modal-handle"></div>
+      <div id="activity-modal-body" class="activity-modal-body"></div>
+    </div>
+  </div>
 </div>"""
 
     return (
@@ -2266,12 +2364,13 @@ def render_dashboard_html(data: dict, token: str | None = None,
         f"{refresh_meta}"
         "<title>Garmin Health Dashboard</title>"
         f"<style>{_STYLE}</style>"
-        "</head><body>"
+        f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
         f"{render_nav_html('dashboard', token)}"
         f"{body}"
         f"<script>{_CHART_JS}</script>"
         f"<script>{_TZ_JS}</script>"
         f"<script>{_GEAR_MODAL_JS}</script>"
+        f"<script>{_ACTIVITY_MODAL_JS}</script>"
         f'<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("{_e(_pwa_asset_url("/sw.js", token))}");</script>'
         "</body></html>"
     )

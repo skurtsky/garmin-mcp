@@ -2,6 +2,7 @@
 from tools.activities import (
     get_activities,
     get_activity,
+    get_activity_detail_row,
     get_activity_summary,
     get_weekly_summary,
     get_swim_records,
@@ -545,4 +546,89 @@ def test_get_activity_includes_weather(run_activity_id):
         # Sanity-check temps are in Celsius range (not Fahrenheit)
         if weather['temp_c'] is not None:
             assert -50 < weather['temp_c'] < 60, f"temp_c {weather['temp_c']} looks like Fahrenheit"
+
+
+# ── get_activity_detail_row (issue 74's activity_details.detail/.route payload) ─
+# Unlike the rest of this file these don't hit live Garmin — get_activity_detail_row
+# is wired against a fake client so the activity-detail page's extraction logic can
+# be tested without credentials.
+
+class _FakeDetailClient:
+    def __init__(self, activity, splits=None, weather=None, details=None,
+                 hr_zones=None, children=None):
+        self._activity = activity
+        self._splits = splits
+        self._weather = weather
+        self._details = details
+        self._hr_zones = hr_zones or []
+        self._children = children or {}
+
+    def get_activity(self, activity_id):
+        return self._children.get(activity_id, self._activity)
+
+    def get_activity_splits(self, activity_id):
+        return self._splits
+
+    def get_activity_weather(self, activity_id):
+        return self._weather
+
+    def get_activity_details(self, activity_id):
+        return self._details
+
+    def get_activity_hr_in_timezones(self, activity_id):
+        return self._hr_zones
+
+
+def test_get_activity_detail_row_includes_hr_zones(monkeypatch):
+    activity = {
+        'activityId': 42,
+        'activityTypeDTO': {'typeKey': 'running'},
+        'summaryDTO': {'duration': 1800, 'movingDuration': 1750, 'averageSpeed': 3.0},
+    }
+    hr_zones_raw = [
+        {'zoneNumber': 1, 'zoneLowBoundary': 100, 'secsInZone': 900},
+        {'zoneNumber': 2, 'zoneLowBoundary': 140, 'secsInZone': 900},
+    ]
+    fake = _FakeDetailClient(activity, hr_zones=hr_zones_raw)
+    monkeypatch.setattr('tools.activities.get_client', lambda: fake)
+    monkeypatch.setattr('tools.activities.get_activity_gear', lambda activity_id: [])
+
+    detail, route = get_activity_detail_row(42)
+
+    assert detail['hr_zones'] == [
+        {'zone': 1, 'min_hr': 100, 'time_min': 15.0, 'pct_time': 50.0},
+        {'zone': 2, 'min_hr': 140, 'time_min': 15.0, 'pct_time': 50.0},
+    ]
+    assert route is None
+    assert 'sub_activities' not in detail
+
+
+def test_get_activity_detail_row_multisport_propagates_sub_activities(monkeypatch):
+    """#37 extracts sub_activities for get_activity(); get_activity_detail_row
+    (added in #78) needs the same breakdown for the activity-detail page's
+    multisport section (issue 74)."""
+    parent = {
+        'activityId': 1,
+        'activityTypeDTO': {'typeKey': 'multi_sport'},
+        'summaryDTO': {'duration': 3600},
+        'metadataDTO': {'childIds': [2, 3]},
+    }
+    children = {
+        2: {'activityId': 2, 'activityTypeDTO': {'typeKey': 'open_water_swimming'},
+            'summaryDTO': {'duration': 600, 'distance': 750, 'averageHR': 140}},
+        3: {'activityId': 3, 'activityTypeDTO': {'typeKey': 'running'},
+            'summaryDTO': {'duration': 1200, 'distance': 5000, 'averageHR': 150,
+                           'averageSpeed': 5000 / 1200}},
+    }
+    fake = _FakeDetailClient(parent, children=children)
+    monkeypatch.setattr('tools.activities.get_client', lambda: fake)
+    monkeypatch.setattr('tools.activities.get_athlete_profile', lambda: {'weight_kg': 70})
+    monkeypatch.setattr('tools.activities.get_activity_gear', lambda activity_id: [])
+
+    detail, route = get_activity_detail_row(1)
+
+    subs = detail['sub_activities']
+    assert [s['name'] for s in subs] == ['Swim', 'Run']
+    assert [s['type'] for s in subs] == ['open_water_swimming', 'running']
+    assert detail['gear'] == []
 

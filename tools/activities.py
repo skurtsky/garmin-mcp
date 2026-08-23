@@ -684,8 +684,9 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
 
     Returns:
         detail: dict with duration/elevation/calories/speed/power/FTP,
-            training effect, weather, HR/power series with shared pause
-            gaps, laps and gear.
+            training effect, weather, HR zones, HR/power series with shared
+            pause gaps, laps, gear, and — for a multisport parent — a
+            'sub_activities' breakdown (see get_activity()'s docstring).
         route: list of {lat, lon, elevation_m, distance_km} points, or None
             for indoor/no-GPS activities.
     """
@@ -706,6 +707,10 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         details_raw = client.get_activity_details(activity_id)
     except Exception:
         details_raw = None
+    try:
+        hr_zones_raw = client.get_activity_hr_in_timezones(activity_id)
+    except Exception:
+        hr_zones_raw = []
 
     hr_series, power_series, pauses = _extract_series_and_pauses(details_raw)
 
@@ -720,12 +725,21 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         'anaerobic_te':          round(summary.get('anaerobicTrainingEffect') or 0, 1),
         'training_effect_label': summary.get('trainingEffectLabel'),
         'weather':               _extract_detail_weather(weather_raw),
+        'hr_zones':              _extract_hr_zones(hr_zones_raw, summary.get('duration') or 0),
         'hr_series':             hr_series,
         'power_series':          power_series,
         'pauses':                pauses,
         'laps':                  _extract_detail_laps(laps_raw),
         'gear':                  get_activity_gear(activity_id),
     }
+
+    if _is_multisport(activity_raw):
+        athlete = get_athlete_profile()
+        sub_activities = _fetch_sub_activities(
+            _child_activity_ids(activity_raw), weight_kg=athlete['weight_kg'])
+        detail['sub_activities'] = sub_activities
+        detail['gear'] = _merge_gear(detail['gear'], sub_activities)
+
     route = _extract_route(details_raw)
     return detail, route
 
