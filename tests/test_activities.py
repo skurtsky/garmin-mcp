@@ -10,6 +10,7 @@ from tools.activities import (
     _fmt_pace_100m,
     _swim_set_from_lap,
     _extract_laps,
+    _extract_hr_zones,
     _label_pace,
     _is_transition,
     _discipline_label,
@@ -600,6 +601,50 @@ def test_get_activity_detail_row_includes_hr_zones(monkeypatch):
         {'zone': 2, 'min_hr': 140, 'time_min': 15.0, 'pct_time': 50.0},
     ]
     assert route is None
+
+
+def test_extract_hr_zones_skips_malformed_entries_instead_of_raising():
+    """Garmin's hrTimeInZones response has been observed to vary by
+    activity — a zone entry missing zoneNumber/zoneLowBoundary is skipped
+    rather than raising a KeyError that would abort the whole detail sync."""
+    raw = [
+        {'zoneNumber': 1, 'zoneLowBoundary': 100, 'secsInZone': 600},
+        {'secsInZone': 300},  # missing both keys
+        "not even a dict",
+        {'zoneNumber': 2, 'zoneLowBoundary': 140, 'secsInZone': 600},
+    ]
+    zones = _extract_hr_zones(raw, 1500)
+    assert [z['zone'] for z in zones] == [1, 2]
+
+
+def test_extract_hr_zones_handles_none_and_empty():
+    assert _extract_hr_zones(None, 1000) == []
+    assert _extract_hr_zones([], 1000) == []
+
+
+def test_get_activity_detail_row_hr_zones_failure_does_not_abort_detail(monkeypatch):
+    """A hrTimeInZones fetch/parse failure for one activity used to bubble
+    up and abort the entire get_activity_detail_row call — now it degrades
+    to an empty hr_zones list so the rest of the detail (laps, gear, ...)
+    still syncs."""
+    activity = {
+        'activityId': 7,
+        'activityTypeDTO': {'typeKey': 'road_biking'},
+        'summaryDTO': {'duration': 3600, 'movingDuration': 3500, 'averageSpeed': 8.0},
+    }
+
+    class _BrokenHrZonesClient(_FakeDetailClient):
+        def get_activity_hr_in_timezones(self, activity_id):
+            raise RuntimeError("boom")
+
+    fake = _BrokenHrZonesClient(activity)
+    monkeypatch.setattr('tools.activities.get_client', lambda: fake)
+    monkeypatch.setattr('tools.activities.get_activity_gear', lambda activity_id: [])
+
+    detail, route = get_activity_detail_row(7)
+
+    assert detail['hr_zones'] == []
+    assert detail['avg_speed_kph'] == round(8.0 * 3.6, 1)
     assert 'sub_activities' not in detail
 
 

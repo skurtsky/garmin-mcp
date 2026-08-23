@@ -568,8 +568,8 @@ def _quick_stats_html(row: dict, detail: dict, total_elapsed_sec: float, has_rou
     if detail.get("avg_power"):
         stats.append(("Avg Power", f"{_num(detail['avg_power'])} W"))
     if is_swim:
-        if detail.get("avg_stroke_cadence"):
-            stats.append(("Avg Swim Cadence", f"{_num(detail['avg_stroke_cadence'])} spl"))
+        if detail.get("avg_strokes_per_length"):
+            stats.append(("Avg Strokes/Length", f"{detail['avg_strokes_per_length']:.1f} spl"))
         if detail.get("avg_swolf"):
             stats.append(("SWOLF", _num(detail["avg_swolf"])))
 

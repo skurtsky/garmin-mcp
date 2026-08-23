@@ -249,10 +249,10 @@ def test_splits_table_keeps_lap_number_for_swim():
     assert "km/h" not in html  # swim splits show pace, never a raw speed
 
 
-def test_render_swim_quick_stats_show_swim_duration_cadence_and_swolf():
+def test_render_swim_quick_stats_show_swim_duration_strokes_and_swolf():
     detail = dict(_BASE_DETAIL)
     detail["duration_active_sec"] = 3600
-    detail["avg_stroke_cadence"] = 32
+    detail["avg_strokes_per_length"] = 14.5
     detail["avg_swolf"] = 38
     detail["laps"] = [
         {"lap_num": 1, "distance_m": 50, "duration_sec": 45, "cum_km": 0.05},
@@ -263,7 +263,9 @@ def test_render_swim_quick_stats_show_swim_duration_cadence_and_swolf():
     assert "Swim Duration" in html
     assert "Active Duration" not in html
     assert "0:45" in html  # the 45s swum lap, not the 65s total incl. rest
-    assert "Avg Swim Cadence" in html and "32 spl" in html
+    # Strokes/length, not the swim cadence *rate* (a different metric —
+    # see the review comment this fixed)
+    assert "Avg Strokes/Length" in html and "14.5 spl" in html
     assert "SWOLF" in html and "38" in html
 
 
