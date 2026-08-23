@@ -419,6 +419,17 @@ def test_render_shows_vo2max_and_acwr():
     assert "Optimal" in html
 
 
+def test_load_ratio_card_lives_on_today_panel_not_trends():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    today_section = re.search(r'<section class="panel tabpanel tp-today".*?</section>', html, re.S).group(0)
+    trends_section = re.search(r'<section class="panel tabpanel tp-trends".*?</section>', html, re.S).group(0)
+
+    assert "Load ratio" in today_section
+    assert "1.30" in today_section
+    assert "Load ratio" not in trends_section
+    assert "Acute : chronic load" not in html
+
+
 def test_render_shows_readiness_factors():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "Sleep" in html
@@ -502,6 +513,14 @@ def test_activity_filter_classifies_sports():
     assert dashboard._activity_filter_key({"type": "running"}) == "run"
     assert dashboard._activity_filter_key({"type": "lap_swimming"}) == "other"
     assert dashboard._activity_filter_key({"type": "strength_training"}) == "strength"
+
+
+def test_activity_filter_classifies_all_run_types_as_run():
+    for activity_type in ("running", "trail_running", "treadmill_running",
+                          "track_running", "indoor_running"):
+        assert dashboard._activity_filter_key({"type": activity_type}) == "run"
+        assert dashboard._activity_filter_matches({"type": activity_type}, "run")
+        assert dashboard._activity_filter_matches({"type": activity_type}, "triathlon")
 
 
 def test_triathlon_filter_includes_all_endurance_sports_but_not_strength():
