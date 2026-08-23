@@ -112,8 +112,8 @@ def ensure_schema():
                 );
 
                 INSERT INTO sync_state (data_type) VALUES
-                    ('daily_metrics'), ('activities'), ('personal_records'),
-                    ('athlete_profile'), ('active_goals')
+                    ('daily_metrics'), ('activities'), ('activity_details'),
+                    ('personal_records'), ('athlete_profile'), ('active_goals')
                 ON CONFLICT DO NOTHING;
             """)
     logger.info("Database schema verified")
@@ -204,6 +204,16 @@ def get_active_goals_from_db() -> list | None:
             return row["goals_data"] if row else None
 
 
+def get_activity_detail_from_db(garmin_id: int) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT detail, route FROM activity_details WHERE garmin_id = %s",
+                (garmin_id,),
+            )
+            return cur.fetchone()
+
+
 def get_sync_state() -> dict:
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -286,6 +296,37 @@ def upsert_activity(garmin_id: int, **kwargs):
                     "load": kwargs.get("training_load"),
                     "summary": Jsonb(kwargs.get("summary")),
                 },
+            )
+
+
+def get_activity_ids_needing_detail(limit: int = 10) -> list[int]:
+    """Activity ids with no detail row yet, or whose detail predates the
+    parent activity's last sync, most recent activity first."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT a.garmin_id
+                   FROM activities a
+                   LEFT JOIN activity_details d ON d.garmin_id = a.garmin_id
+                   WHERE d.garmin_id IS NULL OR d.synced_at < a.synced_at
+                   ORDER BY a.activity_date DESC
+                   LIMIT %s""",
+                (limit,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+
+def upsert_activity_detail(garmin_id: int, detail: dict, route: list | None):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO activity_details (garmin_id, detail, route)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (garmin_id) DO UPDATE SET
+                       detail = EXCLUDED.detail,
+                       route = EXCLUDED.route,
+                       synced_at = now()""",
+                (garmin_id, Jsonb(detail), Jsonb(route) if route is not None else None),
             )
 
 

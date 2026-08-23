@@ -556,6 +556,180 @@ def get_multisport_leg_distance_for_gear(activity_id: int, gear_uuid: str) -> fl
     return None
 
 
+# ── ACTIVITY-DETAIL PAGE PAYLOAD (activity_details.detail / .route) ────────────
+
+_MPH_TO_KPH = 1.60934
+_PAUSE_GAP_SEC = 8  # a recording gap at least this long is treated as a pause
+
+
+def _mph_to_kph(mph) -> float | None:
+    if mph is None:
+        return None
+    return round(mph * _MPH_TO_KPH, 1)
+
+
+def _extract_detail_weather(weather_raw: dict | None) -> dict | None:
+    """Weather shape for the activity-detail page: temp/humidity/wind/conditions
+    only — the richer set (dew point, station, gust) lives in get_activity()."""
+    if not weather_raw:
+        return None
+    weather_type = weather_raw.get('weatherTypeDTO') or {}
+    return {
+        'temp_c':       _f_to_c(weather_raw.get('temp')),
+        'humidity_pct': weather_raw.get('relativeHumidity'),
+        'wind_kph':     _mph_to_kph(weather_raw.get('windSpeed')),
+        'wind_dir':     weather_raw.get('windDirectionCompassPoint'),
+        'conditions':   weather_type.get('desc'),
+    }
+
+
+def _extract_detail_laps(laps_raw: dict | None) -> list[dict]:
+    """Per-lap rows shaped for chart rendering (cumulative distance + raw
+    seconds/speed) rather than the display-formatted rows _extract_laps
+    produces for the text views."""
+    if not laps_raw:
+        return []
+    rows = []
+    cum_m = 0.0
+    for lap in laps_raw.get('lapDTOs') or []:
+        distance = lap.get('distance') or 0
+        cum_m += distance
+        avg_speed = lap.get('averageSpeed') or 0
+        rows.append({
+            'lap_num':     lap.get('lapIndex'),
+            'cum_km':      round(cum_m / 1000, 2),
+            'avg_hr':      lap.get('averageHR'),
+            'max_hr':      lap.get('maxHR'),
+            'avg_power':   lap.get('averagePower'),
+            'max_power':   lap.get('maxPower'),
+            'duration_sec': round(lap.get('duration') or 0, 1),
+            'speed_kph':   round(avg_speed * 3.6, 1) if avg_speed else None,
+        })
+    return rows
+
+
+def _extract_route(details_raw: dict | None) -> list[dict] | None:
+    """GPS polyline as {lat, lon, elevation_m, distance_km} points, or None
+    for indoor/no-GPS activities (Garmin returns no geoPolylineDTO)."""
+    polyline = ((details_raw or {}).get('geoPolylineDTO') or {}).get('polyline') or []
+    if not polyline:
+        return None
+    route = []
+    for pt in polyline:
+        lat, lon = pt.get('lat'), pt.get('lon')
+        if lat is None or lon is None:
+            continue
+        route.append({
+            'lat':          lat,
+            'lon':          lon,
+            'elevation_m':  pt.get('altitude'),
+            'distance_km':  round((pt.get('distance') or 0) / 1000, 2),
+        })
+    return route or None
+
+
+def _extract_series_and_pauses(
+    details_raw: dict | None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """HR/power time series plus shared pause boundaries, from Garmin's
+    per-sample activityDetailMetrics.
+
+    Garmin doesn't return an explicit pause list — recording simply stops
+    while the activity is paused, so a gap between consecutive samples wider
+    than _PAUSE_GAP_SEC *is* the pause. Both series share one pause list
+    since they're sampled off the same timeline.
+    """
+    descriptors = (details_raw or {}).get('metricDescriptors') or []
+    samples = (details_raw or {}).get('activityDetailMetrics') or []
+    if not descriptors or not samples:
+        return [], [], []
+
+    index_by_key = {d.get('key'): d.get('metricsIndex') for d in descriptors}
+    ts_idx = index_by_key.get('directTimestamp')
+    hr_idx = index_by_key.get('directHeartRate')
+    power_idx = index_by_key.get('directPower')
+    if ts_idx is None:
+        return [], [], []
+
+    hr_series, power_series, pauses = [], [], []
+    first_ts = None
+    prev_ts = prev_offset = None
+
+    for sample in samples:
+        values = sample.get('metrics') or []
+        if ts_idx >= len(values) or values[ts_idx] is None:
+            continue
+        ts = values[ts_idx]
+        if first_ts is None:
+            first_ts = ts
+        offset = round((ts - first_ts) / 1000, 1)
+
+        if prev_ts is not None and (ts - prev_ts) / 1000 > _PAUSE_GAP_SEC:
+            pauses.append({'start_sec': prev_offset, 'end_sec': offset})
+
+        if hr_idx is not None and hr_idx < len(values) and values[hr_idx] is not None:
+            hr_series.append({'t_offset_sec': offset, 'value': values[hr_idx]})
+        if power_idx is not None and power_idx < len(values) and values[power_idx] is not None:
+            power_series.append({'t_offset_sec': offset, 'value': values[power_idx]})
+
+        prev_ts, prev_offset = ts, offset
+
+    return hr_series, power_series, pauses
+
+
+def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
+    """Build the (detail, route) JSONB payloads stored in activity_details for
+    the activity-detail page. Everything already covered by columns on
+    `activities` (name, date, distance, avg HR, training load) is left out.
+
+    Returns:
+        detail: dict with duration/elevation/calories/speed/power/FTP,
+            training effect, weather, HR/power series with shared pause
+            gaps, laps and gear.
+        route: list of {lat, lon, elevation_m, distance_km} points, or None
+            for indoor/no-GPS activities.
+    """
+    client = get_client()
+
+    activity_raw = client.get_activity(activity_id)
+    summary = activity_raw.get('summaryDTO') or {}
+
+    try:
+        laps_raw = client.get_activity_splits(activity_id)
+    except Exception:
+        laps_raw = None
+    try:
+        weather_raw = client.get_activity_weather(activity_id)
+    except Exception:
+        weather_raw = None
+    try:
+        details_raw = client.get_activity_details(activity_id)
+    except Exception:
+        details_raw = None
+
+    hr_series, power_series, pauses = _extract_series_and_pauses(details_raw)
+
+    detail = {
+        'duration_active_sec':   summary.get('movingDuration'),
+        'elevation_gain_m':      summary.get('elevationGain'),
+        'calories':              summary.get('calories'),
+        'avg_speed_kph':         round((summary.get('averageSpeed') or 0) * 3.6, 1),
+        'avg_power':             summary.get('averagePower'),
+        'ftp':                   summary.get('functionalThresholdPower'),
+        'training_effect':       round(summary.get('trainingEffect') or 0, 1),
+        'anaerobic_te':          round(summary.get('anaerobicTrainingEffect') or 0, 1),
+        'training_effect_label': summary.get('trainingEffectLabel'),
+        'weather':               _extract_detail_weather(weather_raw),
+        'hr_series':             hr_series,
+        'power_series':          power_series,
+        'pauses':                pauses,
+        'laps':                  _extract_detail_laps(laps_raw),
+        'gear':                  get_activity_gear(activity_id),
+    }
+    route = _extract_route(details_raw)
+    return detail, route
+
+
 # ── PUBLIC TOOL FUNCTIONS ─────────────────────────────────────────────────────
 
 def get_activity(activity_id: int) -> dict:

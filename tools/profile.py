@@ -102,15 +102,18 @@ def get_gear() -> list[dict]:
 
 
 def _activity_gear_item(g: dict, stats: dict) -> dict:
-    """Shape one gear entry attached to an activity: name, uuid, type and
-    cumulative distance across all activities it's been used for."""
+    """Shape one gear entry attached to an activity: name, uuid, type,
+    cumulative distance across all activities it's been used for, and its
+    configured replacement distance (lifespan), when Garmin has one set."""
     total_distance = stats.get('totalDistance') or 0  # metres
+    max_meters = g.get('maximumMeters') or 0
 
     return {
-        'name':        g.get('displayName') or g.get('customMakeModel'),
-        'uuid':        g.get('uuid'),
-        'type':        g.get('gearTypeName'),
-        'distance_km': round(total_distance / 1000, 2),
+        'name':         g.get('displayName') or g.get('customMakeModel'),
+        'uuid':         g.get('uuid'),
+        'type':         g.get('gearTypeName'),
+        'distance_km':  round(total_distance / 1000, 2),
+        'lifespan_km':  round(max_meters / 1000, 2) if max_meters else None,
     }
 
 
