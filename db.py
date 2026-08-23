@@ -5,11 +5,13 @@ instead of calling Garmin live. The schema is auto-created on first connect.
 """
 import logging
 import os
+import threading
 from contextlib import contextmanager
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
+from psycopg_pool import ConnectionPool
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +22,37 @@ def is_configured() -> bool:
     return bool(DATABASE_URL)
 
 
+# A single dashboard page load makes 6-9 separate queries (today's metrics,
+# trends, recent activities, weekly summaries, records, profile, goals, sync
+# state). Each used to open — and TLS-handshake, and authenticate — a brand
+# new connection, which on a remote, low-tier instance (e.g. an Azure B1
+# burstable Postgres) can easily cost more than the query itself; that
+# per-query handshake, not query execution, was the dominant cost of a page
+# load. A small pool keeps a handful of connections warm and reuses them
+# instead. Created lazily (not at import time) so importing this module
+# without DATABASE_URL set — e.g. in tests — stays a no-op.
+_pool: ConnectionPool | None = None
+_pool_lock = threading.Lock()
+
+
+def _get_pool() -> ConnectionPool:
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                _pool = ConnectionPool(DATABASE_URL, min_size=1, max_size=5, open=True)
+    return _pool
+
+
 @contextmanager
 def get_conn():
-    conn = psycopg.connect(DATABASE_URL)
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    with _get_pool().connection() as conn:
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def ensure_schema():

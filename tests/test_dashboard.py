@@ -730,6 +730,12 @@ def test_build_dashboard_data_from_db_never_calls_garmin_live_for_weeks_or_sync(
     assert data["last_sync"]["upload_time"] == int(synced_at.timestamp() * 1000)
     assert data["gear_status"] == {"gear": []}
 
+    # Navigating back to the same past week should hit no DB query at all
+    # for it (the current-week query still runs — it's never cached, since
+    # it's still accumulating today's activities).
+    dashboard.build_dashboard_data(week_offset=3)
+    assert len(week_calls) == 3  # +1 for "week" only, none for "activity_week"
+
 
 def test_render_compact_mobile_metric_layouts():
     html = dashboard.render_dashboard_html(SAMPLE)

@@ -254,13 +254,25 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
 
         # Weekly summary: computed entirely from the activities table — no
         # live Garmin call. "week" is always the current week (feeds the
-        # Today tab's load widget); "activity_week" is whichever week the
-        # Activity tab is browsing, the same object when week_offset is 0
-        # (issue 85 — week navigation on the Activity tab).
+        # Today tab's load widget) and always freshly queried, since it's
+        # still accumulating today. "activity_week" is whichever week the
+        # Activity tab is browsing — the same object when week_offset is 0,
+        # otherwise served from the same per-offset cache the live-Garmin
+        # path uses (a closed week's activities don't change), so browsing
+        # back to a week already viewed this session costs no DB round trip
+        # at all rather than just a cheaper one (issue 85).
         from tools.activities import get_weekly_summary_from_db
-        week_data = get_weekly_summary_from_db()
-        activity_week_data = week_data if week_offset == 0 else get_weekly_summary_from_db(week_offset)
-        activity_week_err = None
+        week_data, _ = _safe(get_weekly_summary_from_db)
+        if week_offset == 0:
+            activity_week_data, activity_week_err = week_data, None
+        else:
+            cache_key = _activity_week_cache_key(week_offset)
+            cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
+            if is_fresh and (cached_value is not None or cached_err is not None):
+                activity_week_data, activity_week_err = cached_value, cached_err
+            else:
+                activity_week_data, activity_week_err = _safe(get_weekly_summary_from_db, week_offset)
+                _set_cached(cache_key, activity_week_data, activity_week_err)
 
         # Profile, records, goals from DB
         personal_records = db.get_personal_records_from_db()
