@@ -195,7 +195,7 @@ def _build_trends_from_db(rows: list[dict], days: int) -> dict:
     return {"period": TREND_PERIOD, "days": days, "metrics": metrics}
 
 
-def _build_dashboard_data_from_db() -> dict | None:
+def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
     """Try to build dashboard data from PostgreSQL. Returns None if DB is
     empty or unavailable, signalling the caller to fall back to Garmin."""
     import db
@@ -218,9 +218,17 @@ def _build_dashboard_data_from_db() -> dict | None:
         activities_rows = db.get_recent_activities(limit=20)
         activities = [r["summary"] for r in activities_rows if r.get("summary")]
 
-        # Weekly summary: compute from DB activities
+        # Weekly summary: compute from DB activities. "week" is always the
+        # current week (feeds the Today tab's load widget); "activity_week"
+        # is whichever week the Activity tab is currently browsing — the
+        # same object when week_offset is 0, a fresh fetch otherwise (issue
+        # 85 — week navigation on the Activity tab).
         from tools.activities import get_weekly_summary
         week_data, _ = _safe(get_weekly_summary)
+        if week_offset:
+            activity_week_data, activity_week_err = _safe(get_weekly_summary, week_offset=week_offset)
+        else:
+            activity_week_data, activity_week_err = week_data, None
 
         # Profile, records, goals from DB
         personal_records = db.get_personal_records_from_db()
@@ -250,6 +258,9 @@ def _build_dashboard_data_from_db() -> dict | None:
             "activities_err": None,
             "week": week_data,
             "week_err": None,
+            "activity_week": activity_week_data,
+            "activity_week_err": activity_week_err,
+            "activity_week_offset": week_offset,
             "trends": _build_trends_from_db(trend_rows, len(trend_rows)),
             "trends_err": None,
             "personal_records": personal_records or {},
@@ -269,14 +280,19 @@ def _build_dashboard_data_from_db() -> dict | None:
         return None
 
 
-def build_dashboard_data() -> dict:
+def build_dashboard_data(week_offset: int = 0) -> dict:
     """Fetch every dashboard section from the Garmin client, concurrently.
 
     Each section is fetched independently and its failure is captured rather
     than raised, so one unavailable metric never blanks the whole page.
+
+    ``week_offset`` (0 = current week, 1 = last week, …) selects which week
+    the Activity tab shows (issue 85 — week navigation); it never affects the
+    Today tab's own "this week" widget, which always reflects the current
+    week via the "week" key.
     """
     # Try PostgreSQL first (fast — no Garmin API calls for cached data)
-    db_data = _build_dashboard_data_from_db()
+    db_data = _build_dashboard_data_from_db(week_offset)
     if db_data is not None:
         return db_data
 
@@ -343,12 +359,25 @@ def build_dashboard_data() -> dict:
             data[f"{key}_err"] = err
             _set_cached(key, value, err)
 
+    # The Activity tab's own week — a fresh, uncached fetch when browsing
+    # away from the current week (deliberate/infrequent, so not worth the
+    # unbounded per-week cache growth), otherwise just the current week
+    # fetched above.
+    if week_offset:
+        activity_week, activity_week_err = _safe(get_weekly_summary, week_offset=week_offset)
+        data["activity_week"] = activity_week
+        data["activity_week_err"] = activity_week_err
+    else:
+        data["activity_week"] = data.get("week")
+        data["activity_week_err"] = data.get("week_err")
+    data["activity_week_offset"] = week_offset
+
     return data
 
 
-def get_dashboard_data() -> dict:
+def get_dashboard_data(week_offset: int = 0) -> dict:
     """Public entry point — returns a snapshot, warm or cold."""
-    return build_dashboard_data()
+    return build_dashboard_data(week_offset)
 
 
 # ── FORMATTING HELPERS ──────────────────────────────────────────────────────
@@ -451,6 +480,22 @@ def _month_year(value):
         return d.strftime("%b %Y")
     except ValueError:
         return _e(text)
+
+
+def _format_week_range(start: str, end: str) -> str:
+    """'2026-08-17', '2026-08-23' -> 'Aug 17 – Aug 23, 2026' (the Activity
+    tab's date-range indicator — issue 85). Spans a year boundary or a
+    truncated/missing date gracefully."""
+    try:
+        s = date.fromisoformat(start)
+        e = date.fromisoformat(end)
+    except (ValueError, TypeError):
+        return ""
+    if s.year != e.year:
+        return f"{s.strftime('%b')} {s.day}, {s.year} – {e.strftime('%b')} {e.day}, {e.year}"
+    if s.month == e.month:
+        return f"{s.strftime('%b')} {s.day}–{e.day}, {e.year}"
+    return f"{s.strftime('%b')} {s.day} – {e.strftime('%b')} {e.day}, {e.year}"
 
 
 # ── SPORT ICON / TINT ───────────────────────────────────────────────────────
@@ -1365,31 +1410,64 @@ def _activity_summary_card(activities: list[dict], split: list[tuple], summary: 
   </div>"""
 
 
-def _panel_activity(data: dict) -> str:
-    week = data.get("week")
+def _activity_week_url(token: str | None, offset: int) -> str:
+  """/dashboard link that opens the Activity tab on the given week offset
+  (0 = current week, 1 = last week, …), carrying the bearer token along."""
+  params = {"tab": "activity", "week": str(max(0, offset))}
+  if token:
+    params["token"] = token
+  return f"/dashboard?{urlencode(params)}"
+
+
+def _activity_nav_button(direction: str, token: str | None, offset: int, disabled: bool, size: int = 28) -> str:
+  """One prev/next week-navigation control. Rendered as an inert <span> when
+  disabled (used for the right/next arrow on the current week — issue 85:
+  can't navigate into future weeks that have no data) or a link otherwise."""
+  arrow = "&#8249;" if direction == "prev" else "&#8250;"
+  label = "Previous week" if direction == "prev" else "Next week"
+  base_style = (
+    f"display:inline-flex;align-items:center;justify-content:center;width:{size}px;height:{size}px;"
+    "border-radius:999px;border:1px solid var(--color-divider);font-size:16px;line-height:1;flex:0 0 auto"
+  )
+  if disabled:
+    return f'<span aria-hidden="true" style="{base_style};color:var(--color-neutral-700)">{arrow}</span>'
+  url = _e(_activity_week_url(token, offset))
+  return (
+    f'<a href="{url}" aria-label="{label}" style="{base_style};color:var(--color-text);text-decoration:none">'
+    f'{arrow}</a>'
+  )
+
+
+def _panel_activity(data: dict, token: str | None = None) -> str:
+    week = data.get("activity_week")
+    if week is None:
+        week = data.get("week")
+    offset = data.get("activity_week_offset") or 0
     activities = data.get("activities")
     if not week and not activities:
-        err = data.get("week_err") or data.get("activities_err") or "no data"
+        err = data.get("activity_week_err") or data.get("week_err") or data.get("activities_err") or "no data"
         return f'<section class="panel tabpanel tp-activity"><div class="err">Activity data unavailable — {_e(err)}</div></section>'
 
     week = week or {}
 
     week_start = str(week.get("week_start") or "")[:10]
     week_end = str(week.get("week_end") or "")[:10]
-    week_activities = [
-      a for a in (activities or [])
-      if week_start <= str(a.get("date") or "")[:10] <= week_end
-    ]
+    date_range_label = _format_week_range(week_start, week_end)
     filter_labels = "".join(
       f'<label for="activity-filter-{key}">{key.title()}</label>'
       for key in _ACTIVITY_FILTERS
     )
-    all_source = week.get("activities") or []
-    summary_source = all_source or week_activities
+    # The requested week's own activities, straight from get_weekly_summary
+    # (already scoped to week_start..week_end server-side) rather than the
+    # separately-fetched "recent 20 activities" list, which only covers the
+    # current/most-recent week — using it here left older weeks' cards empty
+    # while their summary totals (computed from this same source) were correct.
+    summary_source = week.get("activities") or []
+    prev_btn = _activity_nav_button("prev", token, offset + 1, False)
+    next_btn = _activity_nav_button("next", token, offset - 1, offset <= 0)
     sections = []
     for key in _ACTIVITY_FILTERS:
       selected_summary = summary_source if key == "all" else [a for a in summary_source if _activity_filter_matches(a, key)]
-      selected_list = [a for a in week_activities if _activity_filter_matches(a, key)]
       split = []
       if key == "all":
         split = [
@@ -1405,18 +1483,28 @@ def _panel_activity(data: dict) -> str:
             split.append((label, duration))
           else:
             split[existing] = (label, split[existing][1] + duration)
-      max_load = max((a.get("training_load") or 0) for a in selected_list) or 1 if selected_list else 1
-      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_list)
+      max_load = max((a.get("training_load") or 0) for a in selected_summary) or 1 if selected_summary else 1
+      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_summary)
       empty = '<div class="muted" style="font-size:13px">No activities for this filter this week.</div>'
-      view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_list else ""
+      view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_summary else ""
+      bottom_nav = (
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px">'
+        f'{prev_btn}<div style="flex:1;display:flex;justify-content:center">{view_more}</div>{next_btn}</div>'
+      )
       sections.append(
         f'<div class="activity-filter-section activity-filter-{key}" style="flex-direction:column;gap:8px">'
-        f'{_activity_summary_card(selected_summary, split, week if key == "all" else None)}{cards or empty}{view_more}</div>'
+        f'{_activity_summary_card(selected_summary, split, week if key == "all" else None)}{cards or empty}{bottom_nav}</div>'
       )
 
     return f"""
     <section class="panel tabpanel tp-activity" style="flex-direction:column;gap:16px">
-      <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div>
+          <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
+          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(date_range_label)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">{prev_btn}{next_btn}</div>
+      </div>
       <div class="activity-filterbar pillbar">{filter_labels}</div>
       {"".join(sections)}
     </section>"""
@@ -2418,7 +2506,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
       for key in _ACTIVITY_FILTERS
     )
 
-    panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data)
+    panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data, token)
              + _panel_fitness(data) + _panel_gear(data, token, error))
 
     body = f"""

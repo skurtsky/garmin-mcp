@@ -78,8 +78,10 @@ SAMPLE = {
              "by_type": {"running": {"count": 3, "distance_km": 32.4, "duration_min": 170.0},
                         "lap_swimming": {"count": 2, "distance_km": 3.0, "duration_min": 90.0}},
              "activities": [
-                 {"date": "2026-07-17T06:00:00", "training_load": 120.0},
-                 {"date": "2026-07-16T18:00:00", "training_load": 60.0},
+                 {"id": 1, "date": "2026-07-17T06:00:00", "name": "Evening Run", "type": "running",
+                  "distance_km": 10.2, "duration_min": 52.3, "avg_hr": 141, "training_load": 120.0},
+                 {"id": 2, "date": "2026-07-16T18:00:00", "name": "Pool Swim", "type": "lap_swimming",
+                  "distance_km": 1.5, "duration_min": 45.0, "avg_hr": 130, "training_load": 60.0},
              ]},
     "week_err": None,
     "trends": {"period": "1m", "days": 30, "metrics": {
@@ -543,6 +545,62 @@ def test_render_activity_list_is_limited_to_current_week():
     assert "View More" in html
 
 
+def test_format_week_range_formats_same_and_cross_month():
+    assert dashboard._format_week_range("2026-07-13", "2026-07-19") == "Jul 13–19, 2026"
+    assert dashboard._format_week_range("2026-07-27", "2026-08-02") == "Jul 27 – Aug 2, 2026"
+    assert dashboard._format_week_range("2025-12-29", "2026-01-04") == "Dec 29, 2025 – Jan 4, 2026"
+    assert dashboard._format_week_range("", "") == ""
+
+
+def test_render_shows_activity_week_date_range_and_nav_arrows():
+    html = dashboard.render_dashboard_html(SAMPLE)
+
+    assert "Jul 13–17, 2026" in html
+    # Current week (no activity_week_offset set -> defaults to 0): the next
+    # (right) arrow is disabled — no navigating into a future, dataless week.
+    assert 'href="/dashboard?tab=activity&amp;week=1"' in html
+    assert '<span aria-hidden="true"' in html
+    assert "week=-1" not in html
+
+
+def test_render_activity_week_nav_enables_next_arrow_when_browsing_a_past_week():
+    data = {**SAMPLE, "activity_week": SAMPLE["week"], "activity_week_offset": 2}
+    html = dashboard.render_dashboard_html(data, token="secret")
+
+    assert 'href="/dashboard?tab=activity&amp;week=3&amp;token=secret"' in html
+    assert 'href="/dashboard?tab=activity&amp;week=1&amp;token=secret"' in html
+    assert "week=-1" not in html
+
+
+def test_build_dashboard_data_fetches_the_requested_week_for_the_activity_tab(monkeypatch):
+    from tools import health, activities, trends, performance, profile, challenges
+
+    monkeypatch.setattr(health, "get_daily_readiness", lambda d: {})
+    monkeypatch.setattr(health, "get_daily_health", lambda d: {})
+    monkeypatch.setattr(health, "get_sleep", lambda d: {})
+    monkeypatch.setattr(health, "get_training_readiness", lambda d: {})
+    monkeypatch.setattr(health, "get_training_status", lambda d: {})
+    monkeypatch.setattr(activities, "get_activities", lambda limit=20: [])
+
+    def fake_weekly_summary(week_offset=0):
+        return {"week_offset": week_offset, "total_activities": 0}
+
+    monkeypatch.setattr(activities, "get_weekly_summary", fake_weekly_summary)
+    monkeypatch.setattr(trends, "get_trends", lambda period, metrics: {"period": period, "days": 0, "metrics": {}})
+    monkeypatch.setattr(performance, "get_personal_records", lambda: {})
+    monkeypatch.setattr(profile, "get_athlete_profile", lambda: {})
+    monkeypatch.setattr(challenges, "get_active_goals", lambda: [])
+    monkeypatch.setattr(dashboard, "_fetch_last_sync", lambda: {})
+
+    data = dashboard.build_dashboard_data(week_offset=3)
+    # The Today tab's own widget always reflects the current week...
+    assert data["week"]["week_offset"] == 0
+    # ...while the Activity tab reflects whichever week was requested.
+    assert data["activity_week"]["week_offset"] == 3
+    assert data["activity_week_offset"] == 3
+    assert data["activity_week_err"] is None
+
+
 def test_render_compact_mobile_metric_layouts():
     html = dashboard.render_dashboard_html(SAMPLE)
 
@@ -582,10 +640,12 @@ def test_render_degrades_when_sections_missing():
 
 def test_render_escapes_untrusted_strings():
     data = dict(SAMPLE)
-    data["activities"] = [{"id": 1, "date": "2026-07-16T18:00:00",
-                           "name": "<script>alert(1)</script>", "type": "running",
-                           "distance_km": 1.0, "duration_min": 5.0, "avg_hr": 100,
-                           "training_load": 1.0}]
+    malicious_activity = {"id": 1, "date": "2026-07-16T18:00:00",
+                          "name": "<script>alert(1)</script>", "type": "running",
+                          "distance_km": 1.0, "duration_min": 5.0, "avg_hr": 100,
+                          "training_load": 1.0}
+    data["activities"] = [malicious_activity]
+    data["week"] = {**SAMPLE["week"], "activities": [malicious_activity]}
     html = dashboard.render_dashboard_html(data)
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
