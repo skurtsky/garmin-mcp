@@ -635,22 +635,38 @@ def test_build_dashboard_data_fetches_current_and_requested_week_concurrently(mo
     """Issue 85 follow-up: navigating to a past week used to bolt an extra
     get_weekly_summary() call on *after* the whole page's usual parallel
     fetch, doubling the wait. It must now run alongside the current week's
-    fetch instead of stacked after it."""
-    import time
+    fetch instead of stacked after it.
+
+    Asserted structurally (both calls were in flight at the same time via a
+    shared threading.Event) rather than by a wall-clock threshold — a timing
+    assertion here was flaky under CI load: a busy/throttled runner can push
+    even genuinely-concurrent threads' wall time well past a tight budget,
+    which isn't the thing this test is meant to catch.
+    """
+    import threading
+
+    started = set()
+    both_started = threading.Event()
+    lock = threading.Lock()
 
     def slow_weekly_summary(week_offset=0):
-        time.sleep(0.15)
-        return {"week_offset": week_offset}
+        with lock:
+            started.add(week_offset)
+            if len(started) == 2:
+                both_started.set()
+        # Only returns quickly if the *other* call has also started — a
+        # serial implementation would have this call return (and the whole
+        # fetch batch move on) before the second call is even dispatched,
+        # so `both_started` would still be unset when the timeout hits.
+        both_started.wait(timeout=2)
+        return {"week_offset": week_offset, "both_started": both_started.is_set()}
 
     _patch_dashboard_sections_except_week(monkeypatch, slow_weekly_summary)
 
-    start = time.monotonic()
-    dashboard.build_dashboard_data(week_offset=7)
-    elapsed = time.monotonic() - start
+    data = dashboard.build_dashboard_data(week_offset=7)
 
-    # Sequential would take >=0.30s (two 0.15s calls back to back); running
-    # them concurrently keeps the total close to a single 0.15s call.
-    assert elapsed < 0.25, f"week fetches ran serially ({elapsed:.3f}s)"
+    assert data["week"]["both_started"] is True
+    assert data["activity_week"]["both_started"] is True
 
 
 def test_build_dashboard_data_caches_a_past_week_across_requests(monkeypatch):
