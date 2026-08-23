@@ -111,6 +111,30 @@ def sync_activities():
     logger.info(f"Synced {len(activities)} activities")
 
 
+def sync_activity_details(limit: int = 10):
+    """Sync activity_details (detail + route JSONB) for activities missing it
+    or gone stale relative to their parent activity row.
+
+    Each activity costs several Garmin API calls (splits, weather, the raw
+    detail/polyline endpoint), so this is capped per run rather than backfilling
+    everything at once — a fresh install catches up gradually across runs.
+    """
+    from tools.activities import get_activity_detail_row
+    import db
+
+    activity_ids = db.get_activity_ids_needing_detail(limit=limit)
+    logger.info(f"Syncing detail for {len(activity_ids)} activity(ies)")
+    for activity_id in activity_ids:
+        try:
+            detail, route = get_activity_detail_row(activity_id)
+        except Exception:
+            logger.exception(f"Failed to build detail for activity {activity_id}")
+            continue
+        db.upsert_activity_detail(activity_id, detail, route)
+    db.update_sync_state("activity_details", date.today().isoformat())
+    logger.info("Activity detail sync complete")
+
+
 def sync_personal_records():
     """Sync personal records."""
     from tools.performance import get_personal_records
@@ -175,6 +199,15 @@ def parse_args(argv: list[str] | None = None):
         "--daily-only", action="store_true",
         help="only sync daily metrics; useful for historical trend backfills",
     )
+    parser.add_argument(
+        "--detail-limit", type=int, default=10,
+        help="max number of activities to sync detail/route JSONB for per run",
+    )
+    parser.add_argument(
+        "--details-only", action="store_true",
+        help="only sync activity_details (detail/route JSONB); useful for a "
+             "one-time backfill, e.g. --details-only --detail-limit 999",
+    )
     return parser.parse_args(argv)
 
 
@@ -187,20 +220,24 @@ def main(argv: list[str] | None = None):
     db.ensure_schema()
 
     errors = []
-    sync_plan = [
-        lambda: sync_daily_metrics(
-            days=args.days,
-            start_date=args.start_date,
-            end_date=args.end_date,
-        )
-    ]
-    if not args.daily_only:
-        sync_plan.extend([
-            sync_activities,
-            sync_personal_records,
-            sync_athlete_profile,
-            sync_active_goals,
-        ])
+    if args.details_only:
+        sync_plan = [lambda: sync_activity_details(limit=args.detail_limit)]
+    else:
+        sync_plan = [
+            lambda: sync_daily_metrics(
+                days=args.days,
+                start_date=args.start_date,
+                end_date=args.end_date,
+            )
+        ]
+        if not args.daily_only:
+            sync_plan.extend([
+                sync_activities,
+                lambda: sync_activity_details(limit=args.detail_limit),
+                sync_personal_records,
+                sync_athlete_profile,
+                sync_active_goals,
+            ])
 
     for sync_fn in sync_plan:
         try:

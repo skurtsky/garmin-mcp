@@ -65,9 +65,12 @@ def test_get_gear_distance_is_non_negative():
 
 
 def test_activity_gear_item_shape():
-    """Raw gear DTO should map to name/uuid/type/distance_km."""
+    """Raw gear DTO should map to name/uuid/type/distance_km/lifespan_km."""
     item = _activity_gear_item(
-        {'displayName': 'Nike Vaporfly 3', 'uuid': 'abc-123', 'gearTypeName': 'Shoes'},
+        {
+            'displayName': 'Nike Vaporfly 3', 'uuid': 'abc-123',
+            'gearTypeName': 'Shoes', 'maximumMeters': 500000.0,
+        },
         {'totalDistance': 423512.0},
     )
     assert item == {
@@ -75,6 +78,7 @@ def test_activity_gear_item_shape():
         'uuid': 'abc-123',
         'type': 'Shoes',
         'distance_km': 423.51,
+        'lifespan_km': 500.0,
     }
 
 def test_activity_gear_item_falls_back_to_make_model():
