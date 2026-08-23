@@ -1,4 +1,7 @@
 # tests/test_health.py
+import pytest
+
+import tools.health as health
 from tools.health import (
     get_sleep,
     get_daily_readiness,
@@ -6,6 +9,37 @@ from tools.health import (
     get_training_status,
     get_training_readiness,
 )
+
+
+def test_get_sleep_awake_pct_matches_awake_time(monkeypatch):
+    """issue #83: Awake always showed 0% because awake_pct was never computed.
+
+    Percentages are of total time in bed (asleep + awake) so Deep/Light/REM/
+    Awake all share the same base and their hours add up to what's shown.
+    """
+    class FakeClient:
+        def get_sleep_data(self, date):
+            return {
+                "dailySleepDTO": {
+                    "calendarDate": date,
+                    "sleepTimeSeconds": 5 * 3600,       # 5h asleep
+                    "deepSleepSeconds": 1 * 3600,
+                    "lightSleepSeconds": 3 * 3600,
+                    "remSleepSeconds": 1 * 3600,
+                    "awakeSleepSeconds": 1 * 3600,       # 1h awake, per the issue
+                    "sleepScores": {}, "sleepNeed": {},
+                },
+                "restingHeartRate": None,
+            }
+
+    monkeypatch.setattr(health, "get_client", lambda: FakeClient())
+    result = health.get_sleep("2026-08-01")
+
+    assert result["awake_hrs"] == 1.0
+    assert result["awake_pct"] > 0
+    # 1h awake out of 6h total time in bed
+    assert result["awake_pct"] == pytest.approx(100 / 6, abs=0.1)
+    assert result["deep_pct"] + result["light_pct"] + result["rem_pct"] + result["awake_pct"] == pytest.approx(100, abs=0.2)
 
 def test_get_sleep_returns_dict(test_date):
     result = get_sleep(test_date)

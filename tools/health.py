@@ -32,13 +32,18 @@ def get_sleep(date: str) -> dict:
 
     total_secs = dto.get('sleepTimeSeconds') or 0
 
-    def pct(secs):
-        return round(secs / total_secs * 100, 1) if total_secs else None
-
     deep_secs  = dto.get('deepSleepSeconds') or 0
     light_secs = dto.get('lightSleepSeconds') or 0
     rem_secs   = dto.get('remSleepSeconds') or 0
     awake_secs = dto.get('awakeSleepSeconds') or 0
+
+    # Percentages are of total time in bed (asleep + awake), so the Awake
+    # segment reflects the same time base as the sleep stages and the
+    # displayed hours add up to 100%.
+    time_in_bed_secs = total_secs + awake_secs
+
+    def pct(secs):
+        return round(secs / time_in_bed_secs * 100, 1) if time_in_bed_secs else None
 
     return {
         'date':                 dto.get('calendarDate'),
@@ -52,6 +57,7 @@ def get_sleep(date: str) -> dict:
         'deep_pct':             pct(deep_secs),
         'light_pct':            pct(light_secs),
         'rem_pct':              pct(rem_secs),
+        'awake_pct':            pct(awake_secs),
         'awake_count':          dto.get('awakeCount'),
         'avg_hr':               dto.get('avgHeartRate'),
         'resting_hr':           sleep_raw.get('restingHeartRate'),

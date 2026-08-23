@@ -631,6 +631,38 @@ def _acwr_gauge_pct(acwr):
     return round(max(0.0, min(1.0, (acwr - lo) / (hi - lo))) * 100, 1)
 
 
+def _load_ratio_card(data: dict) -> str:
+    ts = data.get("training_status") or {}
+    acwr = ts.get("acwr")
+    if acwr is None:
+        return ""
+    acwr_pct = _acwr_gauge_pct(acwr)
+    acwr_color = "#4fae72" if acwr_pct is not None and 26 <= acwr_pct <= 66 else ("#d9a441" if acwr_pct is not None else "var(--color-neutral-500)")
+    return f"""
+    <div class="card" style="padding:16px;gap:12px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div><div class="kicker">Load ratio</div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-top:3px">
+            <div style="font-family:var(--font-heading);font-size:30px;line-height:1;color:{acwr_color}">{acwr:.2f}</div>
+            <div style="font-size:12px;color:{acwr_color}">{_label(ts.get("acwr_status"))}</div>
+          </div>
+        </div>
+      </div>
+      <div style="position:relative;height:30px">
+        <div style="position:absolute;inset:12px 0 auto 0;height:7px;border-radius:999px;display:flex;overflow:hidden">
+          <div style="width:26%;background:#5b8fd8"></div><div style="width:14%;background:#7fc9b0"></div>
+          <div style="width:26%;background:#4fae72"></div><div style="width:14%;background:#d9a441"></div>
+          <div style="width:20%;background:#cf5a4e"></div>
+        </div>
+        <div style="position:absolute;left:{acwr_pct:.1f}%;top:4px;width:3px;height:23px;border-radius:2px;
+            background:var(--color-neutral-100);box-shadow:0 0 0 2px var(--color-surface)"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
+        <span>Detraining</span><span>0.8</span><span>Optimal</span><span>1.3</span><span>High risk</span>
+      </div>
+    </div>"""
+
+
 # ── CSS ──────────────────────────────────────────────────────────────────────
 
 _STYLE = """
@@ -945,6 +977,8 @@ def _panel_today(data: dict) -> str:
           <div style="display:flex;flex-direction:column;gap:9px">{factor_rows or '<div class="muted" style="font-size:12px">No factor data.</div>'}</div>
         </div>"""
 
+    load_ratio_card = _load_ratio_card(data)
+
     bb = readiness.get("body_battery") or {}
     daily_stats = readiness.get("daily_stats") or {}
     hrv = readiness.get("hrv") or {}
@@ -1038,7 +1072,7 @@ def _panel_today(data: dict) -> str:
         ("Deep", sleep.get("deep_sleep_hrs"), sleep.get("deep_pct"), "#2f4a9e"),
         ("Light", sleep.get("light_sleep_hrs"), sleep.get("light_pct"), "#6f9ce8"),
         ("REM", sleep.get("rem_sleep_hrs"), sleep.get("rem_pct"), "#a07fe0"),
-        ("Awake", sleep.get("awake_hrs"), None, "#d9a441"),
+        ("Awake", sleep.get("awake_hrs"), sleep.get("awake_pct"), "#d9a441"),
     ]
     stage_bars, stage_legend = "", ""
     for label, hrs, pct, color in stages:
@@ -1120,7 +1154,7 @@ def _panel_today(data: dict) -> str:
 
     return (
         '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:22px">'
-        f"{hero}{quick_cards}{stress_card}{sleep_card}{week_card}{today_acts_card}"
+        f"{hero}{load_ratio_card}{quick_cards}{stress_card}{sleep_card}{week_card}{today_acts_card}"
         "</section>"
     )
 
@@ -1221,36 +1255,6 @@ def _panel_trends(data: dict) -> str:
             f"{cards}</div>"
         )
 
-    ts = data.get("training_status") or {}
-    acwr = ts.get("acwr")
-    acwr_pct = _acwr_gauge_pct(acwr)
-    acwr_color = "#4fae72" if acwr_pct is not None and 26 <= acwr_pct <= 66 else ("#d9a441" if acwr_pct is not None else "var(--color-neutral-500)")
-    acwr_card = ""
-    if acwr is not None:
-        acwr_card = f"""
-        <div class="card" style="padding:16px;gap:12px">
-          <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap">
-            <div><div class="kicker">Acute : chronic load</div>
-              <div style="display:flex;align-items:baseline;gap:8px;margin-top:3px">
-                <div style="font-family:var(--font-heading);font-size:30px;line-height:1;color:{acwr_color}">{acwr:.2f}</div>
-                <div style="font-size:12px;color:{acwr_color}">{_label(ts.get("acwr_status"))}</div>
-              </div>
-            </div>
-          </div>
-          <div style="position:relative;height:30px">
-            <div style="position:absolute;inset:12px 0 auto 0;height:7px;border-radius:999px;display:flex;overflow:hidden">
-              <div style="width:26%;background:#5b8fd8"></div><div style="width:14%;background:#7fc9b0"></div>
-              <div style="width:26%;background:#4fae72"></div><div style="width:14%;background:#d9a441"></div>
-              <div style="width:20%;background:#cf5a4e"></div>
-            </div>
-            <div style="position:absolute;left:{acwr_pct:.1f}%;top:4px;width:3px;height:23px;border-radius:2px;
-                background:var(--color-neutral-100);box-shadow:0 0 0 2px var(--color-surface)"></div>
-          </div>
-          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
-            <span>Detraining</span><span>0.8</span><span>Optimal</span><span>1.3</span><span>High risk</span>
-          </div>
-        </div>"""
-
     step_series = metrics.get("steps") or {}
     step_daily = (step_series.get("daily") or [])[-14:]
     step_goal = _step_goal(data)
@@ -1284,7 +1288,6 @@ def _panel_trends(data: dict) -> str:
         <div style="font-family:var(--font-heading);font-size:20px">Trends</div>
         <div class="pillbar">{range_pills}</div>
       </div>
-      {acwr_card}
       <div class="range-body">{range_sets}</div>
       {steps_card}
     </section>"""
@@ -1294,7 +1297,7 @@ def _panel_trends(data: dict) -> str:
 
 _ACTIVITY_FILTERS = ("all", "triathlon", "bike", "run", "strength", "other")
 _BIKE_TYPES = {"cycling", "road_biking", "virtual_ride", "indoor_cycling"}
-_RUN_TYPES = {"running"}
+_RUN_TYPES = {"running", "trail_running", "treadmill_running", "track_running", "indoor_running"}
 _SWIM_TYPES = {"lap_swimming", "open_water_swimming", "swimming"}
 _TRIATHLON_TYPES = {"multi_sport", "triathlon", "duathlon"}
 _STRENGTH_TYPES = {"strength", "strength_training"}
