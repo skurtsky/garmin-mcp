@@ -53,7 +53,7 @@ def test_get_activity_gear_is_a_list(run_activity_id):
     result = get_activity(run_activity_id)
     assert isinstance(result['gear'], list)
     for item in result['gear']:
-        assert set(item) == {'name', 'uuid', 'type', 'distance_km'}
+        assert set(item) == {'name', 'uuid', 'type', 'distance_km', 'lifespan_km'}
 
 def test_get_activity_summary_has_run_fields(run_activity_id):
     result = get_activity(run_activity_id)
@@ -505,7 +505,7 @@ def test_get_activity_multisport_legs_have_gear(multisport_activity_id):
     for leg in (swim, bike, run):
         assert isinstance(leg['gear'], list)
         for item in leg['gear']:
-            assert set(item) == {'name', 'uuid', 'type', 'distance_km'}
+            assert set(item) == {'name', 'uuid', 'type', 'distance_km', 'lifespan_km'}
 
     # The run leg has shoes assigned — the case that motivated the roll-up.
     assert run['gear'], "expected shoes on the run leg"
