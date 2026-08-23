@@ -88,13 +88,20 @@ def sync_daily_metrics(days: int = 3, start_date: date | None = None,
     logger.info("Daily metrics sync complete")
 
 
-def sync_activities():
-    """Sync recent activities (last 20)."""
+def sync_activities(start_date: date | None = None, end_date: date | None = None):
+    """Sync activities: the most recent 20 by default, or every activity in
+    an explicit date range when start_date is given (Garmin's date-range
+    endpoint returns everything in range regardless of a limit)."""
     from tools.activities import get_activities
     import db
 
-    logger.info("Syncing activities")
-    activities = get_activities(limit=20)
+    if start_date:
+        end = end_date or date.today()
+        logger.info(f"Syncing activities from {start_date.isoformat()} to {end.isoformat()}")
+        activities = get_activities(start_date=start_date.isoformat(), end_date=end.isoformat())
+    else:
+        logger.info("Syncing activities")
+        activities = get_activities(limit=20)
     for act in activities:
         db.upsert_activity(
             garmin_id=act["id"],
@@ -200,6 +207,22 @@ def parse_args(argv: list[str] | None = None):
         help="only sync daily metrics; useful for historical trend backfills",
     )
     parser.add_argument(
+        "--activities-since", "--activities-start-date", dest="activities_start_date",
+        type=_parse_date,
+        help="sync every activity from this date onward (inclusive), instead "
+             "of just the most recent 20 (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--activities-end-date", type=_parse_date,
+        help="last activity date to sync, inclusive, when --activities-since "
+             "is given (defaults to today)",
+    )
+    parser.add_argument(
+        "--activities-only", action="store_true",
+        help="only sync activities; combine with --activities-since for a "
+             "one-time activity history backfill",
+    )
+    parser.add_argument(
         "--detail-limit", type=int, default=10,
         help="max number of activities to sync detail/route JSONB for per run",
     )
@@ -219,9 +242,16 @@ def main(argv: list[str] | None = None):
     logger.info("Starting Garmin sync job")
     db.ensure_schema()
 
+    sync_activities_step = lambda: sync_activities(
+        start_date=args.activities_start_date,
+        end_date=args.activities_end_date,
+    )
+
     errors = []
     if args.details_only:
         sync_plan = [lambda: sync_activity_details(limit=args.detail_limit)]
+    elif args.activities_only:
+        sync_plan = [sync_activities_step]
     else:
         sync_plan = [
             lambda: sync_daily_metrics(
@@ -232,7 +262,7 @@ def main(argv: list[str] | None = None):
         ]
         if not args.daily_only:
             sync_plan.extend([
-                sync_activities,
+                sync_activities_step,
                 lambda: sync_activity_details(limit=args.detail_limit),
                 sync_personal_records,
                 sync_athlete_profile,
