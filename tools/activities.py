@@ -1,9 +1,12 @@
 # tools/activities.py
 import calendar
+import logging
 from collections import Counter
 from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
 from datetime import date, timedelta
+
+logger = logging.getLogger(__name__)
 
 # ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -290,13 +293,29 @@ def _extract_interval_summary(split_summaries: dict | None) -> list[dict]:
 
 
 def _extract_hr_zones(hr_zones_data: list, total_duration_secs: float) -> list[dict]:
-    """Extract HR zone breakdown with time and percentage."""
+    """Extract HR zone breakdown with time and percentage.
+
+    Defensive about a zone entry's shape rather than indexing straight into
+    it: Garmin's hrTimeInZones response has been observed to omit
+    zoneNumber/zoneLowBoundary on some activities (sport-specific — a
+    custom HR zone profile configured for one sport but not another seems
+    to be involved), and one malformed/missing entry raising here used to
+    take down the whole activity-detail sync for that activity (see
+    get_activity_detail_row, which now also isolates this call so a zone
+    shape it's never seen before can't do that again).
+    """
     zones = []
-    for z in hr_zones_data:
+    for z in (hr_zones_data or []):
+        if not isinstance(z, dict):
+            continue
+        zone_number = z.get('zoneNumber')
+        low_boundary = z.get('zoneLowBoundary')
+        if zone_number is None or low_boundary is None:
+            continue
         secs = z.get('secsInZone') or 0
         zones.append({
-            'zone':      z['zoneNumber'],
-            'min_hr':    z['zoneLowBoundary'],
+            'zone':      zone_number,
+            'min_hr':    low_boundary,
             'time_min':  round(secs / 60, 1),
             'pct_time':  round(secs / total_duration_secs * 100, 1) if total_duration_secs else None,
         })
@@ -584,9 +603,14 @@ def _extract_detail_weather(weather_raw: dict | None) -> dict | None:
 
 
 def _extract_detail_laps(laps_raw: dict | None) -> list[dict]:
-    """Per-lap rows shaped for chart rendering (cumulative distance + raw
-    seconds/speed) rather than the display-formatted rows _extract_laps
-    produces for the text views."""
+    """Per-lap rows shaped for chart rendering (cumulative + raw per-lap
+    distance, raw seconds/speed) rather than the display-formatted rows
+    _extract_laps produces for the text views.
+
+    'distance_m' is the lap's own (non-cumulative) distance — for a pool
+    swim, a rest lap carries 0 here even as 'cum_km' keeps climbing from the
+    lengths around it, which is what tells a rest lap apart from a swum one.
+    """
     if not laps_raw:
         return []
     rows = []
@@ -597,6 +621,7 @@ def _extract_detail_laps(laps_raw: dict | None) -> list[dict]:
         avg_speed = lap.get('averageSpeed') or 0
         rows.append({
             'lap_num':     lap.get('lapIndex'),
+            'distance_m':  round(distance, 1),
             'cum_km':      round(cum_m / 1000, 2),
             'avg_hr':      lap.get('averageHR'),
             'max_hr':      lap.get('maxHR'),
@@ -684,8 +709,9 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
 
     Returns:
         detail: dict with duration/elevation/calories/speed/power/FTP,
-            training effect, weather, HR/power series with shared pause
-            gaps, laps and gear.
+            training effect, weather, HR zones, HR/power series with shared
+            pause gaps, laps, gear, and — for a multisport parent — a
+            'sub_activities' breakdown (see get_activity()'s docstring).
         route: list of {lat, lon, elevation_m, distance_km} points, or None
             for indoor/no-GPS activities.
     """
@@ -706,10 +732,23 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         details_raw = client.get_activity_details(activity_id)
     except Exception:
         details_raw = None
+    # Isolated from the fetch through the extraction: Garmin's hrTimeInZones
+    # response has been observed to vary by activity (see _extract_hr_zones'
+    # docstring) — either half of this failing degrades to "no HR zones"
+    # rather than aborting the whole detail row (get_activity_ids_needing_detail
+    # would otherwise keep retrying this activity forever, or --overwrite
+    # would silently leave a stale row in place for it).
+    try:
+        hr_zones_raw = client.get_activity_hr_in_timezones(activity_id)
+        hr_zones = _extract_hr_zones(hr_zones_raw, summary.get('duration') or 0)
+    except Exception:
+        logger.warning(f"HR zones unavailable for activity {activity_id}", exc_info=True)
+        hr_zones = []
 
     hr_series, power_series, pauses = _extract_series_and_pauses(details_raw)
 
     detail = {
+        'duration_elapsed_sec':  summary.get('duration'),
         'duration_active_sec':   summary.get('movingDuration'),
         'elevation_gain_m':      summary.get('elevationGain'),
         'calories':              summary.get('calories'),
@@ -720,12 +759,27 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         'anaerobic_te':          round(summary.get('anaerobicTrainingEffect') or 0, 1),
         'training_effect_label': summary.get('trainingEffectLabel'),
         'weather':               _extract_detail_weather(weather_raw),
+        'hr_zones':              hr_zones,
         'hr_series':             hr_series,
         'power_series':          power_series,
         'pauses':                pauses,
         'laps':                  _extract_detail_laps(laps_raw),
         'gear':                  get_activity_gear(activity_id),
+        # Pool-swim-specific — harmless None for every other sport.
+        # averageStrokes is strokes per length; averageSwimCadence is a
+        # stroke *rate* (spm) — a different metric, not what "strokes per
+        # length" on the activity-detail page means.
+        'avg_swolf':               summary.get('averageSWOLF'),
+        'avg_strokes_per_length':  round(summary.get('averageStrokes') or 0, 1) or None,
     }
+
+    if _is_multisport(activity_raw):
+        athlete = get_athlete_profile()
+        sub_activities = _fetch_sub_activities(
+            _child_activity_ids(activity_raw), weight_kg=athlete['weight_kg'])
+        detail['sub_activities'] = sub_activities
+        detail['gear'] = _merge_gear(detail['gear'], sub_activities)
+
     route = _extract_route(details_raw)
     return detail, route
 

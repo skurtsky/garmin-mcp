@@ -668,6 +668,7 @@ def build_asgi_app():
     from tools import training_plan
     from tools import weekly_summaries
     from tools import gear_tracker
+    from tools import activity_detail
     import db
 
     db.ensure_schema()
@@ -676,6 +677,7 @@ def build_asgi_app():
     training_plan_app = training_plan.create_app()
     weekly_summary_app = weekly_summaries.create_app()
     gear_tracker_app = gear_tracker.create_app()
+    activity_detail_app = activity_detail.create_app()
 
     # Wrap the app with a simple ASGI auth wrapper
     bearer = BEARER_TOKEN
@@ -740,6 +742,14 @@ def build_asgi_app():
         # forms post to, plus a redirect for the old standalone page URL.
         if scope["type"] == "http" and gear_tracker.owns_path(scope.get("path", "")):
             await gear_tracker_app(scope, receive, send)
+            return
+
+        # Activity-detail modal (issue 74) — fetched by the dashboard's
+        # activity rows (Today and Activities tabs) and dropped into the
+        # persistent #activity-modal container; reads activity_details from
+        # PostgreSQL, no live Garmin call per open.
+        if scope["type"] == "http" and activity_detail.owns_path(scope.get("path", "")):
+            await activity_detail_app(scope, receive, send)
             return
 
         # Training-plan viewer — serves the uploaded Claude Coach plan app from

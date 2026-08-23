@@ -214,6 +214,31 @@ def get_activity_detail_from_db(garmin_id: int) -> dict | None:
             return cur.fetchone()
 
 
+def get_activity_with_detail(garmin_id: int) -> dict | None:
+    """The activity-detail page's full payload: the `activities` row's own
+    columns (name, date, distance, duration, avg HR, training load, sport
+    type) plus the matching `activity_details` row's `detail`/`route` JSONB.
+
+    None when the activity hasn't been synced yet, or its detail row hasn't
+    been populated yet (sync_garmin.py backfills `activity_details`
+    separately from `activities`, so there's a lag after a brand new
+    activity first appears).
+    """
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT a.garmin_id, a.activity_date, a.activity_type, a.name,
+                          a.distance_km, a.duration_min, a.avg_hr, a.training_load,
+                          a.summary ->> 'date' AS local_start_iso,
+                          d.detail, d.route
+                   FROM activities a
+                   JOIN activity_details d ON d.garmin_id = a.garmin_id
+                   WHERE a.garmin_id = %s""",
+                (garmin_id,),
+            )
+            return cur.fetchone()
+
+
 def get_sync_state() -> dict:
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
@@ -311,6 +336,20 @@ def get_activity_ids_needing_detail(limit: int = 10) -> list[int]:
                    WHERE d.garmin_id IS NULL OR d.synced_at < a.synced_at
                    ORDER BY a.activity_date DESC
                    LIMIT %s""",
+                (limit,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+
+def get_recent_activity_ids(limit: int = 10) -> list[int]:
+    """The N most recent activity ids, regardless of whether their detail row
+    already exists or is current — used by sync_garmin.py's --overwrite to
+    force a re-fetch (e.g. after get_activity_detail_row starts extracting a
+    field that a previous sync predates, like hr_zones or sub_activities)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT garmin_id FROM activities ORDER BY activity_date DESC LIMIT %s",
                 (limit,),
             )
             return [row[0] for row in cur.fetchall()]
