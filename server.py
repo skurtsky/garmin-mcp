@@ -729,7 +729,15 @@ def build_asgi_app():
                 token = query.get("token", [None])[0]
                 initial_tab = query.get("tab", [None])[0]
                 error = query.get("error", [None])[0]
-                page = render_dashboard_html(get_dashboard_data(), token, initial_tab, error)
+                # ?week= navigates the Activity tab (issue 85): 0 = current
+                # week, 1 = last week, etc. Clamped to >=0 — there's no data
+                # for future weeks, so a negative/garbage value just falls
+                # back to the current week.
+                try:
+                    week_offset = max(0, int(query.get("week", ["0"])[0]))
+                except ValueError:
+                    week_offset = 0
+                page = render_dashboard_html(get_dashboard_data(week_offset), token, initial_tab, error)
                 response = HTMLResponse(page)
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Dashboard render failed")

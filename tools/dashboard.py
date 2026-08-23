@@ -32,6 +32,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -78,11 +79,21 @@ _SECTION_CACHE_TTLS: dict[str, int] = {
     "gear_status":      60,
 }
 
+# A past week's activities are effectively immutable (issue 85 — Activity
+# tab week navigation), so once fetched they're cached generously — a
+# separate key per week_offset (see _activity_week_cache_key), never
+# confused with "week" (always the *current*, still-accumulating week).
+_ACTIVITY_WEEK_TTL = 3600
+
 # (timestamp, value, error_message) per section key
 _section_cache: dict[str, tuple[float, object, str | None]] = {}
 _section_cache_lock = threading.Lock()
 _refresh_in_progress: set[str] = set()
 _bg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cache-refresh")
+
+
+def _activity_week_cache_key(week_offset: int) -> str:
+    return "week" if week_offset == 0 else f"week@offset={week_offset}"
 
 
 def _clear_section_cache():
@@ -113,11 +124,25 @@ def _safe(fn, *args, **kwargs):
         return None, f"{type(e).__name__}: {e}"
 
 
+@contextmanager
+def _timed(label: str):
+    """Log how long one dashboard-data section took. Diagnostic only — logs
+    at INFO so it shows up in normal server logs without extra config,
+    letting a slow page load be traced to a specific section (DB query vs.
+    a live Garmin call vs. something else) instead of guessed at."""
+    t0 = time.monotonic()
+    try:
+        yield
+    finally:
+        logger.info("dashboard timing: %-24s %6.0fms", label, (time.monotonic() - t0) * 1000)
+
+
 def _fetch_last_sync() -> dict:
     """Last device-sync info from Garmin (upload time + device name).
 
     Kept as a module-level helper so it can be patched in tests and so the
-    live client import stays lazy.
+    live client import stays lazy. Only used by the live-Garmin fallback
+    path (build_dashboard_data) — the DB path uses _fetch_last_sync_from_db.
     """
     from garmin_client import get_client
 
@@ -126,6 +151,24 @@ def _fetch_last_sync() -> dict:
         "device_name": info.get("lastUsedDeviceName"),
         "upload_time": info.get("lastUsedDeviceUploadTime"),
     }
+
+
+def _fetch_last_sync_from_db() -> dict | None:
+    """The most recent sync_garmin.py run, from Postgres's own sync_state
+    table — not a live Garmin lookup. Returns None if the sync job has never
+    recorded a run, same as the live version returning nothing to show.
+
+    ``upload_time`` is epoch milliseconds, matching the shape the live
+    Garmin device-upload lookup returns, so the same rendering helpers
+    (_fmt_sync_time / _sync_time_utc_iso) handle either source unchanged.
+    """
+    import db
+
+    rows = [r for r in db.get_sync_state().values() if r.get("last_sync_time")]
+    if not rows:
+        return None
+    latest = max(r["last_sync_time"] for r in rows)
+    return {"device_name": None, "upload_time": int(latest.timestamp() * 1000)}
 
 
 def _fetch_parallel(tasks: dict) -> dict:
@@ -145,14 +188,19 @@ def _fetch_parallel(tasks: dict) -> dict:
         return {key: future.result() for key, future in futures.items()}
 
 
-def _get_cached(key: str) -> tuple[object | None, str | None, bool]:
-    """Return (value, error, is_fresh). value is None when nothing is cached."""
+def _get_cached(key: str, ttl: int | None = None) -> tuple[object | None, str | None, bool]:
+    """Return (value, error, is_fresh). value is None when nothing is cached.
+
+    ``ttl`` overrides the section's usual TTL — used for the Activity tab's
+    per-week-offset cache entries (see ``_activity_week_cache_key``), which
+    aren't in ``_SECTION_CACHE_TTLS`` since their key is dynamic.
+    """
     with _section_cache_lock:
         entry = _section_cache.get(key)
         if entry is None:
             return None, None, False
         ts, value, err = entry
-        ttl = _SECTION_CACHE_TTLS.get(key, 120)
+        ttl = ttl if ttl is not None else _SECTION_CACHE_TTLS.get(key, 120)
         return value, err, (time.monotonic() - ts) < ttl
 
 
@@ -195,42 +243,85 @@ def _build_trends_from_db(rows: list[dict], days: int) -> dict:
     return {"period": TREND_PERIOD, "days": days, "metrics": metrics}
 
 
-def _build_dashboard_data_from_db() -> dict | None:
+def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
     """Try to build dashboard data from PostgreSQL. Returns None if DB is
     empty or unavailable, signalling the caller to fall back to Garmin."""
     import db
     if not db.is_configured():
         return None
 
+    _page_t0 = time.monotonic()
     try:
         now = _local_now()
         today = now.date().isoformat()
 
-        today_metrics = db.get_today_metrics(today)
+        with _timed("today_metrics"):
+            today_metrics = db.get_today_metrics(today)
         if today_metrics is None:
             return None  # DB has no data yet, fall back to Garmin
 
         # Trends: fetch 180 days from DB
         trend_start = (now.date() - timedelta(days=179)).isoformat()
-        trend_rows = db.get_trend_metrics(trend_start, today)
+        with _timed("trend_metrics"):
+            trend_rows = db.get_trend_metrics(trend_start, today)
 
         # Activities
-        activities_rows = db.get_recent_activities(limit=20)
+        with _timed("recent_activities"):
+            activities_rows = db.get_recent_activities(limit=20)
         activities = [r["summary"] for r in activities_rows if r.get("summary")]
 
-        # Weekly summary: compute from DB activities
-        from tools.activities import get_weekly_summary
-        week_data, _ = _safe(get_weekly_summary)
+        # Weekly summary: computed entirely from the activities table — no
+        # live Garmin call. "week" is always the current week (feeds the
+        # Today tab's load widget) and always freshly queried, since it's
+        # still accumulating today. "activity_week" is whichever week the
+        # Activity tab is browsing — the same object when week_offset is 0,
+        # otherwise served from the same per-offset cache the live-Garmin
+        # path uses (a closed week's activities don't change), so browsing
+        # back to a week already viewed this session costs no DB round trip
+        # at all rather than just a cheaper one (issue 85).
+        from tools.activities import get_weekly_summary_from_db
+        with _timed("weekly_summary(current)"):
+            week_data, _ = _safe(get_weekly_summary_from_db)
+        if week_offset == 0:
+            activity_week_data, activity_week_err = week_data, None
+        else:
+            cache_key = _activity_week_cache_key(week_offset)
+            cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
+            if is_fresh and (cached_value is not None or cached_err is not None):
+                activity_week_data, activity_week_err = cached_value, cached_err
+                logger.info("dashboard timing: weekly_summary(offset=%s) served from cache", week_offset)
+            else:
+                with _timed(f"weekly_summary(offset={week_offset})"):
+                    activity_week_data, activity_week_err = _safe(get_weekly_summary_from_db, week_offset)
+                _set_cached(cache_key, activity_week_data, activity_week_err)
 
         # Profile, records, goals from DB
-        personal_records = db.get_personal_records_from_db()
-        athlete = db.get_athlete_profile_from_db()
-        active_goals = db.get_active_goals_from_db()
+        with _timed("personal_records"):
+            personal_records = db.get_personal_records_from_db()
+        with _timed("athlete_profile"):
+            athlete = db.get_athlete_profile_from_db()
+        with _timed("active_goals"):
+            active_goals = db.get_active_goals_from_db()
 
-        # Gear and last_sync still come live (local/cheap)
+        # last_sync: the sync job's own record of when it last ran (from
+        # sync_state), not a live device-upload lookup.
+        with _timed("last_sync"):
+            last_sync, sync_err = _safe(_fetch_last_sync_from_db)
+
+        # Gear still comes live — the equipment list itself (bikes, shoes,
+        # cumulative distances) isn't synced into Postgres at all, only the
+        # maintenance log/component links (a local JSON store), so there's
+        # no DB-backed alternative yet. NOTE: this runs on every page
+        # render regardless of which tab is showing — there's no partial
+        # reload, so a week-nav click on the Activity tab still pays for
+        # this (issue 85 follow-up: "is gear related to Activity slowness"
+        # — architecturally yes, until this is cached or DB-backed).
         from tools.gear_tracker import build_gear_status
-        gear_status, gear_err = _safe(build_gear_status)
-        last_sync, sync_err = _safe(_fetch_last_sync)
+        with _timed("gear_status(live)"):
+            gear_status, gear_err = _safe(build_gear_status)
+
+        logger.info("dashboard timing: TOTAL %6.0fms (week_offset=%s)",
+                    (time.monotonic() - _page_t0) * 1000, week_offset)
 
         data = {
             "date": today,
@@ -250,6 +341,9 @@ def _build_dashboard_data_from_db() -> dict | None:
             "activities_err": None,
             "week": week_data,
             "week_err": None,
+            "activity_week": activity_week_data,
+            "activity_week_err": activity_week_err,
+            "activity_week_offset": week_offset,
             "trends": _build_trends_from_db(trend_rows, len(trend_rows)),
             "trends_err": None,
             "personal_records": personal_records or {},
@@ -269,14 +363,19 @@ def _build_dashboard_data_from_db() -> dict | None:
         return None
 
 
-def build_dashboard_data() -> dict:
+def build_dashboard_data(week_offset: int = 0) -> dict:
     """Fetch every dashboard section from the Garmin client, concurrently.
 
     Each section is fetched independently and its failure is captured rather
     than raised, so one unavailable metric never blanks the whole page.
+
+    ``week_offset`` (0 = current week, 1 = last week, …) selects which week
+    the Activity tab shows (issue 85 — week navigation); it never affects the
+    Today tab's own "this week" widget, which always reflects the current
+    week via the "week" key.
     """
     # Try PostgreSQL first (fast — no Garmin API calls for cached data)
-    db_data = _build_dashboard_data_from_db()
+    db_data = _build_dashboard_data_from_db(week_offset)
     if db_data is not None:
         return db_data
 
@@ -315,6 +414,20 @@ def build_dashboard_data() -> dict:
         "last_sync":        (_fetch_last_sync, (), {}),
         "gear_status":      (build_gear_status, (), {}),
     }
+    # cache key per task — same as the data key for every section above,
+    # except "activity_week" below, whose cache key is offset-specific (see
+    # _activity_week_cache_key) so a different past week never serves stale
+    # data cached under a different offset.
+    cache_keys = {key: key for key in tasks}
+
+    # The Activity tab's own week when browsing away from the current week
+    # (issue 85). Folded into the same fetch batch below — not bolted on
+    # afterward — so it overlaps with every other section's fetch instead of
+    # adding its own serial round-trip on top of an already-parallel page
+    # load (that stacking is what made the nav arrows feel slow).
+    if week_offset:
+        tasks["activity_week"] = (get_weekly_summary, (), {"week_offset": week_offset})
+        cache_keys["activity_week"] = _activity_week_cache_key(week_offset)
 
     data = {
         "date": today,
@@ -327,12 +440,14 @@ def build_dashboard_data() -> dict:
     # synchronously (first load after a container restart).
     missing_tasks: dict = {}
     for key, (fn, args, kwargs) in tasks.items():
-        cached_value, cached_err, is_fresh = _get_cached(key)
+        cache_key = cache_keys[key]
+        ttl = _ACTIVITY_WEEK_TTL if key == "activity_week" else None
+        cached_value, cached_err, is_fresh = _get_cached(cache_key, ttl)
         if cached_value is not None or cached_err is not None:
             data[key] = cached_value
             data[f"{key}_err"] = cached_err
             if not is_fresh:
-                _bg_executor.submit(_refresh_section, key, fn, args, kwargs)
+                _bg_executor.submit(_refresh_section, cache_key, fn, args, kwargs)
         else:
             missing_tasks[key] = (fn, args, kwargs)
 
@@ -341,14 +456,19 @@ def build_dashboard_data() -> dict:
         for key, (value, err) in results.items():
             data[key] = value
             data[f"{key}_err"] = err
-            _set_cached(key, value, err)
+            _set_cached(cache_keys[key], value, err)
+
+    if not week_offset:
+        data["activity_week"] = data.get("week")
+        data["activity_week_err"] = data.get("week_err")
+    data["activity_week_offset"] = week_offset
 
     return data
 
 
-def get_dashboard_data() -> dict:
+def get_dashboard_data(week_offset: int = 0) -> dict:
     """Public entry point — returns a snapshot, warm or cold."""
-    return build_dashboard_data()
+    return build_dashboard_data(week_offset)
 
 
 # ── FORMATTING HELPERS ──────────────────────────────────────────────────────
@@ -451,6 +571,22 @@ def _month_year(value):
         return d.strftime("%b %Y")
     except ValueError:
         return _e(text)
+
+
+def _format_week_range(start: str, end: str) -> str:
+    """'2026-08-17', '2026-08-23' -> 'Aug 17 – Aug 23, 2026' (the Activity
+    tab's date-range indicator — issue 85). Spans a year boundary or a
+    truncated/missing date gracefully."""
+    try:
+        s = date.fromisoformat(start)
+        e = date.fromisoformat(end)
+    except (ValueError, TypeError):
+        return ""
+    if s.year != e.year:
+        return f"{s.strftime('%b')} {s.day}, {s.year} – {e.strftime('%b')} {e.day}, {e.year}"
+    if s.month == e.month:
+        return f"{s.strftime('%b')} {s.day}–{e.day}, {e.year}"
+    return f"{s.strftime('%b')} {s.day} – {e.strftime('%b')} {e.day}, {e.year}"
 
 
 # ── SPORT ICON / TINT ───────────────────────────────────────────────────────
@@ -1365,31 +1501,90 @@ def _activity_summary_card(activities: list[dict], split: list[tuple], summary: 
   </div>"""
 
 
-def _panel_activity(data: dict) -> str:
-    week = data.get("week")
+def _activity_week_url(token: str | None, offset: int) -> str:
+  """/dashboard link that opens the Activity tab on the given week offset
+  (0 = current week, 1 = last week, …), carrying the bearer token along."""
+  params = {"tab": "activity", "week": str(max(0, offset))}
+  if token:
+    params["token"] = token
+  return f"/dashboard?{urlencode(params)}"
+
+
+# A drawn chevron rather than a "‹"/"›" text glyph — those two characters
+# sit high in most fonts' em-box (they're metrically designed as quote
+# marks, not arrows), so flex-centering the *character* still left them
+# visibly off-center inside the circle. An SVG path has no such baseline
+# quirk: with `display:block` it centers exactly inside its flex parent.
+_CHEVRON_LEFT = ('<svg width="8" height="13" viewBox="0 0 8 13" fill="none" style="display:block">'
+                 '<path d="M7 1L1.5 6.5L7 12" stroke="currentColor" stroke-width="2" '
+                 'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+_CHEVRON_RIGHT = ('<svg width="8" height="13" viewBox="0 0 8 13" fill="none" style="display:block">'
+                  '<path d="M1 1L6.5 6.5L1 12" stroke="currentColor" stroke-width="2" '
+                  'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
+def _activity_nav_button(direction: str, token: str | None, offset: int, disabled: bool, size: int = 28) -> str:
+  """One prev/next week-navigation control. Rendered as an inert <span> when
+  disabled (used for the right/next arrow on the current week — issue 85:
+  can't navigate into future weeks that have no data) or a link otherwise."""
+  arrow = _CHEVRON_LEFT if direction == "prev" else _CHEVRON_RIGHT
+  label = "Previous week" if direction == "prev" else "Next week"
+  base_style = (
+    f"display:inline-flex;align-items:center;justify-content:center;width:{size}px;height:{size}px;"
+    "border-radius:999px;border:1px solid var(--color-divider);flex:0 0 auto"
+  )
+  if disabled:
+    return f'<span aria-hidden="true" style="{base_style};color:var(--color-neutral-700)">{arrow}</span>'
+  url = _e(_activity_week_url(token, offset))
+  return (
+    f'<a href="{url}" aria-label="{label}" style="{base_style};color:var(--color-text);text-decoration:none">'
+    f'{arrow}</a>'
+  )
+
+
+def _activity_current_week_link(token: str | None, offset: int) -> str:
+  """"This week" quick-jump back to week_offset=0 — only shown once you've
+  actually navigated away from the current week (issue 85 follow-up)."""
+  if offset <= 0:
+    return ""
+  url = _e(_activity_week_url(token, 0))
+  return (
+    f'<a href="{url}" style="font-size:11px;color:var(--color-accent);text-decoration:none;'
+    'white-space:nowrap;padding:6px 2px">This week</a>'
+  )
+
+
+def _panel_activity(data: dict, token: str | None = None) -> str:
+    week = data.get("activity_week")
+    if week is None:
+        week = data.get("week")
+    offset = data.get("activity_week_offset") or 0
     activities = data.get("activities")
     if not week and not activities:
-        err = data.get("week_err") or data.get("activities_err") or "no data"
+        err = data.get("activity_week_err") or data.get("week_err") or data.get("activities_err") or "no data"
         return f'<section class="panel tabpanel tp-activity"><div class="err">Activity data unavailable — {_e(err)}</div></section>'
 
     week = week or {}
 
     week_start = str(week.get("week_start") or "")[:10]
     week_end = str(week.get("week_end") or "")[:10]
-    week_activities = [
-      a for a in (activities or [])
-      if week_start <= str(a.get("date") or "")[:10] <= week_end
-    ]
+    date_range_label = _format_week_range(week_start, week_end)
     filter_labels = "".join(
       f'<label for="activity-filter-{key}">{key.title()}</label>'
       for key in _ACTIVITY_FILTERS
     )
-    all_source = week.get("activities") or []
-    summary_source = all_source or week_activities
+    # The requested week's own activities, straight from get_weekly_summary
+    # (already scoped to week_start..week_end server-side) rather than the
+    # separately-fetched "recent 20 activities" list, which only covers the
+    # current/most-recent week — using it here left older weeks' cards empty
+    # while their summary totals (computed from this same source) were correct.
+    summary_source = week.get("activities") or []
+    current_week_link = _activity_current_week_link(token, offset)
+    prev_btn = _activity_nav_button("prev", token, offset + 1, False)
+    next_btn = _activity_nav_button("next", token, offset - 1, offset <= 0)
     sections = []
     for key in _ACTIVITY_FILTERS:
       selected_summary = summary_source if key == "all" else [a for a in summary_source if _activity_filter_matches(a, key)]
-      selected_list = [a for a in week_activities if _activity_filter_matches(a, key)]
       split = []
       if key == "all":
         split = [
@@ -1405,18 +1600,28 @@ def _panel_activity(data: dict) -> str:
             split.append((label, duration))
           else:
             split[existing] = (label, split[existing][1] + duration)
-      max_load = max((a.get("training_load") or 0) for a in selected_list) or 1 if selected_list else 1
-      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_list)
+      max_load = max((a.get("training_load") or 0) for a in selected_summary) or 1 if selected_summary else 1
+      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_summary)
       empty = '<div class="muted" style="font-size:13px">No activities for this filter this week.</div>'
-      view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_list else ""
+      view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_summary else ""
+      bottom_nav = (
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px">'
+        f'{prev_btn}<div style="flex:1;display:flex;justify-content:center">{view_more}</div>{next_btn}</div>'
+      )
       sections.append(
         f'<div class="activity-filter-section activity-filter-{key}" style="flex-direction:column;gap:8px">'
-        f'{_activity_summary_card(selected_summary, split, week if key == "all" else None)}{cards or empty}{view_more}</div>'
+        f'{_activity_summary_card(selected_summary, split, week if key == "all" else None)}{cards or empty}{bottom_nav}</div>'
       )
 
     return f"""
     <section class="panel tabpanel tp-activity" style="flex-direction:column;gap:16px">
-      <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
+        <div>
+          <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
+          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(date_range_label)}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">{current_week_link}{prev_btn}{next_btn}</div>
+      </div>
       <div class="activity-filterbar pillbar">{filter_labels}</div>
       {"".join(sections)}
     </section>"""
@@ -2418,7 +2623,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
       for key in _ACTIVITY_FILTERS
     )
 
-    panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data)
+    panels = (_panel_today(data) + _panel_trends(data) + _panel_activity(data, token)
              + _panel_fitness(data) + _panel_gear(data, token, error))
 
     body = f"""
