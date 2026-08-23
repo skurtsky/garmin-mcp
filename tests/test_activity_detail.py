@@ -62,8 +62,18 @@ def test_parse_start_seconds_reads_time_of_day():
     assert ad._parse_start_seconds(None) == 0
 
 
+def test_parse_start_seconds_accepts_space_separator():
+    """Garmin's startTimeLocal isn't consistently 'T'-separated — a
+    space-separated value used to silently parse as midnight."""
+    assert ad._parse_start_seconds("2026-08-21 05:46:07") == 5 * 3600 + 46 * 60 + 7
+
+
 def test_fmt_activity_datetime_matches_mockup_style():
     assert ad._fmt_activity_datetime("2026-08-21T05:46:07") == "August 21, 2026 at 05:46"
+
+
+def test_fmt_activity_datetime_accepts_space_separator():
+    assert ad._fmt_activity_datetime("2026-08-21 05:46:07") == "August 21, 2026 at 05:46"
 
 
 def test_resolve_start_iso_prefers_summary_date():
@@ -120,6 +130,11 @@ def _row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+def test_render_header_shows_timestamp_for_space_separated_iso():
+    html = ad.render_activity_detail_fragment(_row(local_start_iso="2026-08-20 18:00:00"))
+    assert "August 20, 2026 at 18:00" in html
 
 
 def test_render_minimal_activity_has_no_map_or_charts():

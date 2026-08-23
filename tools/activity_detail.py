@@ -145,10 +145,17 @@ def _speed_or_pace(sport, kph) -> tuple[str, str]:
 
 
 def _parse_start_seconds(iso) -> float:
-    """Seconds since local midnight for the activity's start clock time."""
+    """Seconds since local midnight for the activity's start clock time.
+
+    Accepts a space or a 'T' between the date and time — Garmin's own
+    startTimeLocal isn't consistently one or the other (tools/dashboard.py's
+    _fmt_sync_time works around the same inconsistency for device upload
+    times), and a strict 'T'-only match silently produced 0 (midnight) for
+    any activity using the other separator.
+    """
     if not iso:
         return 0
-    m = re.search(r"T(\d{2}):(\d{2}):(\d{2})", str(iso))
+    m = re.search(r"[T ](\d{2}):(\d{2}):(\d{2})", str(iso))
     if not m:
         return 0
     h, mi, s = (int(x) for x in m.groups())
@@ -158,7 +165,7 @@ def _parse_start_seconds(iso) -> float:
 def _fmt_activity_datetime(iso) -> str | None:
     if not iso:
         return None
-    m = re.match(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})", str(iso))
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})", str(iso))
     if not m:
         return None
     y, mo, d, h, mi = m.groups()
