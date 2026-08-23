@@ -2392,8 +2392,21 @@ def render_dashboard_html(data: dict, token: str | None = None,
         if sync_time else "Live from Garmin Connect"
     )
 
-    refresh_meta = (
-        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">' if REFRESH_SECONDS > 0 else ""
+    # A plain <meta http-equiv="refresh"> reloads unconditionally on its
+    # timer — including mid-look at the activity-detail modal (issue 74
+    # feedback: the page would reload and silently close it out from under
+    # whoever was reading it). This does the same periodic refresh from JS
+    # instead, so it can check first and defer while that modal is open.
+    refresh_script = (
+        f"""<script>(function () {{
+  var seconds = {REFRESH_SECONDS};
+  function tick() {{
+    var modal = document.getElementById('activity-modal');
+    if (modal && modal.classList.contains('open')) {{ setTimeout(tick, 15000); return; }}
+    location.reload();
+  }}
+  setTimeout(tick, seconds * 1000);
+}})();</script>""" if REFRESH_SECONDS > 0 else ""
     )
 
     active_tab_id = _TAB_IDS.get(initial_tab, _TAB_IDS[_DEFAULT_TAB])
@@ -2465,7 +2478,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
         f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
-        f"{refresh_meta}"
+        f"{refresh_script}"
         "<title>Garmin Health Dashboard</title>"
         f"<style>{_STYLE}</style>"
         f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'

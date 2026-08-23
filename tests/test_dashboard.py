@@ -589,6 +589,17 @@ def test_footer_links_are_removed_from_dashboard():
     assert "View training plan" not in html
 
 
+def test_periodic_refresh_defers_while_activity_modal_is_open():
+    """A plain <meta http-equiv="refresh"> would reload unconditionally,
+    closing the activity-detail modal out from under whoever's reading it
+    (issue 74 feedback) — the refresh is JS-driven instead so it can check
+    first."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert '<meta http-equiv="refresh"' not in html
+    assert "classList.contains('open')" in html
+    assert "location.reload()" in html
+
+
 def test_no_external_requests_on_load():
     """Tabs/range/PR-filter switching stays pure CSS (radio-driven visibility)
     and the page itself never eagerly fetches anything external on load

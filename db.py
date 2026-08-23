@@ -341,6 +341,20 @@ def get_activity_ids_needing_detail(limit: int = 10) -> list[int]:
             return [row[0] for row in cur.fetchall()]
 
 
+def get_recent_activity_ids(limit: int = 10) -> list[int]:
+    """The N most recent activity ids, regardless of whether their detail row
+    already exists or is current — used by sync_garmin.py's --overwrite to
+    force a re-fetch (e.g. after get_activity_detail_row starts extracting a
+    field that a previous sync predates, like hr_zones or sub_activities)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT garmin_id FROM activities ORDER BY activity_date DESC LIMIT %s",
+                (limit,),
+            )
+            return [row[0] for row in cur.fetchall()]
+
+
 def upsert_activity_detail(garmin_id: int, detail: dict, route: list | None):
     with get_conn() as conn:
         with conn.cursor() as cur:

@@ -584,9 +584,14 @@ def _extract_detail_weather(weather_raw: dict | None) -> dict | None:
 
 
 def _extract_detail_laps(laps_raw: dict | None) -> list[dict]:
-    """Per-lap rows shaped for chart rendering (cumulative distance + raw
-    seconds/speed) rather than the display-formatted rows _extract_laps
-    produces for the text views."""
+    """Per-lap rows shaped for chart rendering (cumulative + raw per-lap
+    distance, raw seconds/speed) rather than the display-formatted rows
+    _extract_laps produces for the text views.
+
+    'distance_m' is the lap's own (non-cumulative) distance — for a pool
+    swim, a rest lap carries 0 here even as 'cum_km' keeps climbing from the
+    lengths around it, which is what tells a rest lap apart from a swum one.
+    """
     if not laps_raw:
         return []
     rows = []
@@ -597,6 +602,7 @@ def _extract_detail_laps(laps_raw: dict | None) -> list[dict]:
         avg_speed = lap.get('averageSpeed') or 0
         rows.append({
             'lap_num':     lap.get('lapIndex'),
+            'distance_m':  round(distance, 1),
             'cum_km':      round(cum_m / 1000, 2),
             'avg_hr':      lap.get('averageHR'),
             'max_hr':      lap.get('maxHR'),
@@ -731,6 +737,9 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         'pauses':                pauses,
         'laps':                  _extract_detail_laps(laps_raw),
         'gear':                  get_activity_gear(activity_id),
+        # Pool-swim-specific — harmless None for every other sport.
+        'avg_swolf':             summary.get('averageSWOLF'),
+        'avg_stroke_cadence':    summary.get('averageSwimCadence'),
     }
 
     if _is_multisport(activity_raw):

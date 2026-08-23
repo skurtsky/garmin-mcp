@@ -118,18 +118,29 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
     logger.info(f"Synced {len(activities)} activities")
 
 
-def sync_activity_details(limit: int = 10):
+def sync_activity_details(limit: int = 10, overwrite: bool = False):
     """Sync activity_details (detail + route JSONB) for activities missing it
     or gone stale relative to their parent activity row.
 
     Each activity costs several Garmin API calls (splits, weather, the raw
     detail/polyline endpoint), so this is capped per run rather than backfilling
     everything at once — a fresh install catches up gradually across runs.
+
+    ``overwrite`` re-fetches the most recent ``limit`` activities regardless
+    of whether they already have a detail row — get_activity_ids_needing_detail
+    only catches a *missing* or *stale* row, so it never revisits an activity
+    whose detail was already synced under an older code path that extracted
+    fewer fields (e.g. a schema change adding hr_zones or sub_activities to
+    activity_details.detail). Use this for a one-time backfill after such a
+    change: `python sync_garmin.py --details-only --detail-limit 999 --overwrite`.
     """
     from tools.activities import get_activity_detail_row
     import db
 
-    activity_ids = db.get_activity_ids_needing_detail(limit=limit)
+    activity_ids = (
+        db.get_recent_activity_ids(limit=limit) if overwrite
+        else db.get_activity_ids_needing_detail(limit=limit)
+    )
     logger.info(f"Syncing detail for {len(activity_ids)} activity(ies)")
     for activity_id in activity_ids:
         try:
@@ -231,6 +242,14 @@ def parse_args(argv: list[str] | None = None):
         help="only sync activity_details (detail/route JSONB); useful for a "
              "one-time backfill, e.g. --details-only --detail-limit 999",
     )
+    parser.add_argument(
+        "--overwrite", action="store_true",
+        help="force-refresh activity_details for the most recent "
+             "--detail-limit activities even if their detail row is already "
+             "current — use after a schema change adds fields older detail "
+             "rows don't have yet, e.g. "
+             "--details-only --detail-limit 999 --overwrite",
+    )
     return parser.parse_args(argv)
 
 
@@ -249,7 +268,7 @@ def main(argv: list[str] | None = None):
 
     errors = []
     if args.details_only:
-        sync_plan = [lambda: sync_activity_details(limit=args.detail_limit)]
+        sync_plan = [lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite)]
     elif args.activities_only:
         sync_plan = [sync_activities_step]
     else:
@@ -263,7 +282,7 @@ def main(argv: list[str] | None = None):
         if not args.daily_only:
             sync_plan.extend([
                 sync_activities_step,
-                lambda: sync_activity_details(limit=args.detail_limit),
+                lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite),
                 sync_personal_records,
                 sync_athlete_profile,
                 sync_active_goals,

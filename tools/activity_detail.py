@@ -21,13 +21,14 @@ import html
 import json
 import logging
 import re
+from datetime import timedelta
 
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 import db
-from tools.dashboard import _e, _sport_style
+from tools.dashboard import _e, _sport_style, _tz_offset_hours
 
 API_PREFIX = "/api/activity"
 
@@ -164,6 +165,24 @@ def _fmt_activity_datetime(iso) -> str | None:
     return f"{_MONTHS[int(mo) - 1]} {int(d)}, {y} at {h}:{mi}"
 
 
+def _resolve_start_iso(row: dict) -> str | None:
+    """The activity's local start time as an ISO-ish 'YYYY-MM-DDTHH:MM:SS'
+    string. Prefers the activities.summary JSONB's own 'date' (Garmin's
+    startTimeLocal, already in the athlete's local zone); falls back to
+    activities.activity_date (UTC) shifted by the configured
+    DASHBOARD_TZ_OFFSET_HOURS — covers a row synced before 'summary' carried
+    a 'date' key, or any other reason it came back empty, so the header and
+    every chart's clock labels never just go blank."""
+    iso = row.get("local_start_iso")
+    if iso:
+        return iso
+    activity_date = row.get("activity_date")
+    if not activity_date:
+        return None
+    local_dt = activity_date + timedelta(hours=_tz_offset_hours())
+    return local_dt.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def _clock_hm(start_sec, offset_sec) -> str:
     total = int(round(start_sec + offset_sec)) % 86400
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}"
@@ -260,7 +279,8 @@ def _downsample(run: list, max_points: int = _MAX_CHART_POINTS) -> list:
     return [run[i] for i in idxs if i < len(run)]
 
 
-_SMOOTH_WINDOW_SEC = 60  # matches the mockup's ~50% smoothing on HR/power
+_SMOOTH_WINDOW_SEC = 12  # just enough to iron out single-sample sensor noise
+                          # without erasing a real, brief zone-crossing effort
 
 
 def _smooth_run(run: list, window_sec: float = _SMOOTH_WINDOW_SEC) -> list:
@@ -510,20 +530,48 @@ def _hr_power_section_html(title: str, chart_card_html: str, zone_table_html: st
 
 # ── SECTIONS ─────────────────────────────────────────────────────────────────
 
-def _quick_stats_html(row: dict, detail: dict, total_elapsed_sec: float) -> str:
+def _swim_duration_sec(laps: list) -> float | None:
+    """Sum of lap durations for laps that actually swam (distance >= 20m,
+    i.e. at least one pool length) — a rest lap at the wall between sets
+    shows 0m and would otherwise inflate 'swim duration' with rest time."""
+    swum = [lap for lap in laps if (lap.get("distance_m") or 0) >= 20]
+    if not swum:
+        return None
+    return sum(lap.get("duration_sec") or 0 for lap in swum)
+
+
+def _quick_stats_html(row: dict, detail: dict, total_elapsed_sec: float, has_route: bool) -> str:
     sport = row.get("activity_type")
+    is_swim = _is_swim(sport)
     speed_label, speed_value = _speed_or_pace(sport, detail.get("avg_speed_kph"))
-    stats = [
-        ("Total Duration", _fmt_hms(total_elapsed_sec)),
-        ("Active Duration", _fmt_hms(detail.get("duration_active_sec"))),
+
+    if is_swim:
+        swim_sec = _swim_duration_sec(detail.get("laps") or [])
+        stats = [
+            ("Total Duration", _fmt_hms(total_elapsed_sec)),
+            ("Swim Duration", _fmt_hms(swim_sec if swim_sec is not None else detail.get("duration_active_sec"))),
+        ]
+    else:
+        stats = [
+            ("Total Duration", _fmt_hms(total_elapsed_sec)),
+            ("Active Duration", _fmt_hms(detail.get("duration_active_sec"))),
+        ]
+
+    stats += [
         ("Distance", _fmt_km(row.get("distance_km"))),
         (f"Avg {speed_label}", speed_value),
-        ("Elevation", _fmt_elev(detail.get("elevation_gain_m"))),
-        ("Calories", _num(detail.get("calories"))),
-        ("Avg HR", f"{_num(row.get('avg_hr'))} bpm" if row.get("avg_hr") is not None else "&mdash;"),
     ]
+    if has_route:
+        stats.append(("Elevation", _fmt_elev(detail.get("elevation_gain_m"))))
+    stats.append(("Calories", _num(detail.get("calories"))))
+    stats.append(("Avg HR", f"{_num(row.get('avg_hr'))} bpm" if row.get("avg_hr") is not None else "&mdash;"))
     if detail.get("avg_power"):
         stats.append(("Avg Power", f"{_num(detail['avg_power'])} W"))
+    if is_swim:
+        if detail.get("avg_stroke_cadence"):
+            stats.append(("Avg Swim Cadence", f"{_num(detail['avg_stroke_cadence'])} spl"))
+        if detail.get("avg_swolf"):
+            stats.append(("SWOLF", _num(detail["avg_swolf"])))
 
     cells = "".join(
         f'<div><div class="muted" style="font-size:10px">{html.escape(label)}</div>'
@@ -584,34 +632,50 @@ def _humanize_label(value) -> str | None:
     return text[:1].upper() + text[1:].lower() if text else None
 
 
-def _weather_html(weather: dict | None) -> str:
-    if not weather:
-        return ""
-    chips = [
-        ("Temp", _fmt_temp(weather.get("temp_c"))),
-        ("Humidity", f"{round(weather['humidity_pct'])}%" if weather.get("humidity_pct") is not None else "&mdash;"),
-        ("Wind", _fmt_wind(weather.get("wind_kph"), weather.get("wind_dir"))),
-    ]
-    if weather.get("conditions"):
-        chips.append(("Conditions", html.escape(weather["conditions"])))
-    cells = "".join(
-        f'<div><div class="muted" style="font-size:10px">{label}</div>'
-        f'<div style="font-family:var(--font-heading);font-size:15px">{value}</div></div>'
-        for label, value in chips
-    )
-    return f'<div class="card" style="padding:14px"><div class="ad-stat-grid">{cells}</div></div>'
+def _fmt_lap_distance_m(m) -> str:
+    if m is None:
+        return "&mdash;"
+    return f"{round(m)} m"
 
 
 def _splits_table_html(laps: list, sport) -> str:
     if not laps:
         return ""
+
+    # Pool-swim laps carry actual set structure (a 0m rest lap between sets,
+    # a lap number that doesn't line up with a fixed distance marker) — the
+    # lap number is meaningful there, and the per-lap distance is small
+    # enough that meters (not cumulative km) is the useful unit. Every other
+    # sport's "laps" are just auto-lap distance markers, where the lap
+    # number is redundant with the cumulative distance column already shown.
+    if _is_swim(sport):
+        rows = "".join(
+            f"<tr><td>{lap.get('lap_num')}</td>"
+            f"<td>{_fmt_lap_distance_m(lap.get('distance_m'))}</td>"
+            f"<td>{_fmt_hms(lap.get('duration_sec'))}</td>"
+            f"<td>{_pace100_label(lap.get('speed_kph'))}</td>"
+            f"<td>{_num(lap.get('avg_hr'))}</td></tr>"
+            for lap in laps
+        )
+        header = "<tr><th>Lap</th><th>Distance</th><th>Time</th><th>Pace</th><th>HR</th></tr>"
+        return f"""
+        <div class="card" style="padding:14px;gap:8px">
+          <div class="section-title" style="margin-bottom:0">Splits</div>
+          <div style="overflow-x:auto">
+            <table class="ad-splits-table">
+              <thead>{header}</thead>
+              <tbody>{rows}</tbody>
+            </table>
+          </div>
+        </div>"""
+
     show_power = any(lap.get("avg_power") for lap in laps)
     is_cyc = _is_cycling(sport)
     speed_header = "Speed" if is_cyc else "Pace"
-    speed_fn = _speed_label if is_cyc else (_pace100_label if _is_swim(sport) else _pace_label)
+    speed_fn = _speed_label if is_cyc else _pace_label
 
     rows = "".join(
-        f"<tr><td>{lap.get('lap_num')}</td><td>{_fmt_km(lap.get('cum_km'))}</td>"
+        f"<tr><td>{_fmt_km(lap.get('cum_km'))}</td>"
         f"<td>{_fmt_hms(lap.get('duration_sec'))}</td>"
         f"<td>{speed_fn(lap.get('speed_kph'))}</td>"
         f"<td>{_num(lap.get('avg_hr'))}</td>"
@@ -625,7 +689,7 @@ def _splits_table_html(laps: list, sport) -> str:
       <div class="section-title" style="margin-bottom:0">Splits</div>
       <div style="overflow-x:auto">
         <table class="ad-splits-table">
-          <thead><tr><th>Lap</th><th>Dist</th><th>Time</th><th>{speed_header}</th><th>HR</th>{power_th}</tr></thead>
+          <thead><tr><th>Dist</th><th>Time</th><th>{speed_header}</th><th>HR</th>{power_th}</tr></thead>
           <tbody>{rows}</tbody>
         </table>
       </div>
@@ -783,7 +847,8 @@ def render_activity_detail_fragment(row: dict, token: str | None = None) -> str:
         (p.get("end_sec") or 0) - (p.get("start_sec") or 0) for p in (detail.get("pauses") or [])
     )
     total_elapsed_sec = active_sec + pause_sec
-    start_sec = _parse_start_seconds(row.get("local_start_iso"))
+    start_iso = _resolve_start_iso(row)
+    start_sec = _parse_start_seconds(start_iso)
 
     header = f"""
     <div style="display:flex;align-items:center;gap:10px;margin:2px 0 4px">
@@ -792,17 +857,17 @@ def render_activity_detail_fragment(row: dict, token: str | None = None) -> str:
       <div style="flex:1;min-width:0">
         <div style="font-family:var(--font-heading);font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
             {_e(row.get('name'))}</div>
-        <div class="muted" style="font-size:12px">{_e(_fmt_activity_datetime(row.get('local_start_iso')))}</div>
+        <div class="muted" style="font-size:12px">{_e(_fmt_activity_datetime(start_iso))}</div>
       </div>
     </div>"""
 
-    # The route map carries its own weather overlay (temp/wind/humidity); the
-    # standalone weather card is only a fallback for an indoor/no-GPS
-    # activity that still has weather (rare, but the data may exist).
+    # The route map carries its own weather overlay (temp/wind/humidity) —
+    # an indoor/no-GPS activity (no route) drops weather entirely rather
+    # than falling back to a standalone card; it isn't information that
+    # matters for e.g. a pool swim or a strength session.
     map_section = _map_section_html(route, weather)
-    weather_fallback = "" if route else _weather_html(weather)
 
-    quick_stats = _quick_stats_html(row, detail, total_elapsed_sec)
+    quick_stats = _quick_stats_html(row, detail, total_elapsed_sec, bool(route))
     training_effect = _training_effect_html(detail, row.get("training_load"))
     sub_activities = _sub_activities_html(detail.get("sub_activities"))
 
@@ -835,7 +900,7 @@ def render_activity_detail_fragment(row: dict, token: str | None = None) -> str:
 
     power_series = detail.get("power_series") or []
     power_section = ""
-    if power_series and len(power_series) > 1 and detail.get("avg_power"):
+    if power_series and len(power_series) > 1 and detail.get("avg_power") and _is_cycling(sport):
         power_bounds = _power_bounds_from_ftp(detail.get("ftp"))
         colors = _POWER_ZONE_COLORS if power_bounds else [_POWER_ZONE_COLORS[-1]]
         chart = _build_line_chart(power_series, pauses, power_bounds, colors, " W",
@@ -860,7 +925,7 @@ def render_activity_detail_fragment(row: dict, token: str | None = None) -> str:
     gear_section = _gear_list_html(detail.get("gear") or [], token)
 
     sections = "".join(filter(None, [
-        header, map_section, weather_fallback, quick_stats, training_effect,
+        header, map_section, quick_stats, training_effect,
         sub_activities, hr_section, power_section, splits_section, gear_section,
     ]))
     return f'<div style="display:flex;flex-direction:column;gap:14px">{sections}</div>'

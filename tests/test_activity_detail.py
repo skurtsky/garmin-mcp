@@ -66,6 +66,39 @@ def test_fmt_activity_datetime_matches_mockup_style():
     assert ad._fmt_activity_datetime("2026-08-21T05:46:07") == "August 21, 2026 at 05:46"
 
 
+def test_resolve_start_iso_prefers_summary_date():
+    row = {"local_start_iso": "2026-08-21T05:46:07", "activity_date": None}
+    assert ad._resolve_start_iso(row) == "2026-08-21T05:46:07"
+
+
+def test_resolve_start_iso_falls_back_to_activity_date(monkeypatch):
+    """A row synced before activities.summary carried a 'date' key (or any
+    other reason it comes back empty) still gets a timestamp, derived from
+    the always-present activity_date column instead of going blank."""
+    from datetime import datetime, timezone
+    monkeypatch.setattr(ad, "_tz_offset_hours", lambda: -4)
+    row = {"local_start_iso": None, "activity_date": datetime(2026, 8, 21, 9, 46, 7, tzinfo=timezone.utc)}
+    assert ad._resolve_start_iso(row) == "2026-08-21T05:46:07"
+
+
+def test_resolve_start_iso_none_when_nothing_available():
+    assert ad._resolve_start_iso({"local_start_iso": None, "activity_date": None}) is None
+
+
+def test_swim_duration_sec_excludes_rest_laps():
+    laps = [
+        {"distance_m": 50, "duration_sec": 40},
+        {"distance_m": 0, "duration_sec": 15},   # rest at the wall
+        {"distance_m": 25, "duration_sec": 22},  # one length still counts
+        {"distance_m": 10, "duration_sec": 8},   # under 20m -> not a real length
+    ]
+    assert ad._swim_duration_sec(laps) == 40 + 22
+
+
+def test_swim_duration_sec_none_when_nothing_qualifies():
+    assert ad._swim_duration_sec([{"distance_m": 0, "duration_sec": 30}]) is None
+
+
 # ── FRAGMENT RENDERING ───────────────────────────────────────────────────────
 
 _BASE_DETAIL = {
@@ -120,12 +153,27 @@ def test_render_map_shows_weather_overlay_instead_of_a_weather_card():
     assert html.count('class="card"') == 0 or "Conditions" not in html
 
 
-def test_render_shows_weather_card_fallback_without_a_route():
+def test_render_drops_weather_entirely_without_a_route():
+    """An indoor/no-GPS activity (strength, pool swim, yoga, ...) gets no
+    weather at all — not the map overlay (no map to overlay it on) and not
+    a fallback card either."""
     detail = dict(_BASE_DETAIL)
     detail["weather"] = {"temp_c": 11.1, "humidity_pct": 80, "wind_kph": 12, "wind_dir": "N", "conditions": "Clear"}
     html = ad.render_activity_detail_fragment(_row(detail=detail, route=None))
     assert "ad-map-weather" not in html
-    assert "Conditions" in html
+    assert "Conditions" not in html
+    assert "11" not in html.split("Avg HR")[0]  # no stray temp reading pre-stats either
+
+
+def test_render_drops_elevation_without_a_route():
+    detail = dict(_BASE_DETAIL)
+    detail["elevation_gain_m"] = 229
+    html = ad.render_activity_detail_fragment(_row(detail=detail, route=None))
+    assert "Elevation" not in html
+
+    route = [{"lat": 45.39, "lon": -75.74, "elevation_m": 70, "distance_km": 0}]
+    html_with_route = ad.render_activity_detail_fragment(_row(detail=detail, route=route))
+    assert "Elevation" in html_with_route
 
 
 def test_render_includes_hr_chart_when_hr_series_present():
@@ -148,7 +196,17 @@ def test_render_skips_power_section_without_avg_power():
     detail = dict(_BASE_DETAIL)
     detail["power_series"] = [{"t_offset_sec": t, "value": 150} for t in range(0, 100, 5)]
     # avg_power missing/None -> no power section even though a series exists
-    html = ad.render_activity_detail_fragment(_row(detail=detail))
+    html = ad.render_activity_detail_fragment(_row(detail=detail, activity_type="road_biking"))
+    assert "activity-power-chart" not in html
+
+
+def test_render_skips_power_section_for_non_cycling_sports():
+    """A runner's footpod/watch can report power too, but the power chart
+    is cycling-only (issue 74 feedback)."""
+    detail = dict(_BASE_DETAIL)
+    detail["power_series"] = [{"t_offset_sec": t, "value": 150 + (t % 20)} for t in range(0, 300, 5)]
+    detail["avg_power"] = 250
+    html = ad.render_activity_detail_fragment(_row(detail=detail, activity_type="running"))
     assert "activity-power-chart" not in html
 
 
@@ -159,7 +217,7 @@ def test_render_hr_and_power_sections_share_structure():
     detail["power_series"] = [{"t_offset_sec": t, "value": 150 + (t % 20)} for t in range(0, 300, 5)]
     detail["avg_power"] = 160
     detail["ftp"] = 250
-    html = ad.render_activity_detail_fragment(_row(detail=detail))
+    html = ad.render_activity_detail_fragment(_row(detail=detail, activity_type="road_biking"))
     assert html.count("ad-chart-num") == 2
     assert html.count("ad-bounds-bar") == 2
     assert html.count("ad-zone-row-head") == 2
@@ -172,6 +230,41 @@ def test_zone_table_column_order_is_zone_duration_bar_pct():
     bar_idx = rows_html.index("ad-zone-bar")
     pct_idx = rows_html.index("50.0%")
     assert zone_idx < duration_idx < bar_idx < pct_idx
+
+
+def test_splits_table_drops_lap_number_for_non_swim():
+    laps = [{"lap_num": 1, "cum_km": 10, "duration_sec": 1200, "speed_kph": 30, "avg_hr": 140}]
+    html = ad._splits_table_html(laps, "road_biking")
+    assert "<th>Lap</th>" not in html
+    assert "10.00 km" in html
+
+
+def test_splits_table_keeps_lap_number_for_swim():
+    laps = [{"lap_num": 1, "cum_km": 0.05, "distance_m": 50, "duration_sec": 40,
+              "speed_kph": 4.5, "avg_hr": 130}]
+    html = ad._splits_table_html(laps, "lap_swimming")
+    assert "<th>Lap</th>" in html
+    assert "50 m" in html
+    assert "<th>Distance</th>" in html and "<th>Pace</th>" in html
+    assert "km/h" not in html  # swim splits show pace, never a raw speed
+
+
+def test_render_swim_quick_stats_show_swim_duration_cadence_and_swolf():
+    detail = dict(_BASE_DETAIL)
+    detail["duration_active_sec"] = 3600
+    detail["avg_stroke_cadence"] = 32
+    detail["avg_swolf"] = 38
+    detail["laps"] = [
+        {"lap_num": 1, "distance_m": 50, "duration_sec": 45, "cum_km": 0.05},
+        {"lap_num": 2, "distance_m": 0, "duration_sec": 20, "cum_km": 0.05},
+    ]
+    html = ad.render_activity_detail_fragment(
+        _row(activity_type="lap_swimming", detail=detail, route=None))
+    assert "Swim Duration" in html
+    assert "Active Duration" not in html
+    assert "0:45" in html  # the 45s swum lap, not the 65s total incl. rest
+    assert "Avg Swim Cadence" in html and "32 spl" in html
+    assert "SWOLF" in html and "38" in html
 
 
 def test_render_includes_multisport_legs():
