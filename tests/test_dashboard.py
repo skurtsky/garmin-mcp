@@ -601,6 +601,70 @@ def test_build_dashboard_data_fetches_the_requested_week_for_the_activity_tab(mo
     assert data["activity_week_err"] is None
 
 
+def _patch_dashboard_sections_except_week(monkeypatch, weekly_summary_fn):
+    """Stub out every build_dashboard_data() section except get_weekly_summary
+    with something instant, so tests can isolate the weekly-summary fetch's
+    timing/call-count without every other section's own (mocked) latency."""
+    from tools import health, activities, trends, performance, profile, challenges
+
+    monkeypatch.setattr(health, "get_daily_readiness", lambda d: {})
+    monkeypatch.setattr(health, "get_daily_health", lambda d: {})
+    monkeypatch.setattr(health, "get_sleep", lambda d: {})
+    monkeypatch.setattr(health, "get_training_readiness", lambda d: {})
+    monkeypatch.setattr(health, "get_training_status", lambda d: {})
+    monkeypatch.setattr(activities, "get_activities", lambda limit=20: [])
+    monkeypatch.setattr(activities, "get_weekly_summary", weekly_summary_fn)
+    monkeypatch.setattr(trends, "get_trends", lambda period, metrics: {"period": period, "days": 0, "metrics": {}})
+    monkeypatch.setattr(performance, "get_personal_records", lambda: {})
+    monkeypatch.setattr(profile, "get_athlete_profile", lambda: {})
+    monkeypatch.setattr(challenges, "get_active_goals", lambda: [])
+    monkeypatch.setattr(dashboard, "_fetch_last_sync", lambda: {})
+
+
+def test_build_dashboard_data_fetches_current_and_requested_week_concurrently(monkeypatch):
+    """Issue 85 follow-up: navigating to a past week used to bolt an extra
+    get_weekly_summary() call on *after* the whole page's usual parallel
+    fetch, doubling the wait. It must now run alongside the current week's
+    fetch instead of stacked after it."""
+    import time
+
+    def slow_weekly_summary(week_offset=0):
+        time.sleep(0.15)
+        return {"week_offset": week_offset}
+
+    _patch_dashboard_sections_except_week(monkeypatch, slow_weekly_summary)
+
+    start = time.monotonic()
+    dashboard.build_dashboard_data(week_offset=7)
+    elapsed = time.monotonic() - start
+
+    # Sequential would take >=0.30s (two 0.15s calls back to back); running
+    # them concurrently keeps the total close to a single 0.15s call.
+    assert elapsed < 0.25, f"week fetches ran serially ({elapsed:.3f}s)"
+
+
+def test_build_dashboard_data_caches_a_past_week_across_requests(monkeypatch):
+    """A past week's activities don't change, so browsing back to a week
+    already viewed this session should hit no live Garmin call at all."""
+    calls = []
+
+    def counting_weekly_summary(week_offset=0):
+        calls.append(week_offset)
+        return {"week_offset": week_offset}
+
+    _patch_dashboard_sections_except_week(monkeypatch, counting_weekly_summary)
+
+    dashboard.build_dashboard_data(week_offset=4)
+    calls_after_first = list(calls)
+    dashboard.build_dashboard_data(week_offset=4)
+
+    # First request: one call for the current week (offset 0) and one for
+    # the requested week (offset 4). Second request for the same offset 4
+    # should be served entirely from cache — no new calls at all.
+    assert sorted(calls_after_first) == [0, 4]
+    assert calls == calls_after_first
+
+
 def test_render_compact_mobile_metric_layouts():
     html = dashboard.render_dashboard_html(SAMPLE)
 

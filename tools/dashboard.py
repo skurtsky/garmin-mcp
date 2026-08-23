@@ -78,11 +78,21 @@ _SECTION_CACHE_TTLS: dict[str, int] = {
     "gear_status":      60,
 }
 
+# A past week's activities are effectively immutable (issue 85 — Activity
+# tab week navigation), so once fetched they're cached generously — a
+# separate key per week_offset (see _activity_week_cache_key), never
+# confused with "week" (always the *current*, still-accumulating week).
+_ACTIVITY_WEEK_TTL = 3600
+
 # (timestamp, value, error_message) per section key
 _section_cache: dict[str, tuple[float, object, str | None]] = {}
 _section_cache_lock = threading.Lock()
 _refresh_in_progress: set[str] = set()
 _bg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cache-refresh")
+
+
+def _activity_week_cache_key(week_offset: int) -> str:
+    return "week" if week_offset == 0 else f"week@offset={week_offset}"
 
 
 def _clear_section_cache():
@@ -145,14 +155,19 @@ def _fetch_parallel(tasks: dict) -> dict:
         return {key: future.result() for key, future in futures.items()}
 
 
-def _get_cached(key: str) -> tuple[object | None, str | None, bool]:
-    """Return (value, error, is_fresh). value is None when nothing is cached."""
+def _get_cached(key: str, ttl: int | None = None) -> tuple[object | None, str | None, bool]:
+    """Return (value, error, is_fresh). value is None when nothing is cached.
+
+    ``ttl`` overrides the section's usual TTL — used for the Activity tab's
+    per-week-offset cache entries (see ``_activity_week_cache_key``), which
+    aren't in ``_SECTION_CACHE_TTLS`` since their key is dynamic.
+    """
     with _section_cache_lock:
         entry = _section_cache.get(key)
         if entry is None:
             return None, None, False
         ts, value, err = entry
-        ttl = _SECTION_CACHE_TTLS.get(key, 120)
+        ttl = ttl if ttl is not None else _SECTION_CACHE_TTLS.get(key, 120)
         return value, err, (time.monotonic() - ts) < ttl
 
 
@@ -221,14 +236,34 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         # Weekly summary: compute from DB activities. "week" is always the
         # current week (feeds the Today tab's load widget); "activity_week"
         # is whichever week the Activity tab is currently browsing — the
-        # same object when week_offset is 0, a fresh fetch otherwise (issue
-        # 85 — week navigation on the Activity tab).
+        # same object when week_offset is 0, otherwise a separately-cached
+        # fetch (issue 85 — week navigation on the Activity tab).
+        #
+        # When both are needed they're fetched in the same parallel batch —
+        # not one after the other — so navigating to a past week costs one
+        # round-trip, not two stacked in series (the original version of
+        # this feature did the latter, which is what made the arrows feel
+        # slow: two sequential live Garmin calls instead of one).
         from tools.activities import get_weekly_summary
-        week_data, _ = _safe(get_weekly_summary)
-        if week_offset:
-            activity_week_data, activity_week_err = _safe(get_weekly_summary, week_offset=week_offset)
-        else:
+        if week_offset == 0:
+            week_data, _ = _safe(get_weekly_summary)
             activity_week_data, activity_week_err = week_data, None
+        else:
+            cache_key = _activity_week_cache_key(week_offset)
+            cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
+            if cached_value is not None or cached_err is not None:
+                week_data, _ = _safe(get_weekly_summary)
+                activity_week_data, activity_week_err = cached_value, cached_err
+                if not is_fresh:
+                    _bg_executor.submit(_refresh_section, cache_key, get_weekly_summary, (), {"week_offset": week_offset})
+            else:
+                results = _fetch_parallel({
+                    "week":          (get_weekly_summary, (), {}),
+                    "activity_week": (get_weekly_summary, (), {"week_offset": week_offset}),
+                })
+                week_data, _ = results["week"]
+                activity_week_data, activity_week_err = results["activity_week"]
+                _set_cached(cache_key, activity_week_data, activity_week_err)
 
         # Profile, records, goals from DB
         personal_records = db.get_personal_records_from_db()
@@ -331,6 +366,20 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         "last_sync":        (_fetch_last_sync, (), {}),
         "gear_status":      (build_gear_status, (), {}),
     }
+    # cache key per task — same as the data key for every section above,
+    # except "activity_week" below, whose cache key is offset-specific (see
+    # _activity_week_cache_key) so a different past week never serves stale
+    # data cached under a different offset.
+    cache_keys = {key: key for key in tasks}
+
+    # The Activity tab's own week when browsing away from the current week
+    # (issue 85). Folded into the same fetch batch below — not bolted on
+    # afterward — so it overlaps with every other section's fetch instead of
+    # adding its own serial round-trip on top of an already-parallel page
+    # load (that stacking is what made the nav arrows feel slow).
+    if week_offset:
+        tasks["activity_week"] = (get_weekly_summary, (), {"week_offset": week_offset})
+        cache_keys["activity_week"] = _activity_week_cache_key(week_offset)
 
     data = {
         "date": today,
@@ -343,12 +392,14 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     # synchronously (first load after a container restart).
     missing_tasks: dict = {}
     for key, (fn, args, kwargs) in tasks.items():
-        cached_value, cached_err, is_fresh = _get_cached(key)
+        cache_key = cache_keys[key]
+        ttl = _ACTIVITY_WEEK_TTL if key == "activity_week" else None
+        cached_value, cached_err, is_fresh = _get_cached(cache_key, ttl)
         if cached_value is not None or cached_err is not None:
             data[key] = cached_value
             data[f"{key}_err"] = cached_err
             if not is_fresh:
-                _bg_executor.submit(_refresh_section, key, fn, args, kwargs)
+                _bg_executor.submit(_refresh_section, cache_key, fn, args, kwargs)
         else:
             missing_tasks[key] = (fn, args, kwargs)
 
@@ -357,17 +408,9 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         for key, (value, err) in results.items():
             data[key] = value
             data[f"{key}_err"] = err
-            _set_cached(key, value, err)
+            _set_cached(cache_keys[key], value, err)
 
-    # The Activity tab's own week — a fresh, uncached fetch when browsing
-    # away from the current week (deliberate/infrequent, so not worth the
-    # unbounded per-week cache growth), otherwise just the current week
-    # fetched above.
-    if week_offset:
-        activity_week, activity_week_err = _safe(get_weekly_summary, week_offset=week_offset)
-        data["activity_week"] = activity_week
-        data["activity_week_err"] = activity_week_err
-    else:
+    if not week_offset:
         data["activity_week"] = data.get("week")
         data["activity_week_err"] = data.get("week_err")
     data["activity_week_offset"] = week_offset
@@ -1419,15 +1462,28 @@ def _activity_week_url(token: str | None, offset: int) -> str:
   return f"/dashboard?{urlencode(params)}"
 
 
+# A drawn chevron rather than a "‹"/"›" text glyph — those two characters
+# sit high in most fonts' em-box (they're metrically designed as quote
+# marks, not arrows), so flex-centering the *character* still left them
+# visibly off-center inside the circle. An SVG path has no such baseline
+# quirk: with `display:block` it centers exactly inside its flex parent.
+_CHEVRON_LEFT = ('<svg width="8" height="13" viewBox="0 0 8 13" fill="none" style="display:block">'
+                 '<path d="M7 1L1.5 6.5L7 12" stroke="currentColor" stroke-width="2" '
+                 'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+_CHEVRON_RIGHT = ('<svg width="8" height="13" viewBox="0 0 8 13" fill="none" style="display:block">'
+                  '<path d="M1 1L6.5 6.5L1 12" stroke="currentColor" stroke-width="2" '
+                  'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+
 def _activity_nav_button(direction: str, token: str | None, offset: int, disabled: bool, size: int = 28) -> str:
   """One prev/next week-navigation control. Rendered as an inert <span> when
   disabled (used for the right/next arrow on the current week — issue 85:
   can't navigate into future weeks that have no data) or a link otherwise."""
-  arrow = "&#8249;" if direction == "prev" else "&#8250;"
+  arrow = _CHEVRON_LEFT if direction == "prev" else _CHEVRON_RIGHT
   label = "Previous week" if direction == "prev" else "Next week"
   base_style = (
     f"display:inline-flex;align-items:center;justify-content:center;width:{size}px;height:{size}px;"
-    "border-radius:999px;border:1px solid var(--color-divider);font-size:16px;line-height:1;flex:0 0 auto"
+    "border-radius:999px;border:1px solid var(--color-divider);flex:0 0 auto"
   )
   if disabled:
     return f'<span aria-hidden="true" style="{base_style};color:var(--color-neutral-700)">{arrow}</span>'
