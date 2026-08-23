@@ -683,3 +683,69 @@ def test_get_activity_detail_row_multisport_propagates_sub_activities(monkeypatc
     assert [s['type'] for s in subs] == ['open_water_swimming', 'running']
     assert detail['gear'] == []
 
+
+# ── get_weekly_summary_from_db (issue 85 follow-up: DB-only weekly summary,
+# no live Garmin call — used by the dashboard's Activity tab) ────────────────
+
+def test_get_weekly_summary_from_db_never_touches_a_live_client(monkeypatch):
+    import db
+    from tools.activities import get_weekly_summary_from_db, week_bounds
+
+    week_monday, week_sunday = week_bounds(0)
+    calls = []
+
+    def fake_get_weekly_activities(week_start, week_end):
+        calls.append((week_start, week_end))
+        return [
+            {"summary": {"id": 1, "date": f"{week_monday.isoformat()}T06:00:00",
+                         "name": "Morning Run", "type": "running", "distance_km": 8.0,
+                         "duration_min": 40.0, "avg_hr": 145, "training_load": 60.0}},
+            {"summary": {"id": 2, "date": f"{week_monday.isoformat()}T18:00:00",
+                         "name": "Pool Swim", "type": "lap_swimming", "distance_km": 1.5,
+                         "duration_min": 30.0, "avg_hr": 120, "training_load": 20.0}},
+        ]
+
+    monkeypatch.setattr(db, "get_weekly_activities", fake_get_weekly_activities)
+
+    def boom(*a, **k):
+        raise AssertionError("get_weekly_summary_from_db must not touch a live client")
+
+    monkeypatch.setattr("tools.activities.get_client", boom)
+
+    result = get_weekly_summary_from_db()
+
+    # The DB query's exclusive upper bound is the day *after* Sunday, so the
+    # whole of Sunday is still included.
+    from datetime import timedelta
+    assert calls == [(week_monday.isoformat(), (week_sunday + timedelta(days=1)).isoformat())]
+    assert result["week_start"] == week_monday.isoformat()
+    assert result["week_end"] == week_sunday.isoformat()
+    assert result["total_activities"] == 2
+    assert result["total_distance_km"] == 9.5
+    assert result["total_training_load"] == 80.0
+    assert result["by_type"]["running"]["count"] == 1
+    assert result["by_type"]["lap_swimming"]["count"] == 1
+    assert [a["name"] for a in result["activities"]] == ["Morning Run", "Pool Swim"]
+
+
+def test_get_weekly_summary_from_db_offset_queries_the_right_week(monkeypatch):
+    import db
+    from tools.activities import get_weekly_summary_from_db, week_bounds
+
+    seen = {}
+
+    def fake_get_weekly_activities(week_start, week_end):
+        seen["range"] = (week_start, week_end)
+        return []
+
+    monkeypatch.setattr(db, "get_weekly_activities", fake_get_weekly_activities)
+
+    result = get_weekly_summary_from_db(week_offset=2)
+
+    expected_monday, expected_sunday = week_bounds(2)
+    assert result["week_start"] == expected_monday.isoformat()
+    assert result["week_end"] == expected_sunday.isoformat()
+    assert result["total_activities"] == 0
+    assert result["activities"] == []
+    assert seen["range"][0] == expected_monday.isoformat()
+

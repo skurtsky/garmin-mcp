@@ -127,7 +127,8 @@ def _fetch_last_sync() -> dict:
     """Last device-sync info from Garmin (upload time + device name).
 
     Kept as a module-level helper so it can be patched in tests and so the
-    live client import stays lazy.
+    live client import stays lazy. Only used by the live-Garmin fallback
+    path (build_dashboard_data) — the DB path uses _fetch_last_sync_from_db.
     """
     from garmin_client import get_client
 
@@ -136,6 +137,24 @@ def _fetch_last_sync() -> dict:
         "device_name": info.get("lastUsedDeviceName"),
         "upload_time": info.get("lastUsedDeviceUploadTime"),
     }
+
+
+def _fetch_last_sync_from_db() -> dict | None:
+    """The most recent sync_garmin.py run, from Postgres's own sync_state
+    table — not a live Garmin lookup. Returns None if the sync job has never
+    recorded a run, same as the live version returning nothing to show.
+
+    ``upload_time`` is epoch milliseconds, matching the shape the live
+    Garmin device-upload lookup returns, so the same rendering helpers
+    (_fmt_sync_time / _sync_time_utc_iso) handle either source unchanged.
+    """
+    import db
+
+    rows = [r for r in db.get_sync_state().values() if r.get("last_sync_time")]
+    if not rows:
+        return None
+    latest = max(r["last_sync_time"] for r in rows)
+    return {"device_name": None, "upload_time": int(latest.timestamp() * 1000)}
 
 
 def _fetch_parallel(tasks: dict) -> dict:
@@ -233,47 +252,31 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         activities_rows = db.get_recent_activities(limit=20)
         activities = [r["summary"] for r in activities_rows if r.get("summary")]
 
-        # Weekly summary: compute from DB activities. "week" is always the
-        # current week (feeds the Today tab's load widget); "activity_week"
-        # is whichever week the Activity tab is currently browsing — the
-        # same object when week_offset is 0, otherwise a separately-cached
-        # fetch (issue 85 — week navigation on the Activity tab).
-        #
-        # When both are needed they're fetched in the same parallel batch —
-        # not one after the other — so navigating to a past week costs one
-        # round-trip, not two stacked in series (the original version of
-        # this feature did the latter, which is what made the arrows feel
-        # slow: two sequential live Garmin calls instead of one).
-        from tools.activities import get_weekly_summary
-        if week_offset == 0:
-            week_data, _ = _safe(get_weekly_summary)
-            activity_week_data, activity_week_err = week_data, None
-        else:
-            cache_key = _activity_week_cache_key(week_offset)
-            cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
-            if cached_value is not None or cached_err is not None:
-                week_data, _ = _safe(get_weekly_summary)
-                activity_week_data, activity_week_err = cached_value, cached_err
-                if not is_fresh:
-                    _bg_executor.submit(_refresh_section, cache_key, get_weekly_summary, (), {"week_offset": week_offset})
-            else:
-                results = _fetch_parallel({
-                    "week":          (get_weekly_summary, (), {}),
-                    "activity_week": (get_weekly_summary, (), {"week_offset": week_offset}),
-                })
-                week_data, _ = results["week"]
-                activity_week_data, activity_week_err = results["activity_week"]
-                _set_cached(cache_key, activity_week_data, activity_week_err)
+        # Weekly summary: computed entirely from the activities table — no
+        # live Garmin call. "week" is always the current week (feeds the
+        # Today tab's load widget); "activity_week" is whichever week the
+        # Activity tab is browsing, the same object when week_offset is 0
+        # (issue 85 — week navigation on the Activity tab).
+        from tools.activities import get_weekly_summary_from_db
+        week_data = get_weekly_summary_from_db()
+        activity_week_data = week_data if week_offset == 0 else get_weekly_summary_from_db(week_offset)
+        activity_week_err = None
 
         # Profile, records, goals from DB
         personal_records = db.get_personal_records_from_db()
         athlete = db.get_athlete_profile_from_db()
         active_goals = db.get_active_goals_from_db()
 
-        # Gear and last_sync still come live (local/cheap)
+        # last_sync: the sync job's own record of when it last ran (from
+        # sync_state), not a live device-upload lookup.
+        last_sync, sync_err = _safe(_fetch_last_sync_from_db)
+
+        # Gear still comes live — the equipment list itself (bikes, shoes,
+        # cumulative distances) isn't synced into Postgres at all, only the
+        # maintenance log/component links (a local JSON store), so there's
+        # no DB-backed alternative yet.
         from tools.gear_tracker import build_gear_status
         gear_status, gear_err = _safe(build_gear_status)
-        last_sync, sync_err = _safe(_fetch_last_sync)
 
         data = {
             "date": today,
@@ -1494,6 +1497,18 @@ def _activity_nav_button(direction: str, token: str | None, offset: int, disable
   )
 
 
+def _activity_current_week_link(token: str | None, offset: int) -> str:
+  """"This week" quick-jump back to week_offset=0 — only shown once you've
+  actually navigated away from the current week (issue 85 follow-up)."""
+  if offset <= 0:
+    return ""
+  url = _e(_activity_week_url(token, 0))
+  return (
+    f'<a href="{url}" style="font-size:11px;color:var(--color-accent);text-decoration:none;'
+    'white-space:nowrap;padding:6px 2px">This week</a>'
+  )
+
+
 def _panel_activity(data: dict, token: str | None = None) -> str:
     week = data.get("activity_week")
     if week is None:
@@ -1519,6 +1534,7 @@ def _panel_activity(data: dict, token: str | None = None) -> str:
     # current/most-recent week — using it here left older weeks' cards empty
     # while their summary totals (computed from this same source) were correct.
     summary_source = week.get("activities") or []
+    current_week_link = _activity_current_week_link(token, offset)
     prev_btn = _activity_nav_button("prev", token, offset + 1, False)
     next_btn = _activity_nav_button("next", token, offset - 1, offset <= 0)
     sections = []
@@ -1559,7 +1575,7 @@ def _panel_activity(data: dict, token: str | None = None) -> str:
           <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
           <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(date_range_label)}</div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">{prev_btn}{next_btn}</div>
+        <div style="display:flex;align-items:center;gap:8px">{current_week_link}{prev_btn}{next_btn}</div>
       </div>
       <div class="activity-filterbar pillbar">{filter_labels}</div>
       {"".join(sections)}

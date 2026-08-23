@@ -957,12 +957,10 @@ def get_activity_summary(
     return result
 
 
-def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> dict:
-    """
-    Get an aggregated summary of activities for a Monday-to-Sunday week.
-    Args:
-        week_offset: 0 = current week, 1 = last week, 2 = two weeks ago, …
-        sport_type:  Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+def week_bounds(week_offset: int = 0) -> tuple[date, date]:
+    """The Monday and Sunday (today, if that's sooner) of the given week.
+
+    ``week_offset``: 0 = current week, 1 = last week, 2 = two weeks ago, …
     """
     today = date.today()
     week_monday = today - timedelta(days=today.weekday() + week_offset * 7)
@@ -970,14 +968,13 @@ def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> d
     # Don't ask for future dates
     if week_sunday > today:
         week_sunday = today
-    client = get_client()
-    activities = client.get_activities_by_date(
-        startdate=week_monday.isoformat(),
-        enddate=week_sunday.isoformat(),
-        activitytype=sport_type,
-    )
-    summaries = [_activity_summary_from_list(a) for a in activities]
-    # Aggregate totals
+    return week_monday, week_sunday
+
+
+def _aggregate_weekly_summary(week_monday: date, week_sunday: date, summaries: list[dict],
+                               sport_type: str | None = None) -> dict:
+    """Shared shape for get_weekly_summary's result, whether ``summaries``
+    came from a live Garmin call or from the activities table in Postgres."""
     total_distance_km = round(sum(a['distance_km'] for a in summaries), 2)
     total_duration_min = round(sum(a['duration_min'] for a in summaries), 1)
     total_training_load = round(sum(a['training_load'] for a in summaries), 1)
@@ -1001,6 +998,42 @@ def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> d
         'by_type': by_type,
         'activities': summaries,
     }
+
+
+def get_weekly_summary(week_offset: int = 0, sport_type: str | None = None) -> dict:
+    """
+    Get an aggregated summary of activities for a Monday-to-Sunday week.
+    Args:
+        week_offset: 0 = current week, 1 = last week, 2 = two weeks ago, …
+        sport_type:  Optional filter — 'running', 'road_biking', 'lap_swimming', etc.
+    """
+    week_monday, week_sunday = week_bounds(week_offset)
+    client = get_client()
+    activities = client.get_activities_by_date(
+        startdate=week_monday.isoformat(),
+        enddate=week_sunday.isoformat(),
+        activitytype=sport_type,
+    )
+    summaries = [_activity_summary_from_list(a) for a in activities]
+    return _aggregate_weekly_summary(week_monday, week_sunday, summaries, sport_type)
+
+
+def get_weekly_summary_from_db(week_offset: int = 0) -> dict:
+    """Same shape as get_weekly_summary(), computed entirely from the
+    ``activities`` table in Postgres — no live Garmin call.
+
+    Used by the dashboard's DB-backed path (tools/dashboard.py) so browsing
+    old weeks on the Activity tab, and the Today tab's own current-week
+    widget, never touch Garmin's API directly (issue 85). Only sees weeks
+    that sync_garmin.py has actually synced — an un-synced week reads back
+    as zero activities rather than raising, same as a real quiet week.
+    """
+    import db
+
+    week_monday, week_sunday = week_bounds(week_offset)
+    rows = db.get_weekly_activities(week_monday.isoformat(), (week_sunday + timedelta(days=1)).isoformat())
+    summaries = [r["summary"] for r in rows if r.get("summary")]
+    return _aggregate_weekly_summary(week_monday, week_sunday, summaries)
 
 
 def _swim_set_from_lap(lap: dict, activity: dict) -> dict | None:

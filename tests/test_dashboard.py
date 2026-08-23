@@ -572,6 +572,16 @@ def test_render_activity_week_nav_enables_next_arrow_when_browsing_a_past_week()
     assert "week=-1" not in html
 
 
+def test_render_shows_this_week_quick_jump_only_when_browsing_a_past_week():
+    on_current_week = dashboard.render_dashboard_html(SAMPLE)
+    assert ">This week<" not in on_current_week
+
+    past_week_data = {**SAMPLE, "activity_week": SAMPLE["week"], "activity_week_offset": 5}
+    on_past_week = dashboard.render_dashboard_html(past_week_data, token="secret")
+    assert ">This week<" in on_past_week
+    assert 'href="/dashboard?tab=activity&amp;week=0&amp;token=secret"' in on_past_week
+
+
 def test_build_dashboard_data_fetches_the_requested_week_for_the_activity_tab(monkeypatch):
     from tools import health, activities, trends, performance, profile, challenges
 
@@ -663,6 +673,62 @@ def test_build_dashboard_data_caches_a_past_week_across_requests(monkeypatch):
     # should be served entirely from cache — no new calls at all.
     assert sorted(calls_after_first) == [0, 4]
     assert calls == calls_after_first
+
+
+def test_build_dashboard_data_from_db_never_calls_garmin_live_for_weeks_or_sync(monkeypatch):
+    """When Postgres is configured, the whole page — including the Activity
+    tab's current and navigated weeks, and the "last sync" line — must come
+    from the DB. Only the gear list has no DB-backed source yet and stays
+    live (see the comment in _build_dashboard_data_from_db)."""
+    import db
+    from datetime import datetime, timezone
+    from tools import activities as activities_mod
+    from tools import gear_tracker
+
+    monkeypatch.setattr(db, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "get_today_metrics", lambda d: {
+        "readiness_data": {}, "health_data": {}, "sleep_data": {},
+        "training_data": {}, "training_status_data": {},
+    })
+    monkeypatch.setattr(db, "get_trend_metrics", lambda s, e: [])
+    monkeypatch.setattr(db, "get_recent_activities", lambda limit=20: [])
+
+    week_calls = []
+
+    def fake_get_weekly_activities(week_start, week_end):
+        week_calls.append((week_start, week_end))
+        return [{"summary": {"id": 1, "date": f"{week_start}T06:00:00", "name": "Run",
+                             "type": "running", "distance_km": 5.0, "duration_min": 30.0,
+                             "avg_hr": 140, "training_load": 40.0}}]
+
+    monkeypatch.setattr(db, "get_weekly_activities", fake_get_weekly_activities)
+    monkeypatch.setattr(db, "get_personal_records_from_db", lambda: {})
+    monkeypatch.setattr(db, "get_athlete_profile_from_db", lambda: {})
+    monkeypatch.setattr(db, "get_active_goals_from_db", lambda: [])
+
+    synced_at = datetime(2026, 8, 23, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(db, "get_sync_state", lambda: {
+        "activities": {"data_type": "activities", "last_sync_time": synced_at},
+    })
+
+    def boom(*a, **k):
+        raise AssertionError("DB path must never call Garmin live")
+
+    monkeypatch.setattr(activities_mod, "get_weekly_summary", boom)
+    monkeypatch.setattr(dashboard, "_fetch_last_sync", boom)
+    monkeypatch.setattr(gear_tracker, "build_gear_status", lambda: {"gear": []})
+
+    data = dashboard.build_dashboard_data(week_offset=3)
+
+    # One DB query for the current week, one for the requested week — never
+    # a live Garmin call for either.
+    assert len(week_calls) == 2
+    assert data["week"]["total_activities"] == 1
+    assert data["activity_week"]["total_activities"] == 1
+    assert data["activity_week_offset"] == 3
+    assert data["activity_week_err"] is None
+    assert data["last_sync"]["upload_time"] == int(synced_at.timestamp() * 1000)
+    assert data["gear_status"] == {"gear": []}
 
 
 def test_render_compact_mobile_metric_layouts():
