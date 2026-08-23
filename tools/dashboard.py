@@ -32,6 +32,7 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -121,6 +122,19 @@ def _safe(fn, *args, **kwargs):
         return fn(*args, **kwargs), None
     except Exception as e:  # noqa: BLE001 — a failed section must not break the page
         return None, f"{type(e).__name__}: {e}"
+
+
+@contextmanager
+def _timed(label: str):
+    """Log how long one dashboard-data section took. Diagnostic only — logs
+    at INFO so it shows up in normal server logs without extra config,
+    letting a slow page load be traced to a specific section (DB query vs.
+    a live Garmin call vs. something else) instead of guessed at."""
+    t0 = time.monotonic()
+    try:
+        yield
+    finally:
+        logger.info("dashboard timing: %-24s %6.0fms", label, (time.monotonic() - t0) * 1000)
 
 
 def _fetch_last_sync() -> dict:
@@ -236,20 +250,24 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
     if not db.is_configured():
         return None
 
+    _page_t0 = time.monotonic()
     try:
         now = _local_now()
         today = now.date().isoformat()
 
-        today_metrics = db.get_today_metrics(today)
+        with _timed("today_metrics"):
+            today_metrics = db.get_today_metrics(today)
         if today_metrics is None:
             return None  # DB has no data yet, fall back to Garmin
 
         # Trends: fetch 180 days from DB
         trend_start = (now.date() - timedelta(days=179)).isoformat()
-        trend_rows = db.get_trend_metrics(trend_start, today)
+        with _timed("trend_metrics"):
+            trend_rows = db.get_trend_metrics(trend_start, today)
 
         # Activities
-        activities_rows = db.get_recent_activities(limit=20)
+        with _timed("recent_activities"):
+            activities_rows = db.get_recent_activities(limit=20)
         activities = [r["summary"] for r in activities_rows if r.get("summary")]
 
         # Weekly summary: computed entirely from the activities table — no
@@ -262,7 +280,8 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         # back to a week already viewed this session costs no DB round trip
         # at all rather than just a cheaper one (issue 85).
         from tools.activities import get_weekly_summary_from_db
-        week_data, _ = _safe(get_weekly_summary_from_db)
+        with _timed("weekly_summary(current)"):
+            week_data, _ = _safe(get_weekly_summary_from_db)
         if week_offset == 0:
             activity_week_data, activity_week_err = week_data, None
         else:
@@ -270,25 +289,39 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
             if is_fresh and (cached_value is not None or cached_err is not None):
                 activity_week_data, activity_week_err = cached_value, cached_err
+                logger.info("dashboard timing: weekly_summary(offset=%s) served from cache", week_offset)
             else:
-                activity_week_data, activity_week_err = _safe(get_weekly_summary_from_db, week_offset)
+                with _timed(f"weekly_summary(offset={week_offset})"):
+                    activity_week_data, activity_week_err = _safe(get_weekly_summary_from_db, week_offset)
                 _set_cached(cache_key, activity_week_data, activity_week_err)
 
         # Profile, records, goals from DB
-        personal_records = db.get_personal_records_from_db()
-        athlete = db.get_athlete_profile_from_db()
-        active_goals = db.get_active_goals_from_db()
+        with _timed("personal_records"):
+            personal_records = db.get_personal_records_from_db()
+        with _timed("athlete_profile"):
+            athlete = db.get_athlete_profile_from_db()
+        with _timed("active_goals"):
+            active_goals = db.get_active_goals_from_db()
 
         # last_sync: the sync job's own record of when it last ran (from
         # sync_state), not a live device-upload lookup.
-        last_sync, sync_err = _safe(_fetch_last_sync_from_db)
+        with _timed("last_sync"):
+            last_sync, sync_err = _safe(_fetch_last_sync_from_db)
 
         # Gear still comes live — the equipment list itself (bikes, shoes,
         # cumulative distances) isn't synced into Postgres at all, only the
         # maintenance log/component links (a local JSON store), so there's
-        # no DB-backed alternative yet.
+        # no DB-backed alternative yet. NOTE: this runs on every page
+        # render regardless of which tab is showing — there's no partial
+        # reload, so a week-nav click on the Activity tab still pays for
+        # this (issue 85 follow-up: "is gear related to Activity slowness"
+        # — architecturally yes, until this is cached or DB-backed).
         from tools.gear_tracker import build_gear_status
-        gear_status, gear_err = _safe(build_gear_status)
+        with _timed("gear_status(live)"):
+            gear_status, gear_err = _safe(build_gear_status)
+
+        logger.info("dashboard timing: TOTAL %6.0fms (week_offset=%s)",
+                    (time.monotonic() - _page_t0) * 1000, week_offset)
 
         data = {
             "date": today,
