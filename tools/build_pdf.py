@@ -431,7 +431,7 @@ def week_page(plan, week):
 
     summary = week.get("summary", {}).get("bySport", {})
     bar = "".join(
-        f"<span class='sport-chip'><span class='swatch' style='background:{SPORT_COLORS.get(s, "#8a8f9c")}'></span>"
+        f"<span class='sport-chip'><span class='swatch' style='background:{SPORT_COLORS.get(s, '#8a8f9c')}'></span>"
         f"<b>{s.upper()}</b> {v.get('sessions', 0)}× · {fmt_hours(v.get('hours'))}"
         f"{' · ' + format(v['km'], 'g') + 'km' if v.get('km') else ''}</span>"
         for s, v in summary.items()
