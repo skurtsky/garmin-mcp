@@ -308,16 +308,11 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         with _timed("last_sync"):
             last_sync, sync_err = _safe(_fetch_last_sync_from_db)
 
-        # Gear still comes live — the equipment list itself (bikes, shoes,
-        # cumulative distances) isn't synced into Postgres at all, only the
-        # maintenance log/component links (a local JSON store), so there's
-        # no DB-backed alternative yet. NOTE: this runs on every page
-        # render regardless of which tab is showing — there's no partial
-        # reload, so a week-nav click on the Activity tab still pays for
-        # this (issue 85 follow-up: "is gear related to Activity slowness"
-        # — architecturally yes, until this is cached or DB-backed).
+        # Gear is DB-backed when DATABASE_URL is configured; build_gear_status
+        # falls back to Garmin only when the synced gear catalog is empty or
+        # the app is running without PostgreSQL.
         from tools.gear_tracker import build_gear_status
-        with _timed("gear_status(live)"):
+        with _timed("gear_status"):
             gear_status, gear_err = _safe(build_gear_status)
 
         logger.info("dashboard timing: TOTAL %6.0fms (week_offset=%s)",
@@ -947,6 +942,14 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
 .gear-modal-dialog { position:relative; z-index:1; width:100%; max-width:420px; max-height:85vh;
                       overflow-y:auto; background:var(--color-surface); border-radius:var(--radius-md);
                       padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-md); }
+.gear-modal-dialog-small { max-width:360px; }
+.gt-service-list { display:flex; flex-direction:column; gap:5px; }
+.gt-service-head, .gt-service-row { display:grid; grid-template-columns:minmax(82px,1fr) 72px 72px 28px 28px; gap:6px; align-items:center; }
+.gt-service-head { padding:0 9px 3px; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--color-neutral-500); }
+.gt-service-row { padding:8px 9px; border-radius:6px; font-size:12px; }
+.gt-service-log { color:var(--color-accent-200); text-decoration:none; border:1px solid var(--color-accent-700); border-radius:6px; width:24px; height:24px; display:grid; place-items:center; text-align:center; }
+.gt-service-log svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.gt-service-log:hover { background:color-mix(in srgb, var(--color-accent) 18%, transparent); }
 
 /* ── activity row (opens the activity-detail modal, issue 74) ── */
 .actcard { padding:12px; border-radius:var(--radius-md); background:var(--color-surface);
@@ -1805,6 +1808,16 @@ def _border_tint(color: str, pct: int = 40) -> str:
     return f"color-mix(in srgb, {color} {pct}%, transparent)"
 
 
+def _gear_icon(name: str) -> str:
+    if name == "logbook":
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h11a2 2 0 0 1 2 2v14H7a3 3 0 0 1-3-3V7a3 3 0 0 1 3-3z"/><path d="M7 4v16"/><path d="M10 8h6"/><path d="M10 12h6"/></svg>'
+    if name == "pencil":
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11a2.8 2.8 0 0 0-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></svg>'
+    if name == "plus":
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>'
+    return ""
+
+
 def _gear_bike_overview_card(g: dict) -> str:
     """A clickable bike card (Bikes overview) that jumps to its entry in the
     Bike Component Tracker section below via a same-page anchor link — no JS
@@ -1867,18 +1880,18 @@ def _gear_component_row(c: dict) -> str:
     `#component-<id>` anchor, shown with `:target` (see the .gear-modal CSS)
     — no JS needed."""
     color = _status_color(c["status"])
-    interval = c.get("maintenance_interval_km")
-    since = c.get("distance_since_km") or 0
-    pct = min((since / interval) * 100, 100) if interval else 8
-    interval_txt = _fmt_km(interval) if interval else "N/A"
+    lifespan = c.get("lifespan_km")
+    usage = c.get("component_usage_km") or c.get("distance_since_km") or 0
+    pct = min((usage / lifespan) * 100, 100) if lifespan else 8
+    lifespan_txt = _fmt_km(lifespan) if lifespan else "N/A"
     status_label = "N/A" if c["status"] == "unknown" else c["status"].title()
     return f"""
     <a class="gt-comp-row gt-comp-grid" href="#component-{_e(c['id'])}"
        style="background:{_tint(color)};border-left:3px solid {color}">
       <div>{_e(c["name"])}</div>
       <div style="color:var(--color-neutral-400)">{_e(c["last_serviced"])}</div>
-      <div>{_fmt_km(c.get("distance_since_km"))}</div>
-      <div style="color:var(--color-neutral-400)">{interval_txt}</div>
+      <div>{_fmt_km(c.get("component_usage_km") or c.get("distance_since_km"))}</div>
+      <div style="color:var(--color-neutral-400)">{lifespan_txt}</div>
       <div style="display:flex;align-items:center;gap:8px">
         <div style="width:52px;height:6px;border-radius:99px;background:var(--color-neutral-800);overflow:hidden;flex:none">
           <div style="height:100%;border-radius:99px;background:{color};width:{pct:.0f}%"></div>
@@ -1888,19 +1901,111 @@ def _gear_component_row(c: dict) -> str:
     </a>"""
 
 
+def _gear_service_row(component: dict, service: dict) -> str:
+    color = _status_color(service["status"])
+    km_until = service.get("km_until_next_service")
+    if km_until is None:
+        until_txt = "N/A"
+    elif km_until <= 0:
+        until_txt = "Due now"
+    else:
+        until_txt = _fmt_km(km_until)
+    return f"""
+      <div class="gt-service-row" style="border-left:3px solid {color};background:{_tint(color)}">
+        <div style="font-weight:600">{_e(service.get("service_type"))}</div>
+        <div style="color:var(--color-neutral-400)">{_e(service.get("last_serviced"))}</div>
+        <div>{until_txt}</div>
+        <a href="#service-{_e(component['id'])}-{_e(service['id'])}" class="gt-service-log" title="Log service" aria-label="Log service">{_gear_icon("logbook")}</a>
+        <a href="#service-edit-{_e(component['id'])}-{_e(service['id'])}" class="gt-service-log" title="Edit service" aria-label="Edit service">{_gear_icon("pencil")}</a>
+      </div>"""
+
+
+def _gear_service_log_modal(component: dict, service: dict, token: str | None) -> str:
+    now_value = datetime.now().strftime("%Y-%m-%dT%H:%M")
+    service_type = service.get("service_type") or component.get("name") or "service"
+    return f"""
+    <div id="service-{_e(component['id'])}-{_e(service['id'])}" class="gear-modal">
+      <a href="#component-{_e(component['id'])}" class="gear-modal-backdrop" aria-label="Close"></a>
+      <div class="gear-modal-dialog gear-modal-dialog-small">
+        <div>
+          <div style="font-size:16px;font-weight:600;font-family:var(--font-heading)">Log {_e(service_type)}</div>
+          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(component.get("name"))}</div>
+        </div>
+        <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
+          <input type="hidden" name="component_id" value="{_e(component['id'])}">
+          <input type="hidden" name="service_id" value="{_e(service['id'])}">
+          <input type="hidden" name="action" value="{_e(service_type)}">
+          <label>Date/time<input type="datetime-local" name="service_datetime" value="{_e(now_value)}"></label>
+          <label style="flex:1 1 100%">Notes<input type="text" name="notes" placeholder="optional"></label>
+          <button type="submit">Log</button>
+        </form>
+        <a href="#component-{_e(component['id'])}" style="align-self:flex-end;font-size:12px;color:var(--color-neutral-500);text-decoration:none">Back</a>
+      </div>
+    </div>"""
+
+
+def _gear_service_edit_modal(component: dict, service: dict, token: str | None) -> str:
+    interval = service.get("service_interval_km")
+    interval_value = "" if interval is None else f"{interval:g}"
+    return f"""
+    <div id="service-edit-{_e(component['id'])}-{_e(service['id'])}" class="gear-modal">
+      <a href="#component-{_e(component['id'])}" class="gear-modal-backdrop" aria-label="Close"></a>
+      <div class="gear-modal-dialog gear-modal-dialog-small">
+        <div>
+          <div style="font-size:16px;font-weight:600;font-family:var(--font-heading)">Edit service</div>
+          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(component.get("name"))}</div>
+        </div>
+        <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/services', token))}">
+          <input type="hidden" name="component_id" value="{_e(component['id'])}">
+          <input type="hidden" name="service_id" value="{_e(service['id'])}">
+          <label>Service<input type="text" name="service_type" value="{_e(service.get('service_type'))}" required></label>
+          <label>Interval (km)<input type="number" step="1" min="0" name="service_interval_km" value="{interval_value}" placeholder="optional"></label>
+          <label style="flex:1 1 100%">Notes<input type="text" name="notes" value="{_e(service.get('notes') or '')}" placeholder="optional"></label>
+          <button type="submit">Save</button>
+        </form>
+        <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/services', token))}">
+          <input type="hidden" name="component_id" value="{_e(component['id'])}">
+          <input type="hidden" name="service_id" value="{_e(service['id'])}">
+          <input type="hidden" name="delete" value="1">
+          <button type="submit">Delete service</button>
+        </form>
+        <a href="#component-{_e(component['id'])}" style="align-self:flex-end;font-size:12px;color:var(--color-neutral-500);text-decoration:none">Back</a>
+      </div>
+    </div>"""
+
+
+def _gear_add_service_modal(component: dict, token: str | None) -> str:
+    return f"""
+    <div id="service-add-{_e(component['id'])}" class="gear-modal">
+      <a href="#component-{_e(component['id'])}" class="gear-modal-backdrop" aria-label="Close"></a>
+      <div class="gear-modal-dialog gear-modal-dialog-small">
+        <div>
+          <div style="font-size:16px;font-weight:600;font-family:var(--font-heading)">Add service</div>
+          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(component.get("name"))}</div>
+        </div>
+        <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/services', token))}">
+          <input type="hidden" name="component_id" value="{_e(component['id'])}">
+          <label>Service<input type="text" name="service_type" placeholder="Lube" required></label>
+          <label>Interval (km)<input type="number" step="1" min="0" name="service_interval_km" placeholder="optional"></label>
+          <label style="flex:1 1 100%">Notes<input type="text" name="notes" placeholder="optional"></label>
+          <button type="submit">Add</button>
+        </form>
+        <a href="#component-{_e(component['id'])}" style="align-self:flex-end;font-size:12px;color:var(--color-neutral-500);text-decoration:none">Back</a>
+      </div>
+    </div>"""
+
+
 def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], token: str | None) -> str:
     """The CSS-only (`:target`) modal a component row opens: status, wear
     bar, key dates, recent maintenance, a log-maintenance form, and an
     "Edit component" disclosure for renaming/adjusting the interval."""
     color = _status_color(c["status"])
-    interval = c.get("maintenance_interval_km")
-    since = c.get("distance_since_km") or 0
-    pct = min((since / interval) * 100, 100) if interval else 8
-    interval_txt = _fmt_km(interval) if interval else "N/A"
+    lifespan = c.get("lifespan_km")
+    usage = c.get("component_usage_km") or c.get("distance_since_km") or 0
+    pct = min((usage / lifespan) * 100, 100) if lifespan else 8
     status_label = "N/A" if c["status"] == "unknown" else c["status"].title()
-    action_options = "".join(f'<option value="{a}">{a.title()}</option>' for a in _GEAR_ACTIONS)
-    today_iso = date.today().isoformat()
-    interval_value = "" if interval is None else f"{interval:g}"
+    lifespan_value = "" if lifespan is None else f"{lifespan:g}"
+    last_serviced = c.get("last_serviced") or "Never"
 
     linked_note = (
         '<div style="font-size:11px;color:var(--color-neutral-600)">Linked to its own '
@@ -1908,29 +2013,38 @@ def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], t
         if c.get("linked_gear_uuid") else ""
     )
 
-    history_lines = "".join(
-        '<div style="font-size:12px;color:var(--color-neutral-400);padding:2px 0">'
-        + _e(f'{h["date"]} · {h["action"].title()}' + (f' — {h["notes"]}' if h.get("notes") else ""))
-        + "</div>"
-        for h in history
-    )
-    history_block = f"""
-        <div>
-          <div style="font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:4px">Recent maintenance</div>
-          {history_lines}
-        </div>""" if history_lines else ""
+    services = c.get("services") or []
+    service_rows = "".join(_gear_service_row(c, service) for service in services)
+    services_empty = '<div class="muted" style="font-size:12px">No services yet.</div>' if not services else ""
+    service_modals = "".join(
+        _gear_service_log_modal(c, service, token) + _gear_service_edit_modal(c, service, token)
+        for service in services
+    ) + _gear_add_service_modal(c, token)
 
-    unlink_form = ""
-    if c.get("linked_gear_uuid"):
-        unlink_form = f"""
-          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}" style="margin-top:6px">
+    component_edit = ""
+    if not c.get("linked_gear_uuid"):
+        component_edit = f"""
+        <details class="gear-actions">
+          <summary>Edit component</summary>
+          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}">
             <input type="hidden" name="component_id" value="{_e(c['id'])}">
             <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
-            <input type="hidden" name="name" value="{_e(c['name'])}">
-            <input type="hidden" name="linked_gear_uuid" value="">
-            <div style="font-size:11px;color:var(--color-neutral-600);width:100%">Untrack the Garmin gear link — stays on this bike, tracked manually from here on.</div>
-            <button type="submit">Unlink</button>
-          </form>"""
+            <label>Name<input type="text" name="name" value="{_e(c['name'])}" required></label>
+            <label>Install date<input type="date" name="install_date" value="{_e(c['install_date'])}"></label>
+            <label>Lifespan (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
+                value="{lifespan_value}" placeholder="optional"></label>
+            <button type="submit">Save</button>
+          </form>
+        </details>"""
+
+    unlink_form = f"""
+      <form method="post" action="{_e(_gear_api_url('/api/gear/components', token))}" style="margin:0">
+        <input type="hidden" name="component_id" value="{_e(c['id'])}">
+        <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
+        <input type="hidden" name="name" value="{_e(c['name'])}">
+        <input type="hidden" name="unlink" value="1">
+        <button type="submit" style="border:0;background:transparent;padding:0;font:inherit;font-size:12px;color:var(--color-neutral-500);cursor:pointer">Unlink</button>
+      </form>"""
 
     return f"""
     <div id="component-{_e(c['id'])}" class="gear-modal">
@@ -1947,38 +2061,30 @@ def _gear_component_modal(c: dict, bike_name: str | None, history: list[dict], t
           <div style="height:100%;border-radius:99px;background:{color};width:{pct:.0f}%"></div>
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;color:var(--color-neutral-300)">
-          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Last Serviced</div>{_e(c["last_serviced"])}</div>
-          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Distance Since</div>{_fmt_km(c.get("distance_since_km"))}</div>
-          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Interval</div>{interval_txt}</div>
           <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Installed</div>{_e(c["install_date"])}</div>
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">Last Serviced</div>{_e(last_serviced)}</div>
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">KMs used</div>{_fmt_km(c.get("component_usage_km") or c.get("distance_since_km"))}</div>
+          <div><div style="color:var(--color-neutral-500);font-size:11px;margin-bottom:2px">KMs left</div>{_fmt_km(c.get("km_until_replacement"))}</div>
         </div>
         {linked_note}
-        {history_block}
         <div style="border-top:1px solid var(--color-divider)"></div>
-        <div style="font-size:13px;font-weight:600;font-family:var(--font-heading)">Log Maintenance</div>
-        <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/maintenance', token))}">
-          <input type="hidden" name="component_id" value="{_e(c['id'])}">
-          <label>Action<select name="action">{action_options}</select></label>
-          <label>Date<input type="date" name="date" value="{today_iso}"></label>
-          <label>Notes<input type="text" name="notes" placeholder="optional"></label>
-          <button type="submit">Log</button>
-        </form>
-        <details class="gear-actions">
-          <summary>Edit component</summary>
-          <form class="gear-form" method="post" action="{_e(_gear_api_url('/api/gear/components', token))}">
-            <input type="hidden" name="component_id" value="{_e(c['id'])}">
-            <input type="hidden" name="bike_uuid" value="{_e(c['bike_uuid'])}">
-            <label>Name<input type="text" name="name" value="{_e(c['name'])}" required></label>
-            <label>Install date<input type="date" name="install_date" value="{_e(c['install_date'])}"></label>
-            <label>Service interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km"
-                value="{interval_value}" placeholder="optional"></label>
-            <button type="submit">Save</button>
-          </form>
+        <div>
+          <div style="font-size:13px;font-weight:600;font-family:var(--font-heading);margin-bottom:8px">Services</div>
+          <div class="gt-service-list">
+            <div class="gt-service-head"><div>Service</div><div>Last</div><div>Next</div><div></div><div></div></div>
+            {service_rows}
+            {services_empty}
+          </div>
+          <a href="#service-add-{_e(c['id'])}" class="gt-service-log" title="Add service" aria-label="Add service" style="margin-top:7px">{_gear_icon("plus")}</a>
+        </div>
+        {component_edit}
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
           {unlink_form}
-        </details>
-        <a href="#gm-modal-close" style="align-self:flex-end;font-size:12px;color:var(--color-neutral-500);text-decoration:none">Close</a>
+          <a href="#gm-modal-close" style="font-size:12px;color:var(--color-neutral-500);text-decoration:none">Close</a>
+        </div>
       </div>
-    </div>"""
+    </div>
+    {service_modals}"""
 
 
 def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | None) -> str:
@@ -1989,11 +2095,8 @@ def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | N
     hand-typed/guessed one. "Custom" still creates a plain, bike-distance-based
     component for parts Garmin doesn't track individually.
 
-    There's no Name field: a linked component is always named after the
-    Garmin gear item it's linked to (carried in the option's value below, so
-    the POST handler doesn't need to look it up live — see post_component),
-    and a Custom one is named after the selected Type. Type also seeds the
-    Service interval field's default when it's left blank.
+    A linked component is named after the Garmin gear item it is linked to.
+    Custom components use the optional Name field, falling back to Type.
 
     There's no Install date field either, for the same reason: a linked
     component's install date comes from that Garmin gear item's own
@@ -2020,8 +2123,9 @@ def _gear_link_component_form(g: dict, linkable_gear: list[dict], token: str | N
         <input type="hidden" name="bike_uuid" value="{_e(g.get('uuid') or '')}">
         <input type="hidden" name="bike_name" value="{_e(g.get('name') or '')}">
         <label>Garmin gear<select name="linked_gear_uuid">{options_html}</select></label>
+        <label>Name<input type="text" name="name" placeholder="Custom component"></label>
         <label>Type<select name="component_type">{type_options}</select></label>
-        <label>Service interval (km)<input type="number" step="1" min="0" name="maintenance_interval_km" placeholder="optional"></label>
+        <label>Lifespan (km)<input type="number" step="1" min="0" name="maintenance_interval_km" placeholder="optional"></label>
         <button type="submit">Link</button>
       </form>
     </details>"""
@@ -2049,7 +2153,7 @@ def _gear_bike_block(g: dict, linkable_gear: list[dict], token: str | None, is_f
           <div style="min-width:620px">
             <div class="gt-comp-grid" style="padding:4px 10px 8px;font-size:10px;text-transform:uppercase;
                 letter-spacing:.05em;color:var(--color-neutral-500)">
-              <div>Component</div><div>Last Serviced</div><div>Distance Since</div><div>Interval</div><div>Status</div>
+              <div>Component</div><div>Last Serviced</div><div>KMs Used</div><div>Lifespan</div><div>Status</div>
             </div>
             <div style="display:flex;flex-direction:column;gap:4px">{rows_html}</div>
           </div>

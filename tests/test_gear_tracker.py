@@ -332,8 +332,8 @@ def test_build_gear_status_computes_distance_since_from_last_service(monkeypatch
     status = gear_tracker.build_gear_status()
     bike = next(g for g in status["gear"] if g["uuid"] == "bike-1")
     chain = bike["components"][0]
-    assert chain["distance_since_km"] == 60.0
-    assert chain["status"] == "green"
+    assert chain["component_usage_km"] == 1000.0
+    assert chain["services"][0]["distance_since_km"] == 60.0
     assert chain["ever_serviced"] is True
 
 
@@ -446,8 +446,9 @@ def test_build_gear_status_linked_component_interval_is_not_inherited_from_gear(
 
     status = gear_tracker.build_gear_status()
     chain = status["gear"][0]["components"][0]
-    assert chain["maintenance_interval_km"] is None  # nothing set, nothing inherited
-    assert chain["status"] == "unknown"  # no interval to judge distance-since against
+    assert chain["maintenance_interval_km"] is None  # no component lifespan override
+    assert chain["services"] == []  # service intervals are not inherited from Garmin
+    assert chain["lifespan_km"] == 3000.0  # component lifespan comes from the linked gear
     assert "effective_interval_km" not in chain
 
 
@@ -710,6 +711,19 @@ def test_post_component_form_empty_linked_field_clears_link(monkeypatch):
     assert gear_tracker.get_component(comp["id"])["linked_gear_uuid"] is None
 
 
+def test_post_component_form_unlink_removes_component(monkeypatch):
+    _patch_gear(monkeypatch, GEAR_WITH_LINKABLE_CHAIN)
+    link_client = TestClient(gear_tracker.create_app())
+    comp = gear_tracker.upsert_component(bike_uuid="bike-1", linked_gear_uuid="chain-1")
+
+    resp = link_client.post(f"{gear_tracker.API_PREFIX}/components", data={
+        "component_id": comp["id"], "bike_uuid": "bike-1", "name": comp["name"],
+        "unlink": "1",
+    }, follow_redirects=False)
+    assert resp.status_code == 303
+    assert gear_tracker.get_component(comp["id"]) is None
+
+
 def test_post_component_json_uses_linked_gears_date_begin_as_install_date(monkeypatch):
     """The Link form has no Install date field (issue 63 follow-up) — it
     comes from the linked Garmin gear's own dateBegin, carried in the
@@ -929,7 +943,7 @@ def test_post_maintenance_backdated_date_subtracts_rides_since(monkeypatch):
     chain = status["gear"][0]["components"][0]
     # distance since the (backdated) service = current 1000 - anchor 950 = 50,
     # matching the rides that happened after it — not 0.
-    assert chain["distance_since_km"] == 50.0
+    assert chain["services"][0]["distance_since_km"] == 50.0
 
 
 def test_post_maintenance_todays_date_is_unaffected_by_backdating_logic(monkeypatch):
