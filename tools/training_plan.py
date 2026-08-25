@@ -15,6 +15,8 @@ Routes (all behind the same ``?token=`` bearer auth as ``/mcp`` and
 ``/dashboard``, enforced by the wrapper in server.py):
 
     GET  /training-plan          — the current plan, or a "No plan active" page
+    GET  /training-plan/pdf      — printable wall-chart PDF of the stored plan
+    POST /training-plan/pdf      — same, from plan JSON posted by the browser
     GET  /training-plan/upload   — a minimal one-file upload form
     POST /training-plan/upload   — stores the upload, redirects to the plan
     POST /training-plan/reset    — deletes the stored plan
@@ -32,6 +34,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
 from tools.navbar import inject_no_zoom_meta
+from tools.pdf_route import render_plan_pdf
 
 logger = logging.getLogger(__name__)
 
@@ -339,6 +342,31 @@ async def serve_plan(request):
     return HTMLResponse(inject_no_zoom_meta(page), headers=_NO_STORE)
 
 
+async def serve_plan_pdf(request):
+    """GET/POST /training-plan/pdf — the printable wall chart.
+
+    POST carries the plan JSON the browser currently holds (live zone
+    overrides included); GET falls back to the JSON extracted from the HTML
+    at upload time.
+    """
+    plan = None
+    if request.method == "POST":
+        try:
+            plan = await request.json()
+        except ValueError:
+            return HTMLResponse("Invalid plan JSON.", status_code=400, headers=_NO_STORE)
+    if plan is None:
+        try:
+            with open(plan_json_path(), encoding="utf-8") as f:
+                plan = json.load(f)
+        except (OSError, ValueError):
+            return HTMLResponse("No plan active.", status_code=404, headers=_NO_STORE)
+    if not isinstance(plan, dict):
+        return HTMLResponse("Invalid plan JSON.", status_code=400, headers=_NO_STORE)
+
+    return await render_plan_pdf(plan)
+
+
 async def serve_upload_form(request):
     """GET /training-plan/upload — the one-file form."""
     token = request.query_params.get("token")
@@ -389,6 +417,7 @@ async def handle_reset(request):
 
 ROUTES = [
     Route("/training-plan", serve_plan, methods=["GET"]),
+    Route("/training-plan/pdf", serve_plan_pdf, methods=["GET", "POST"]),
     Route("/training-plan/upload", serve_upload_form, methods=["GET"]),
     Route("/training-plan/upload", handle_upload, methods=["POST"]),
     Route("/training-plan/reset", handle_reset, methods=["POST"]),
