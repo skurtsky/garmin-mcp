@@ -152,11 +152,38 @@ def test_render_includes_mobile_app_metadata():
     assert 'rel="manifest"' in html
 
 
-def test_render_includes_the_shared_dashboard_nav():
+def test_render_omits_the_shared_navbar_now_that_more_menu_replaces_it():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    assert 'id="gm-nav"' in html
-    assert 'href="/dashboard?token=t0k"' in html
-    assert 'href="/training-plan?token=t0k"' in html
+    assert 'id="gm-nav"' not in html
+    assert 'href="/training-plan?token=t0k"' in html  # still reachable, via the More menu
+
+
+def test_botnav_shows_today_trends_activity_and_more_only():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    botnav = html[html.index('<div class="botnav"'):html.index('class="more-menu-backdrop"')]
+
+    assert 'for="tab-today"' in botnav
+    assert 'for="tab-trends"' in botnav
+    assert 'for="tab-activity"' in botnav
+    assert 'for="more-menu"' in botnav
+    assert 'for="tab-you"' not in botnav
+    assert 'for="tab-gear"' not in botnav
+
+
+def test_more_menu_lists_gear_fitness_weekly_summary_and_training_plan():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    sheet = html[html.index('more-menu-sheet'):html.index('id="chart-tooltip"')]
+
+    assert 'for="tab-gear"' in sheet and "Gear" in sheet
+    assert 'for="tab-you"' in sheet and "Fitness" in sheet
+    assert 'href="/weekly-summary?token=t0k"' in sheet
+    assert 'href="/training-plan?token=t0k"' in sheet
+
+
+def test_more_menu_has_a_gap_between_the_tab_group_and_the_page_links():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'class="more-menu-item more-menu-group-start"' in html
+    assert 'href="/weekly-summary?token=t0k"' in html.split('class="more-menu-item more-menu-group-start"')[1]
 
 
 def test_render_includes_all_five_tabs():

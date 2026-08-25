@@ -36,8 +36,6 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
-from tools.navbar import render_nav_html
-
 # Auto-refresh the browser page this often (seconds). 0 disables refresh.
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 
@@ -600,6 +598,22 @@ _MEDAL = ""
 _PULSE = ""
 _WRENCH = ""
 
+# Icons the embedded Phosphor subset doesn't carry (More menu + its
+# off-dashboard links) — plain inline SVG, same approach as tools/navbar.py.
+_MORE_ICON_PATH = ('<path d="M40,72H216a8,8,0,0,0,0-16H40a8,8,0,0,0,0,16Zm176,32H40a8,8,0,0,0,0,16H216a8,'
+                   '8,0,0,0,0-16Zm0,48H40a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z"/>')
+_CALENDAR_ICON_PATH = ('<path d="M208 32h-24v-8a8 8 0 0 0-16 0v8H88v-8a8 8 0 0 0-16 0v8H48a16 16 0 0 0-16 16v160'
+                       'a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16Zm0 176H48V96h160v112Zm0-128H48'
+                       'V48h24v8a8 8 0 0 0 16 0v-8h80v8a8 8 0 0 0 16 0v-8h24Z"/>')
+_CHART_ICON_PATH = ('<path d="M40 216a8 8 0 0 1-8-8V48a8 8 0 0 1 16 0v152h168a8 8 0 0 1 0 16Zm40-40a8 8 0 0 1-8-8v-40a8'
+                    ' 8 0 0 1 16 0v40a8 8 0 0 1-8 8Zm48 0a8 8 0 0 1-8-8V96a8 8 0 0 1 16 0v72a8 8 0 0 1-8 8Zm48 0a8 8'
+                    ' 0 0 1-8-8V64a8 8 0 0 1 16 0v104a8 8 0 0 1-8 8Z"/>')
+
+
+def _svg_icon(path: str, size: int = 19) -> str:
+    return f'<svg viewBox="0 0 256 256" width="{size}" height="{size}" fill="currentColor" aria-hidden="true">{path}</svg>'
+
+
 _SPORT_STYLE = {
     "running": (_RUN, "#e2734a"), "trail_running": (_RUN, "#e2734a"),
     "treadmill_running": (_RUN, "#e2734a"), "track_running": (_RUN, "#e2734a"),
@@ -876,15 +890,37 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
                 border-radius:999px; padding:8px 0; display:flex; flex-direction:column;
                 align-items:center; gap:2px; }
 .botnav label i { font-size:19px; }
+.botnav label svg { width:19px; height:19px; }
+.botnav label[for=more-menu] svg { width:23px; height:23px; margin-bottom:-4px; }
 .botnav label span { font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
 #tab-today:checked ~ .botnav label[for=tab-today],
 #tab-trends:checked ~ .botnav label[for=tab-trends],
 #tab-activity:checked ~ .botnav label[for=tab-activity],
-#tab-you:checked ~ .botnav label[for=tab-you],
-#tab-gear:checked ~ .botnav label[for=tab-gear] {
+#more-menu:checked ~ .botnav label[for=more-menu] {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
   color: var(--color-accent-200);
 }
+
+/* ── bottom-nav overflow ("More") popup — Gear / Fitness / Weekly Summary /
+   Training Plan, stacked. A checkbox (not a tab radio) so it layers over
+   whichever tab is open rather than replacing it. Floats above the navbar
+   pill rather than covering it, matching that pill's own surface/blur/shadow. ── */
+.more-menu-backdrop, .more-menu-sheet { display:none; }
+#more-menu:checked ~ .more-menu-backdrop { display:block; position:fixed; inset:0; z-index:39;
+  background:rgba(10,11,16,.6); }
+#more-menu:checked ~ .more-menu-sheet { display:flex; }
+.more-menu-sheet { position:fixed; left:16px; right:16px; bottom:calc(84px + env(safe-area-inset-bottom, 0px));
+  z-index:40; flex-direction:column; max-width:420px; margin:0 auto;
+  padding:6px; background:color-mix(in srgb, var(--color-surface) 92%, transparent);
+  backdrop-filter:blur(16px); border-radius:20px; box-shadow:var(--shadow-md); }
+.more-menu-item { display:flex; align-items:center; gap:12px; padding:12px 10px; border-radius:12px;
+  color:var(--color-text); text-decoration:none; font:inherit; font-size:14px; cursor:pointer;
+  border:0; background:transparent; width:100%; text-align:left; }
+.more-menu-item + .more-menu-item { border-top:1px solid var(--color-divider); }
+.more-menu-item.more-menu-group-start { margin-top:6px; }
+.more-menu-item:hover { background:color-mix(in srgb, var(--color-accent) 10%, transparent); }
+.more-menu-item i, .more-menu-item svg { flex:0 0 auto; font-size:19px; width:19px; height:19px;
+  color:var(--color-accent-300); }
 
 /* ── gear tracker forms (issue 53's tab) ── */
 .gear-form { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-top:10px;
@@ -975,8 +1011,9 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
   max-height:92vh; background:var(--color-surface); border-radius:16px 16px 0 0; box-shadow:var(--shadow-md);
   display:flex; flex-direction:column; transform:translateY(100%); transition:transform .25s ease; }
 .activity-modal.open .activity-modal-sheet { transform:translateY(0); }
+.activity-modal-draghandle { flex:0 0 auto; padding:10px 0 6px; touch-action:none; cursor:grab; }
 .activity-modal-handle { width:36px; height:4px; border-radius:999px; background:var(--color-neutral-700);
-  margin:10px auto 2px; flex:0 0 auto; }
+  margin:0 auto; }
 .activity-modal-close { position:absolute; top:8px; right:10px; width:28px; height:28px; border-radius:50%;
   border:none; background:var(--color-neutral-900); color:var(--color-neutral-400); font-size:15px;
   line-height:1; cursor:pointer; z-index:1; }
@@ -2752,6 +2789,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
   <input class="hide" type="radio" name="tab" id="tab-activity"{" checked" if active_tab_id == "tab-activity" else ""}>
   <input class="hide" type="radio" name="tab" id="tab-you"{" checked" if active_tab_id == "tab-you" else ""}>
   <input class="hide" type="radio" name="tab" id="tab-gear"{" checked" if active_tab_id == "tab-gear" else ""}>
+  <input class="hide" type="checkbox" id="more-menu">
   {activity_filter_inputs}
 
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
@@ -2762,9 +2800,20 @@ def render_dashboard_html(data: dict, token: str | None = None,
       <label for="tab-today"><i class="ph">&#xe2c2;</i><span>Today</span></label>
       <label for="tab-trends"><i class="ph">&#xe154;</i><span>Trends</span></label>
       <label for="tab-activity"><i class="ph">&#xed60;</i><span>Activity</span></label>
-      <label for="tab-you"><i class="ph">&#xe2ac;</i><span>Fitness</span></label>
-      <label for="tab-gear"><i class="ph">{_WRENCH}</i><span>Gear</span></label>
+      <label for="more-menu">{_svg_icon(_MORE_ICON_PATH)}<span>More</span></label>
     </div>
+  </div>
+
+  <label for="more-menu" class="more-menu-backdrop" aria-hidden="true"></label>
+  <div class="more-menu-sheet" role="dialog" aria-modal="true" aria-label="More">
+    <label for="tab-gear" class="more-menu-item" onclick="document.getElementById('more-menu').checked=false">
+      <i class="ph">{_WRENCH}</i>Gear</label>
+    <label for="tab-you" class="more-menu-item" onclick="document.getElementById('more-menu').checked=false">
+      <i class="ph">&#xe2ac;</i>Fitness</label>
+    <a class="more-menu-item more-menu-group-start" href="{_e(_pwa_asset_url('/weekly-summary', token))}">
+      {_svg_icon(_CHART_ICON_PATH)}Weekly Summary</a>
+    <a class="more-menu-item" href="{_e(_pwa_asset_url('/training-plan', token))}">
+      {_svg_icon(_CALENDAR_ICON_PATH)}Training Plan</a>
   </div>
 
   <div id="chart-tooltip" class="chart-tooltip" role="status" aria-live="polite">
@@ -2775,7 +2824,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
     <div class="activity-modal-backdrop"></div>
     <div class="activity-modal-sheet">
       <button type="button" class="activity-modal-close" aria-label="Close">&times;</button>
-      <div class="activity-modal-handle"></div>
+      <div class="activity-modal-draghandle"><div class="activity-modal-handle"></div></div>
       <div id="activity-modal-body" class="activity-modal-body"></div>
     </div>
   </div>
@@ -2794,7 +2843,6 @@ def render_dashboard_html(data: dict, token: str | None = None,
         "<title>Garmin Health Dashboard</title>"
         f"<style>{_STYLE}</style>"
         f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
-        f"{render_nav_html('dashboard', token)}"
         f"{body}"
         f"<script>{_CHART_JS}</script>"
         f"<script>{_TZ_JS}</script>"
