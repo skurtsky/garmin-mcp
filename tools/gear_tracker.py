@@ -190,6 +190,21 @@ def data_path() -> str:
     return os.environ.get("GEAR_TRACKER_DATA_PATH") or DEFAULT_DATA_PATH
 
 
+def _use_database_storage() -> bool:
+    """Use PostgreSQL in deployed DB-backed environments.
+
+    Tests and local file migrations can force the legacy JSON backend by
+    setting GEAR_TRACKER_DATA_PATH.
+    """
+    if os.environ.get("GEAR_TRACKER_DATA_PATH"):
+        return False
+    try:
+        import db
+        return db.is_configured()
+    except Exception:
+        return False
+
+
 # Read-modify-write cycles (upsert_component, log_maintenance_entry) aren't
 # safe to interleave within this process, so this serializes them. It says
 # nothing about the file share itself — the atomic write in _write() is what
@@ -197,30 +212,107 @@ def data_path() -> str:
 _lock = threading.RLock()
 
 
+def _read_json_store() -> dict:
+    path = data_path()
+    if not os.path.exists(path):
+        return _normalize_store({})
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    return _normalize_store(data)
+
+
+def _default_service_id(component_id: str) -> str:
+    return f"svc-{component_id}"
+
+
+def _normalize_store(data: dict) -> dict:
+    data.setdefault("components", [])
+    data.setdefault("component_services", [])
+    data.setdefault("maintenance_log", [])
+
+    service_ids = {s.get("id") for s in data["component_services"]}
+    for component in data["components"]:
+        component.setdefault("component_type", component.get("name") or "Component")
+
+    services_by_component = {}
+    for service in data["component_services"]:
+        services_by_component.setdefault(service.get("component_id"), []).append(service)
+
+    for entry in data["maintenance_log"]:
+        if entry.get("service_id") in service_ids:
+            continue
+        component_services = services_by_component.get(entry.get("component_id")) or []
+        matching = next(
+            (
+                s for s in component_services
+                if (s.get("service_type") or "").strip().lower() == (entry.get("action") or "").strip().lower()
+            ),
+            None,
+        )
+        if matching is None and component_services:
+            matching = component_services[0]
+        if matching is None and entry.get("component_id"):
+            matching = {
+                "id": str(uuid_module.uuid4()),
+                "component_id": entry["component_id"],
+                "service_type": entry.get("action") or "Service",
+                "service_interval_km": None,
+                "notify": True,
+                "notes": None,
+            }
+            data["component_services"].append(matching)
+            services_by_component.setdefault(entry["component_id"], []).append(matching)
+            service_ids.add(matching["id"])
+        if matching is not None:
+            entry["service_id"] = matching["id"]
+            entry.setdefault("service_type", matching.get("service_type"))
+        entry.setdefault("service_datetime", None)
+
+    return data
+
+
+def _write_json_store(data: dict) -> None:
+    path = data_path()
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    tmp_path = f"{path}.{uuid_module.uuid4().hex}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    try:
+        os.replace(tmp_path, path)
+    except PermissionError:
+        if os.path.exists(path):
+            os.remove(path)
+        os.replace(tmp_path, path)
+
+
 def _read() -> dict:
     """Read the full JSON store, fresh, every call — it's tiny (well under
     10KB) so there's no reason to cache it and risk serving stale data."""
-    path = data_path()
-    if not os.path.exists(path):
-        return {"components": [], "maintenance_log": []}
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    data.setdefault("components", [])
-    data.setdefault("maintenance_log", [])
-    return data
+    if _use_database_storage():
+        import db
+        db.ensure_schema()
+        data = db.read_gear_tracker_data()
+        if not data["components"] and not data["maintenance_log"] and os.path.exists(data_path()):
+            data = _read_json_store()
+            if data["components"] or data["maintenance_log"]:
+                db.write_gear_tracker_data(data)
+        return _normalize_store(data)
+
+    return _read_json_store()
 
 
 def _write(data: dict) -> None:
     """Atomic write: write to a ``.tmp`` file, then ``os.replace()`` over the
     real path, so a crash mid-write can't leave a corrupt/partial file."""
-    path = data_path()
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp_path, path)
+    if _use_database_storage():
+        import db
+        db.ensure_schema()
+        db.write_gear_tracker_data(data)
+        return
+
+    _write_json_store(data)
 
 
 def _find(items: list[dict], **fields):
@@ -268,6 +360,87 @@ def find_component(bike_uuid: str, name: str) -> dict | None:
     )
 
 
+def upsert_component_service(
+    component_id: str,
+    service_type: str,
+    service_interval_km: float | None = None,
+    notify: bool = True,
+    service_id: str | None = None,
+    notes: str | None = None,
+) -> dict:
+    if not service_type or not service_type.strip():
+        raise ValueError("service_type is required.")
+    service_type = service_type.strip()
+    with _lock:
+        data = _read()
+        component = _find(data["components"], id=component_id)
+        if component is None:
+            raise ValueError(f"No component with id {component_id}.")
+
+        services = data.setdefault("component_services", [])
+        if service_id:
+            service = _find(services, id=service_id)
+            if service is None or service.get("component_id") != component_id:
+                raise ValueError(f"No service with id {service_id} for that component.")
+        else:
+            service = next(
+                (
+                    s for s in services
+                    if s.get("component_id") == component_id
+                    and (s.get("service_type") or "").lower() == service_type.lower()
+                ),
+                None,
+            )
+
+        if service is None:
+            service = {"id": str(uuid_module.uuid4()), "component_id": component_id}
+            services.append(service)
+
+        service.update({
+            "service_type": service_type,
+            "service_interval_km": service_interval_km,
+            "notify": notify,
+            "notes": (notes or "").strip() or None,
+        })
+        result = dict(service)
+        _write(data)
+        return result
+
+
+def delete_component_service(component_id: str, service_id: str) -> None:
+    with _lock:
+        data = _read()
+        service = _find(data.get("component_services", []), id=service_id)
+        if service is None or service.get("component_id") != component_id:
+            raise ValueError(f"No service with id {service_id} for that component.")
+        data["component_services"] = [s for s in data["component_services"] if s.get("id") != service_id]
+        data["maintenance_log"] = [e for e in data["maintenance_log"] if e.get("service_id") != service_id]
+        _write(data)
+
+
+def delete_component(component_id: str) -> None:
+    with _lock:
+        data = _read()
+        component = _find(data["components"], id=component_id)
+        if component is None:
+            raise ValueError(f"No component with id {component_id}.")
+        service_ids = {
+            service.get("id")
+            for service in data.get("component_services", [])
+            if service.get("component_id") == component_id
+        }
+        data["components"] = [c for c in data["components"] if c.get("id") != component_id]
+        data["component_services"] = [
+            service for service in data.get("component_services", [])
+            if service.get("component_id") != component_id
+        ]
+        data["maintenance_log"] = [
+            entry for entry in data["maintenance_log"]
+            if entry.get("component_id") != component_id and entry.get("service_id") not in service_ids
+        ]
+        _write(data)
+
+
 def upsert_component(
     bike_uuid: str,
     name: str | None = None,
@@ -312,8 +485,7 @@ def upsert_component(
     name = (name or "").strip()
 
     if not name and linked_gear_uuid not in (_UNSET, None, ""):
-        from tools.profile import get_gear
-        linked = next((g for g in get_gear() if g.get("uuid") == linked_gear_uuid), None)
+        linked = next((g for g in _get_gear_catalog() if g.get("uuid") == linked_gear_uuid), None)
         name = ((linked or {}).get("name") or "").strip()
     if not name and component_type:
         name = component_type.strip()
@@ -348,11 +520,17 @@ def upsert_component(
         else:
             linked_gear_uuid = linked_gear_uuid or None
 
+        stored_component_type = (
+            component_type.strip() if component_type else
+            (existing or {}).get("component_type") or name
+        )
+
         if existing is not None:
             existing.update({
                 "bike_uuid": bike_uuid,
                 "bike_name": bike_name,
                 "name": name,
+                "component_type": stored_component_type,
                 "install_date": install_date,
                 "install_distance_km": install_distance_km,
                 "maintenance_interval_km": maintenance_interval_km,
@@ -365,6 +543,7 @@ def upsert_component(
                 "bike_uuid": bike_uuid,
                 "bike_name": bike_name,
                 "name": name,
+                "component_type": stored_component_type,
                 "install_date": install_date,
                 "install_distance_km": install_distance_km,
                 "maintenance_interval_km": maintenance_interval_km,
@@ -381,6 +560,8 @@ def log_maintenance_entry(
     action: str,
     distance_at_service_km: float,
     date_: str | None = None,
+    service_id: str | None = None,
+    service_datetime: str | None = None,
     notes: str | None = None,
 ) -> dict:
     """Record one maintenance action against a tracked component."""
@@ -394,10 +575,35 @@ def log_maintenance_entry(
         if component is None:
             raise ValueError(f"No component with id {component_id}.")
 
+        component_services = [s for s in data.get("component_services", []) if s.get("component_id") == component_id]
+        service = _find(component_services, id=service_id) if service_id else None
+        if service is None:
+            service = next(
+                (
+                    s for s in component_services
+                    if (s.get("service_type") or "").strip().lower() == action.strip().lower()
+                ),
+                None,
+            )
+        if service is None and len(component_services) == 1:
+            service = component_services[0]
+        if service is None:
+            service = {
+                "id": str(uuid_module.uuid4()),
+                "component_id": component_id,
+                "service_type": action.strip(),
+                "service_interval_km": component.get("maintenance_interval_km"),
+                "notify": True,
+                "notes": None,
+            }
+            data.setdefault("component_services", []).append(service)
+
         entry = {
             "id": str(uuid_module.uuid4()),
             "component_id": component_id,
+            "service_id": service["id"],
             "date": date_,
+            "service_datetime": service_datetime,
             "action": action.strip(),
             "distance_at_service_km": distance_at_service_km,
             "notes": (notes or "").strip() or None,
@@ -433,8 +639,10 @@ def list_maintenance_log(component_id: str | None = None, limit: int = 200) -> l
     return result
 
 
-def _last_service(data: dict, component_id: str) -> dict | None:
-    entries = [e for e in data["maintenance_log"] if e["component_id"] == component_id]
+def _last_service(data: dict, component_id: str, service_id: str | None = None) -> dict | None:
+    entries = [e for e in data["maintenance_log"] if e.get("component_id") == component_id]
+    if service_id is not None:
+        entries = [e for e in entries if e.get("service_id") == service_id]
     if not entries:
         return None
     return _sorted_log(entries)[0][1]
@@ -481,6 +689,18 @@ def _is_shoe(g: dict) -> bool:
     return "shoe" in (g.get("activity_type") or "").lower()
 
 
+def _get_gear_catalog() -> list[dict]:
+    if _use_database_storage():
+        import db
+        db.ensure_schema()
+        gear = db.get_gear_items_from_db()
+        if gear:
+            return gear
+
+    from tools.profile import get_gear
+    return get_gear()
+
+
 def _component_with_status(data: dict, component: dict, basis_gear: dict | None) -> dict:
     """A component plus its live status, computed against ``basis_gear`` —
     the Garmin gear item its distance is measured against: the linked gear
@@ -488,27 +708,63 @@ def _component_with_status(data: dict, component: dict, basis_gear: dict | None)
     docstring), otherwise the bike itself. ``None`` when that basis gear
     can't be found (e.g. its Garmin gear item was deleted).
     """
-    last = _last_service(data, component["id"])
-    if last is not None:
-        last_serviced = last["date"]
-        base_distance = last["distance_at_service_km"]
-    else:
-        last_serviced = None
-        base_distance = component["install_distance_km"]
-
     gear_distance_km = basis_gear.get("distance_km") if basis_gear else None
-    distance_since = None
+    component_usage_km = None
     if gear_distance_km is not None:
-        distance_since = round(max(gear_distance_km - base_distance, 0), 1)
+        component_usage_km = round(max(gear_distance_km - component["install_distance_km"], 0), 1)
+    lifespan_km = basis_gear.get("max_distance_km") if basis_gear else None
+    if lifespan_km is None:
+        lifespan_km = component.get("maintenance_interval_km")
+    lifespan_status = _component_status(component_usage_km, lifespan_km)
 
-    interval = component["maintenance_interval_km"]
-    status = _component_status(distance_since, interval)
+    services = []
+    for service in data.get("component_services", []):
+        if service.get("component_id") != component["id"]:
+            continue
+        last = _last_service(data, component["id"], service.get("id"))
+        if last is not None:
+            last_serviced = last["date"]
+            base_distance = last["distance_at_service_km"]
+        else:
+            last_serviced = component["install_date"]
+            base_distance = component["install_distance_km"]
+
+        distance_since = None
+        if gear_distance_km is not None:
+            distance_since = round(max(gear_distance_km - base_distance, 0), 1)
+
+        interval = service.get("service_interval_km")
+        status = _component_status(distance_since, interval)
+        km_until_next = None
+        if interval is not None and distance_since is not None:
+            km_until_next = round(interval - distance_since, 1)
+
+        services.append({
+            **service,
+            "last_serviced": last_serviced,
+            "ever_serviced": last is not None,
+            "distance_since_km": distance_since,
+            "km_until_next_service": km_until_next,
+            "status": status,
+            "status_emoji": _STATUS_EMOJI[status],
+        })
+
+    service_status = _worst_status([service["status"] for service in services]) if services else "unknown"
+    status = service_status if service_status != "unknown" else lifespan_status
+    last_any_service = _last_service(data, component["id"])
 
     return {
         **component,
-        "last_serviced": last_serviced or component["install_date"],
-        "ever_serviced": last is not None,
-        "distance_since_km": distance_since,
+        "services": services,
+        "last_serviced": last_any_service["date"] if last_any_service else None,
+        "ever_serviced": any(service["ever_serviced"] for service in services),
+        "distance_since_km": component_usage_km,
+        "component_usage_km": component_usage_km,
+        "component_duration_min": basis_gear.get("duration_min") if basis_gear else None,
+        "lifespan_km": lifespan_km,
+        "km_until_replacement": round(lifespan_km - component_usage_km, 1) if lifespan_km is not None and component_usage_km is not None else None,
+        "km_until_next_service": None,
+        "lifespan_status": lifespan_status,
         "status": status,
         "status_emoji": _STATUS_EMOJI[status],
     }
@@ -527,9 +783,7 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
     the dashboard's Gear tab needs in one round trip against the store
     (issue #58).
     """
-    from tools.profile import get_gear
-
-    all_gear = get_gear()
+    all_gear = _get_gear_catalog()
     gear_by_uuid = {g["uuid"]: g for g in all_gear if g.get("uuid")}
 
     filtered_gear = all_gear
@@ -553,6 +807,7 @@ def build_gear_status(gear_name: str | None = None, log_limit: int = 50) -> dict
             }
             for g in all_gear
             if g.get("uuid") and g["uuid"] not in linked_uuids
+            and (g.get("source") or "garmin") == "garmin"
             and (g.get("status") or "active").lower() == "active"
             and not _is_bike(g) and not _is_shoe(g)
         ),
@@ -635,9 +890,7 @@ def log_maintenance(gear_name: str, component: str, action: str,
                    "adjusted", or a short free-form description.
         notes:     Optional free-form notes.
     """
-    from tools.profile import get_gear
-
-    all_gear = get_gear()
+    all_gear = _get_gear_catalog()
     matches = [g for g in all_gear
                if (g.get("name") or "").strip().lower() == gear_name.strip().lower()]
     if not matches:
@@ -823,8 +1076,7 @@ async def post_maintenance(request):
         if component is None:
             raise ValueError(f"No component with id {component_id}.")
 
-        from tools.profile import get_gear
-        all_gear = get_gear()
+        all_gear = _get_gear_catalog()
         bike = next((g for g in all_gear if g.get("uuid") == component["bike_uuid"]), None)
         if bike is None:
             raise ValueError("That component's bike is no longer registered in Garmin.")
@@ -839,7 +1091,17 @@ async def post_maintenance(request):
             if basis_gear is None:
                 raise ValueError("That component's linked gear is no longer registered in Garmin.")
 
-        service_date = fields.get("date") or date.today().isoformat()
+        data = _read()
+        service_id = fields.get("service_id") or None
+        service = None
+        if service_id:
+            service = _find(data.get("component_services", []), id=service_id)
+            if service is None or service.get("component_id") != component_id:
+                raise ValueError(f"No service with id {service_id} for that component.")
+
+        action = fields.get("action") or fields.get("service_type") or (service or {}).get("service_type") or ""
+        service_datetime = fields.get("service_datetime") or None
+        service_date = fields.get("date") or (service_datetime[:10] if service_datetime else None) or date.today().isoformat()
         current_distance = basis_gear.get("distance_km") or 0.0
         distance_at_service = current_distance
         if service_date < date.today().isoformat():
@@ -848,9 +1110,11 @@ async def post_maintenance(request):
 
         entry = log_maintenance_entry(
             component_id=component_id,
-            action=fields.get("action") or "",
+            action=action,
             distance_at_service_km=distance_at_service,
-            date_=fields.get("date") or None,
+            date_=service_date,
+            service_id=service_id,
+            service_datetime=service_datetime,
             notes=fields.get("notes") or None,
         )
     except ValueError as e:
@@ -874,6 +1138,18 @@ async def post_component(request):
     fields = await _request_fields(request)
 
     component_id = fields.get("component_id") or None
+
+    if fields.get("unlink") in ("1", "true", "yes", "on"):
+        try:
+            if component_id is None:
+                raise ValueError("component_id is required to unlink a component.")
+            delete_component(component_id)
+        except ValueError as e:
+            return (JSONResponse({"error": str(e)}, status_code=400) if is_json
+                    else RedirectResponse(_error_redirect_url(token, str(e)), status_code=303))
+        if is_json:
+            return JSONResponse({"unlinked": True, "component_id": component_id})
+        return RedirectResponse(_dashboard_gear_url(token), status_code=303)
 
     interval_raw = fields.get("maintenance_interval_km")
     if interval_raw in (None, ""):
@@ -914,7 +1190,7 @@ async def post_component(request):
         if len(parts) > 2 and parts[2] and _DATE_RE.match(parts[2]):
             linked_gear_date_begin = parts[2]
 
-    name = fields.get("name") or linked_gear_name or ""
+    name = linked_gear_name or fields.get("name") or ""
     install_date = fields.get("install_date") or linked_gear_date_begin or None
 
     try:
@@ -938,10 +1214,52 @@ async def post_component(request):
     return RedirectResponse(_dashboard_gear_url(token), status_code=303)
 
 
+async def post_component_service(request):
+    """POST /api/gear/services — add, edit, or delete a component service."""
+    token = request.query_params.get("token")
+    is_json = _wants_json(request)
+    fields = await _request_fields(request)
+
+    component_id = fields.get("component_id") or None
+    service_id = fields.get("service_id") or None
+    if component_id is None:
+        err = "component_id is required."
+        return (JSONResponse({"error": err}, status_code=400) if is_json
+                else RedirectResponse(_error_redirect_url(token, err), status_code=303))
+
+    try:
+        if fields.get("delete") in ("1", "true", "yes", "on"):
+            if not service_id:
+                raise ValueError("service_id is required to delete a service.")
+            delete_component_service(component_id, service_id)
+            result = {"deleted": True, "service_id": service_id}
+        else:
+            interval_raw = fields.get("service_interval_km")
+            service_interval_km = None
+            if interval_raw not in (None, ""):
+                service_interval_km = float(interval_raw)
+            result = upsert_component_service(
+                component_id=component_id,
+                service_id=service_id,
+                service_type=fields.get("service_type") or "",
+                service_interval_km=service_interval_km,
+                notify=fields.get("notify", "on") not in ("0", "false", "no", "off"),
+                notes=fields.get("notes") or None,
+            )
+    except (TypeError, ValueError) as e:
+        return (JSONResponse({"error": str(e)}, status_code=400) if is_json
+                else RedirectResponse(_error_redirect_url(token, str(e)), status_code=303))
+
+    if is_json:
+        return JSONResponse(result)
+    return RedirectResponse(_dashboard_gear_url(token), status_code=303)
+
+
 ROUTES = [
     Route(PAGE_PATH, serve_gear_page, methods=["GET"]),
     Route(f"{API_PREFIX}/components", get_components, methods=["GET"]),
     Route(f"{API_PREFIX}/components", post_component, methods=["POST"]),
+    Route(f"{API_PREFIX}/services", post_component_service, methods=["POST"]),
     Route(f"{API_PREFIX}/maintenance", post_maintenance, methods=["POST"]),
 ]
 

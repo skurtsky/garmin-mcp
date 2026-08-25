@@ -178,6 +178,18 @@ def sync_athlete_profile():
     logger.info("Athlete profile sync complete")
 
 
+def sync_gear():
+    """Sync Garmin gear snapshots."""
+    from tools.profile import get_gear
+    import db
+
+    logger.info("Syncing gear")
+    gear = get_gear()
+    db.upsert_gear_items(gear)
+    db.update_sync_state("gear", date.today().isoformat())
+    logger.info(f"Synced {len(gear)} gear item(s)")
+
+
 def sync_active_goals():
     """Sync active goals."""
     from tools.challenges import get_active_goals
@@ -285,6 +297,7 @@ def main(argv: list[str] | None = None):
                 lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite),
                 sync_personal_records,
                 sync_athlete_profile,
+                sync_gear,
                 sync_active_goals,
             ])
 

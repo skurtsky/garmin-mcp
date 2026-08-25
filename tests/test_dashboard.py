@@ -122,7 +122,11 @@ SAMPLE = {
               "maintenance_interval_km": 400.0,
               "linked_gear_uuid": None, "last_serviced": "2026-01-01",
               "ever_serviced": False, "distance_since_km": 380.0,
-              "status": "yellow", "status_emoji": "\U0001F7E1"},
+              "component_usage_km": 380.0, "component_duration_min": 3000.0,
+              "lifespan_km": 400.0, "status": "yellow", "status_emoji": "\U0001F7E1",
+              "services": [{"id": "svc-1", "component_id": 1, "service_type": "Lube",
+                            "service_interval_km": 400.0, "last_serviced": "2026-01-01",
+                            "km_until_next_service": 20.0, "status": "yellow"}]},
          ]},
         {"name": "Nike Vaporfly", "model": None, "uuid": "shoe-1", "activity_type": "Shoes",
          "status": "active", "distance_km": 320.0, "duration_min": None,
@@ -213,6 +217,27 @@ def test_render_gear_panel_forms_carry_token():
     assert 'action="/api/gear/components?token=t0k"' in html
 
 
+def test_render_component_modal_shows_services_log_flow():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert "Services" in html
+    assert "Date/time" in html
+    assert 'name="service_datetime"' in html
+    assert 'type="hidden" name="action" value="Lube"' in html
+    assert "Service<select" not in html
+    assert 'href="#service-1-svc-1"' in html
+    assert 'aria-label="Log service"' in html
+    assert 'aria-label="Edit service"' in html
+    assert 'aria-label="Add service"' in html
+    assert '<svg viewBox="0 0 24 24" aria-hidden="true">' in html
+
+
+def test_render_component_modal_shows_lifespan_remaining():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "KMs used" in html
+    assert "KMs left" in html
+    assert "Time used" not in html
+
+
 def test_render_gear_panel_offers_link_component_not_add(monkeypatch):
     """'Add component' (free-text) was replaced with 'Link component' (pick
     from the athlete's own Garmin-tracked gear) — issue 63."""
@@ -259,27 +284,29 @@ def test_render_gear_panel_link_form_has_no_install_date_field():
     assert "Install date" not in html[link_form_start:link_form_end]
 
 
-def test_render_gear_panel_link_form_offers_type_not_name():
-    """The Link form has a Type dropdown (Chain/Cassette/Tire/Brakes) instead
-    of a free-text Name field — the name comes from the linked Garmin gear
-    (or, for Custom, from the selected Type) instead (issue 63 follow-up)."""
+def test_render_gear_panel_link_form_offers_custom_name_and_type():
+    """The Link form has a Name input for Custom components plus a Type
+    dropdown for classification/defaults."""
     html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'name="name" placeholder="Custom component"' in html
     assert '<select name="component_type">' in html
     for option in ("Chain", "Cassette", "Tire", "Brakes"):
         assert f'<option value="{option}">{option}</option>' in html
     assert 'placeholder="e.g. Chain"' not in html
 
 
-def test_render_gear_panel_uses_service_interval_label_not_override():
+def test_render_gear_panel_uses_lifespan_and_service_interval_labels():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "Service interval (km)" in html
+    assert "Lifespan (km)" in html
+    assert "Interval (km)" in html
     assert "Interval override" not in html
 
 
-def test_render_gear_panel_unlink_button_absent_for_unlinked_component():
-    """SAMPLE's Chain has no linked_gear_uuid — no Unlink button to show."""
+def test_render_gear_panel_unlink_button_present_for_unlinked_component():
+    """Unlink is available for any component and rendered as a minimal footer action."""
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "Unlink" not in html
+    assert "Unlink" in html
+    assert "background:transparent" in html
 
 
 def test_render_gear_panel_unlink_button_present_for_linked_component():
@@ -295,7 +322,22 @@ def test_render_gear_panel_unlink_button_present_for_linked_component():
     }}
     html = dashboard.render_dashboard_html(data)
     assert "Unlink" in html
-    assert '<input type="hidden" name="linked_gear_uuid" value="">' in html
+    assert '<input type="hidden" name="unlink" value="1">' in html
+
+
+def test_render_gear_panel_hides_component_edit_for_linked_component():
+    data = {**SAMPLE, "gear_status": {
+        **SAMPLE["gear_status"],
+        "gear": [
+            {**SAMPLE["gear_status"]["gear"][0], "components": [
+                {**SAMPLE["gear_status"]["gear"][0]["components"][0],
+                 "linked_gear_uuid": "chain-1"},
+            ]},
+            SAMPLE["gear_status"]["gear"][1],
+        ],
+    }}
+    html = dashboard.render_dashboard_html(data)
+    assert "Edit component" not in html
 
 
 def test_render_gear_panel_history_bike_column_not_gear():
