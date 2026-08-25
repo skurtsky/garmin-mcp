@@ -8,6 +8,7 @@ and no Azure File Share are involved.
 import json
 
 import pytest
+from starlette.responses import Response
 from starlette.testclient import TestClient
 
 from tools import training_plan
@@ -249,6 +250,61 @@ def test_owns_path_matches_only_plan_routes():
     assert training_plan.owns_path("/training-plan/upload") is True
     assert training_plan.owns_path("/training-plan-other") is False
     assert training_plan.owns_path("/dashboard") is False
+
+
+# ── PDF ───────────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def captured_pdf(monkeypatch):
+    """Stand in for the real renderer — building a PDF needs a print engine."""
+    seen = {}
+
+    async def fake_render(plan):
+        seen["plan"] = plan
+        return Response(b"%PDF-fake", media_type="application/pdf")
+
+    monkeypatch.setattr(training_plan, "render_plan_pdf", fake_render)
+    return seen
+
+
+def test_get_pdf_renders_the_stored_plan_json(client, captured_pdf):
+    training_plan.save_plan(PLAN_HTML.encode())
+
+    r = client.get("/training-plan/pdf", params={"token": "t0k"})
+
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert captured_pdf["plan"]["meta"]["event"] == "Marathon build"
+
+
+def test_get_pdf_without_a_plan_is_404(client, captured_pdf):
+    r = client.get("/training-plan/pdf", params={"token": "t0k"})
+
+    assert r.status_code == 404
+    assert "plan" not in captured_pdf
+
+
+def test_post_pdf_renders_the_posted_plan(client, captured_pdf):
+    training_plan.save_plan(PLAN_HTML.encode())
+    posted = {"meta": {"event": "Live overrides"}, "weeks": []}
+
+    r = client.post("/training-plan/pdf", params={"token": "t0k"}, json=posted)
+
+    assert r.status_code == 200
+    assert captured_pdf["plan"] == posted
+
+
+@pytest.mark.parametrize("body", ["not json", '["not", "a", "plan"]'])
+def test_post_pdf_rejects_non_plan_bodies(client, captured_pdf, body):
+    r = client.post(
+        "/training-plan/pdf",
+        params={"token": "t0k"},
+        content=body,
+        headers={"content-type": "application/json"},
+    )
+
+    assert r.status_code == 400
+    assert "plan" not in captured_pdf
 
 
 # ── AUTH WIRING ───────────────────────────────────────────────────────────────
