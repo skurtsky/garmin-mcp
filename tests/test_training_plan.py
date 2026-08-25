@@ -10,7 +10,7 @@ import json
 import pytest
 from starlette.testclient import TestClient
 
-from tools import navbar, training_plan
+from tools import training_plan
 
 
 PLAN_HTML = (
@@ -128,30 +128,30 @@ def test_get_plan_without_upload_returns_no_plan_page(client):
     assert r.headers["cache-control"] == "no-store"
 
 
-def test_get_plan_serves_stored_html_with_the_nav_injected(client):
+def test_get_plan_serves_stored_html_without_the_nav_bar(client):
     training_plan.save_plan(PLAN_HTML.encode())
 
     r = client.get("/training-plan", params={"token": "t0k"})
 
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/html")
-    # The plan itself is untouched — only the nav bar is added inside <body>.
+    # The plan itself is untouched, and no longer gets the shared nav bar
+    # injected (issue: /training-plan navigates via the dashboard's More menu now).
     assert '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>' in r.text
     assert "<div id=app></div>" in r.text
-    assert 'class="gm-nav gm-nav--bottom-mobile"' not in r.text
+    assert 'id="gm-nav"' not in r.text
     plan_with_meta = PLAN_HTML.replace(
         '<head>',
         '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">',
     )
-    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == plan_with_meta
-    assert 'href="/weekly-summary?token=t0k"' in r.text
+    assert r.text == plan_with_meta
 
 
-def test_no_plan_page_carries_the_site_nav(client):
+def test_no_plan_page_has_no_nav_bar(client):
     r = client.get("/training-plan", params={"token": "t0k"})
 
-    assert 'id="gm-nav"' in r.text
-    assert 'href="/dashboard?token=t0k"' in r.text
+    assert 'id="gm-nav"' not in r.text
+    assert "/training-plan/upload?token=t0k" in r.text
 
 
 def test_upload_form_has_one_file_input_and_carries_token(client):
@@ -192,7 +192,7 @@ def test_post_upload_redirect_lands_on_the_plan(client):
         '<head>',
         '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">',
     )
-    assert r.text.replace(navbar.render_nav_html("training-plan", "t0k"), "") == plan_with_meta
+    assert r.text == plan_with_meta
 
 
 def test_post_upload_with_invalid_embedded_json_returns_form_with_error(client):

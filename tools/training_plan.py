@@ -31,7 +31,7 @@ from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, RedirectResponse
 from starlette.routing import Route
 
-from tools.navbar import inject_nav, render_nav_html
+from tools.navbar import inject_no_zoom_meta
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +249,6 @@ def _page(title: str, body: str, token: str | None = None) -> str:
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
-        f'{render_nav_html("training-plan", token)}'
         f"<main>{body}</main></body></html>"
     )
 
@@ -332,16 +331,12 @@ _NO_STORE = {"Cache-Control": "no-store"}
 
 
 async def serve_plan(request):
-    """GET /training-plan — the stored plan, or the placeholder page.
-
-    The plan HTML is stored verbatim; the site nav bar is injected into its
-    ``<body>`` on the way out so the uploaded file never has to know about it.
-    """
+    """GET /training-plan — the stored plan, or the placeholder page."""
     token = request.query_params.get("token")
     page = read_plan_html()
     if page is None:
         return HTMLResponse(render_no_plan_html(token), headers=_NO_STORE)
-    return HTMLResponse(inject_nav(page, "training-plan", token), headers=_NO_STORE)
+    return HTMLResponse(inject_no_zoom_meta(page), headers=_NO_STORE)
 
 
 async def serve_upload_form(request):
