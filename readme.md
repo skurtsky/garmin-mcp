@@ -161,9 +161,10 @@ minute-plus a fully serial fetch would take. Five tabs:
 
 - **Today** — training readiness (score, level, contributing factors),
   training status (Peaking/Productive/Maintaining/etc., colour-coded, with a
-  4-week history bar) and load ratio, body battery, steps vs. goal, resting HR
-  with a 14-day sparkline, HRV status, last night's sleep (stages + stats),
-  this week's load by day, and today's activities.
+  daily history bar toggling between 7d and 28d) and load ratio, body
+  battery, steps vs. goal, resting HR with a 14-day sparkline, HRV status,
+  last night's sleep (stages + stats), this week's load by day, and today's
+  activities.
 - **Trends** — acute:chronic training-load ratio, and HRV / resting HR /
   sleep score / acute load / stress / steps sparkline cards over a 7d/14d/30d
   toggle, plus a 14-day daily-steps chart.

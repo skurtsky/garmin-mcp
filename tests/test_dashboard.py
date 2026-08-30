@@ -28,6 +28,19 @@ def _trend_series(values, unit="bpm"):
                                      for i, v in enumerate(values)]}
 
 
+def _status_history(statuses, end="2026-07-17"):
+    """Build a daily training-status history (oldest first) of len(statuses)
+    days ending on `end`, matching dashboard._daily_training_status_history's
+    shape."""
+    from datetime import date, timedelta
+    end_d = date.fromisoformat(end)
+    n = len(statuses)
+    return [
+        {"date": (end_d - timedelta(days=n - 1 - i)).isoformat(), "status": s}
+        for i, s in enumerate(statuses)
+    ]
+
+
 SAMPLE = {
     "date": "2026-07-17",
     "generated_at": "2026-07-17 08:30",
@@ -66,13 +79,10 @@ SAMPLE = {
     "training_status": {"vo2max": {"running": 52, "cycling": 48}, "acwr": 1.3,
                         "acwr_status": "OPTIMAL", "status": "PRODUCTIVE_2", "sport": "RUNNING"},
     "training_status_err": None,
-    "training_status_history": [
-        {"date": "2026-06-26", "status": "MAINTAINING_1"},
-        {"date": "2026-07-03", "status": "PRODUCTIVE_1"},
-        {"date": "2026-07-10", "status": "STRAINED_0"},
-        {"date": "2026-07-17", "status": "PRODUCTIVE_2"},
-    ],
-    "training_status_history_err": None,
+    "training_status_daily_history": _status_history(
+        ["MAINTAINING_1"] * 10 + ["STRAINED_0"] * 4 + ["PRODUCTIVE_1"] * 7 + [None] * 3 + ["PRODUCTIVE_2"] * 4
+    ),
+    "training_status_daily_history_err": None,
     "activities": [
         {"id": 1, "date": "2026-07-17T06:00:00", "name": "Evening Run", "type": "running",
          "distance_km": 10.2, "duration_min": 52.3, "avg_hr": 141, "training_load": 120.0},
@@ -510,12 +520,35 @@ def test_training_status_widget_shows_status_wording_and_lives_under_readiness()
     assert readiness_i < status_i < ratio_i
 
 
-def test_training_status_widget_shows_4_week_bar():
+def test_training_status_widget_has_no_blurb_or_sport():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "Last 4 weeks" in html
-    assert "This wk" in html
-    assert "Maintaining" in html  # oldest week's status, in a tooltip data-value
-    assert "Strained" in html
+    card = html.split("Training status</div>", 1)[1].split("Load ratio", 1)[0]
+
+    assert "RUNNING" not in card
+    assert "Running" not in card  # sport label removed — status covers all activities
+    # no per-status one-line explanation text
+    assert "recovery likely isn't keeping up" not in card.lower()
+    assert "ideal competitive form" not in card.lower()
+
+
+def test_training_status_widget_offers_7d_28d_toggle_defaulting_to_28d():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'id="ts-range-7"' in html
+    assert 'id="ts-range-28"' in html
+    # 28d is the default-checked option
+    assert 'checked' in html.split('id="ts-range-28"')[1][:10]
+    assert 'checked' not in html.split('id="ts-range-7"')[1].split('id="ts-range-28"')[0][:10]
+
+
+def test_training_status_widget_renders_daily_segments_for_both_ranges():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    card = html.split("Training status</div>", 1)[1].split("Load ratio", 1)[0]
+
+    # 7 days for the 7d bar, 28 for the 28d bar — both present in the markup
+    # (CSS toggles which is visible), each as a per-day tooltip segment.
+    assert card.count('class="js-bar"') == 28 + 7
+    assert "Maintaining" in card  # an early day's status, in a tooltip data-value
+    assert "Strained" in card
 
 
 @pytest.mark.parametrize("raw, expected_label", [
@@ -535,31 +568,48 @@ def test_training_status_widget_shows_4_week_bar():
     ("something_unrecognized_9", "No Status"),
 ])
 def test_training_status_info_maps_known_phrases(raw, expected_label):
-    label, color, blurb = dashboard._training_status_info(raw)
+    label, color = dashboard._training_status_info(raw)
     assert label == expected_label
     assert color
-    assert blurb
 
 
-def test_weekly_training_status_history_buckets_oldest_first():
+def test_training_status_colors_match_garmin_app_palette():
+    colors = {label: color for label, color in dashboard._TRAINING_STATUS_INFO.values()}
+    assert colors["Peaking"] == "#9184d9"       # purple
+    assert colors["Productive"] == "#4fae72"    # green
+    assert colors["Maintaining"] == "#d9c23e"   # yellow
+    assert colors["Strained"] == "#d9689a"      # pink
+    assert colors["Unproductive"] == "#e2734a"  # orange
+    assert colors["Overreaching"] == "#cf5a4e"  # red
+    assert colors["Recovery"] == "#4aa7d8"      # blue
+    assert colors["Detraining"] == "#9397ab"    # gray
+    # every status maps to a distinct colour
+    assert len(set(colors.values())) == len(colors)
+
+
+def test_daily_training_status_history_covers_28_days_oldest_first():
     from datetime import date
     rows = [
         {"metric_date": date(2026, 6, 25), "training_status_data": {"status": "MAINTAINING_1"}},
         {"metric_date": date(2026, 7, 2), "training_status_data": {"status": "PRODUCTIVE_1"}},
         {"metric_date": date(2026, 7, 9), "training_status_data": {"status": "STRAINED_0"}},
-        {"metric_date": date(2026, 7, 16), "training_status_data": {"status": "PRODUCTIVE_2"}},
+        {"metric_date": date(2026, 7, 17), "training_status_data": {"status": "PRODUCTIVE_2"}},
     ]
-    history = dashboard._weekly_training_status_history(rows, date(2026, 7, 17))
-    assert len(history) == 4
-    assert [h["status"] for h in history] == [
-        "MAINTAINING_1", "PRODUCTIVE_1", "STRAINED_0", "PRODUCTIVE_2",
-    ]
+    history = dashboard._daily_training_status_history(rows, date(2026, 7, 17))
+    assert len(history) == 28
+    assert history[0]["date"] == "2026-06-20"
+    assert history[-1]["date"] == "2026-07-17"
+    assert history[-1]["status"] == "PRODUCTIVE_2"  # today
+    assert history[0]["status"] is None             # no row that far back
+    by_date = {h["date"]: h["status"] for h in history}
+    assert by_date["2026-06-25"] == "MAINTAINING_1"
+    assert by_date["2026-07-09"] == "STRAINED_0"
 
 
-def test_weekly_training_status_history_handles_missing_data():
+def test_daily_training_status_history_handles_missing_data():
     from datetime import date
-    history = dashboard._weekly_training_status_history([], date(2026, 7, 17))
-    assert len(history) == 4
+    history = dashboard._daily_training_status_history([], date(2026, 7, 17))
+    assert len(history) == 28
     assert all(h["status"] is None for h in history)
 
 
@@ -921,7 +971,7 @@ def test_build_dashboard_data_from_db_never_calls_garmin_live_for_weeks_or_sync(
 
 
 def test_build_dashboard_data_from_db_derives_training_status_history_from_trend_rows(monkeypatch):
-    """The DB path's 4-week training-status bar reuses the trend_rows window
+    """The DB path's training-status history bar reuses the trend_rows window
     already fetched for the Trends tab rather than issuing a second query."""
     import db
     from datetime import date, datetime, timezone
@@ -947,11 +997,12 @@ def test_build_dashboard_data_from_db_derives_training_status_history_from_trend
 
     data = dashboard.build_dashboard_data()
 
-    assert data["training_status_history_err"] is None
-    history = data["training_status_history"]
-    assert len(history) == 4
-    assert history[-1]["status"] == "PRODUCTIVE_2"  # this week
-    assert history[-2]["status"] == "STRAINED_0"     # last week
+    assert data["training_status_daily_history_err"] is None
+    history = data["training_status_daily_history"]
+    assert len(history) == 28
+    assert history[-1]["date"] == "2026-07-17"
+    assert history[-1]["status"] == "PRODUCTIVE_2"  # today
+    assert history[-8]["status"] == "STRAINED_0"     # 2026-07-10, 7 days back
     assert history[0]["status"] is None              # nothing that far back
 
 
@@ -1100,17 +1151,17 @@ def test_build_dashboard_data_aggregates(monkeypatch):
     assert data["sleep"]["sleep_score"] == 80
     assert data["activities"] == [{"name": "Run"}]
     assert data["training_status"]["vo2max"]["running"] == 51
-    history = data["training_status_history"]
-    assert len(history) == 4
+    history = data["training_status_daily_history"]
+    assert len(history) == 28
     assert all(h["status"] is None for h in history)  # fixture has no 'status' key
-    assert len({h["date"] for h in history}) == 4      # 4 distinct weekly snapshots
+    assert len({h["date"] for h in history}) == 28     # 28 distinct daily snapshots
     assert data["trends"]["period"] == dashboard.TREND_PERIOD
     assert data["personal_records"] == {"running": []}
     assert data["athlete"]["weight_kg"] == 70
     assert data["last_sync"]["device_name"] == "Watch"
     assert all(data[k] is None for k in
                ("readiness_err", "health_err", "sleep_err", "training_err",
-                "training_status_err", "training_status_history_err", "activities_err", "week_err",
+                "training_status_err", "training_status_daily_history_err", "activities_err", "week_err",
                 "trends_err", "personal_records_err", "active_goals_err", "athlete_err", "last_sync_err"))
 
 
@@ -1137,7 +1188,11 @@ def test_build_dashboard_data_captures_section_errors(monkeypatch):
     assert data["readiness"] is None
     assert "garmin down" in data["readiness_err"]
     assert "garmin down" in data["training_status_err"]
-    assert "garmin down" in data["training_status_history_err"]
+    # per-day fetches inside get_training_status_daily_history() swallow their own
+    # errors (one bad day shouldn't blank the whole 28-day bar), so this section
+    # comes back as an all-None history rather than a section-level error.
+    assert data["training_status_daily_history_err"] is None
+    assert all(h["status"] is None for h in data["training_status_daily_history"])
     assert "garmin down" in data["trends_err"]
     assert data["sleep"] == {"sleep_score": 80}   # unaffected section still populated
     # The whole thing still renders without raising.

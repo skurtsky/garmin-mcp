@@ -67,7 +67,7 @@ _SECTION_CACHE_TTLS: dict[str, int] = {
     "sleep":            300,
     "training":         120,
     "training_status":  300,
-    "training_status_history": 300,
+    "training_status_daily_history": 300,
     "activities":       300,
     "week":             300,
     "trends":           900,
@@ -331,8 +331,8 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "training_err": None,
             "training_status": today_metrics.get("training_status_data"),
             "training_status_err": None,
-            "training_status_history": _weekly_training_status_history(trend_rows, now.date()),
-            "training_status_history_err": None,
+            "training_status_daily_history": _daily_training_status_history(trend_rows, now.date()),
+            "training_status_daily_history_err": None,
             "activities": activities,
             "activities_err": None,
             "week": week_data,
@@ -384,7 +384,7 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         get_sleep,
         get_training_readiness,
         get_training_status,
-        get_training_status_history,
+        get_training_status_daily_history,
     )
     from tools.activities import get_activities, get_weekly_summary
     from tools.trends import get_trends
@@ -402,7 +402,7 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         "sleep":            (get_sleep, (today,), {}),
         "training":         (get_training_readiness, (today,), {}),
         "training_status":  (get_training_status, (today,), {}),
-        "training_status_history": (get_training_status_history, (), {}),
+        "training_status_daily_history": (get_training_status_daily_history, (), {}),
         "activities":       (get_activities, (), {"limit": 20}),
         "week":             (get_weekly_summary, (), {}),
         "trends":           (get_trends, (), {"period": TREND_PERIOD, "metrics": _TREND_METRICS}),
@@ -772,19 +772,19 @@ def _readiness_color(level):
     return _READINESS_COLORS.get(str(level or "").upper(), "var(--color-accent)")
 
 
-# Garmin's trainingStatusFeedbackPhrase (e.g. "PRODUCTIVE_2") — (label, colour,
-# one-line explanation) per status, from Garmin's own definitions (issue 92).
+# Garmin's trainingStatusFeedbackPhrase (e.g. "PRODUCTIVE_2") — (label, colour)
+# per status. Colours follow the Garmin Connect app's own palette (issue 92).
 _TRAINING_STATUS_INFO = {
-    "PEAKING":      ("Peaking", "#3fc9a0", "Ideal competitive form after a load taper."),
-    "PRODUCTIVE":   ("Productive", "#4fae72", "Fitness is rising thanks to effective training."),
-    "MAINTAINING":  ("Maintaining", "#5b8fd8", "Holding your current fitness, not yet building it."),
-    "STRAINED":     ("Strained", "#cf5a4e", "Performance is limited — recovery likely isn't keeping up."),
-    "UNPRODUCTIVE": ("Unproductive", "#e2734a", "Fitness is slipping despite the training effort."),
-    "OVERREACHING": ("Overreaching", "#a8443b", "Acute load is well above normal and recovery is struggling."),
-    "RECOVERY":     ("Recovery", "#4aa7d8", "Training is lighter; fitness is steady or dipping slightly."),
-    "DETRAINING":   ("Detraining", "#9397ab", "Fitness is declining from an extended break."),
-    "NO_STATUS":    ("No Status", "var(--color-neutral-500)", "Not enough data yet to determine your status."),
-    "PAUSED":       ("Paused", "var(--color-neutral-600)", "Training status is paused in your device settings."),
+    "PEAKING":      ("Peaking", "#9184d9"),        # purple
+    "PRODUCTIVE":   ("Productive", "#4fae72"),     # green
+    "MAINTAINING":  ("Maintaining", "#d9c23e"),    # yellow
+    "STRAINED":     ("Strained", "#d9689a"),       # pink
+    "UNPRODUCTIVE": ("Unproductive", "#e2734a"),   # orange
+    "OVERREACHING": ("Overreaching", "#cf5a4e"),   # red
+    "RECOVERY":     ("Recovery", "#4aa7d8"),       # blue
+    "DETRAINING":   ("Detraining", "#9397ab"),     # gray
+    "NO_STATUS":    ("No Status", "var(--color-neutral-500)"),
+    "PAUSED":       ("Paused", "var(--color-neutral-600)"),
 }
 _DEFAULT_TRAINING_STATUS = _TRAINING_STATUS_INFO["NO_STATUS"]
 
@@ -801,18 +801,16 @@ def _training_status_key(raw) -> str | None:
     return key or None
 
 
-def _training_status_info(raw) -> tuple[str, str, str]:
-    """(label, colour, blurb) for a raw training-status phrase."""
+def _training_status_info(raw) -> tuple[str, str]:
+    """(label, colour) for a raw training-status phrase."""
     return _TRAINING_STATUS_INFO.get(_training_status_key(raw), _DEFAULT_TRAINING_STATUS)
 
 
-def _weekly_training_status_history(rows: list[dict], today: date, weeks: int = 4) -> list[dict]:
-    """Bucket daily training_status_data (already fetched for the Trends tab's
-    wide date window) into `weeks` trailing 7-day windows ending on `today`,
-    oldest first — each entry the latest status Garmin reported within that
-    window. Powers the Today tab's 4-week training-status bar (issue 92);
-    piggybacks on the trend rows already fetched rather than a second query.
-    """
+def _daily_training_status_history(rows: list[dict], today: date, days: int = 28) -> list[dict]:
+    """Daily training-status snapshots for the trailing `days` days ending on
+    `today` (oldest first), sliced from the trend rows already fetched for
+    the Trends tab's wide date window — no second DB query. Powers the Today
+    tab's training-status history bar (issue 92)."""
     by_date: dict[date, str] = {}
     for r in rows:
         status = (r.get("training_status_data") or {}).get("status")
@@ -826,56 +824,59 @@ def _weekly_training_status_history(rows: list[dict], today: date, weeks: int = 
                 continue
         by_date[d] = status
 
-    history = []
-    for i in range(weeks - 1, -1, -1):
-        window_end = today - timedelta(days=7 * i)
-        window_start = window_end - timedelta(days=6)
-        in_window = sorted((d for d in by_date if window_start <= d <= window_end), reverse=True)
-        history.append({"status": by_date[in_window[0]] if in_window else None})
-    return history
+    return [
+        {"date": (today - timedelta(days=i)).isoformat(), "status": by_date.get(today - timedelta(days=i))}
+        for i in range(days - 1, -1, -1)
+    ]
+
+
+def _training_status_day_segments(days_slice: list[dict], gap: bool) -> str:
+    """One `.js-bar` colour segment per day. With `gap`, each segment is a
+    small rounded, gapped block (7d view); without, segments sit flush
+    against each other inside a rounded, clipped strip so same-coloured runs
+    blend seamlessly (28d view)."""
+    segments = []
+    for day in days_slice:
+        seg_label, seg_color = _training_status_info(day.get("status"))
+        tooltip_date = _short_date(day.get("date")) or day.get("date") or ""
+        radius = "border-radius:4px;" if gap else ""
+        segments.append(
+            f'<div class="js-bar" data-date="{_e(tooltip_date)}" data-value="{_e(seg_label)}" '
+            f'style="flex:1;height:22px;{radius}background:{seg_color}"></div>'
+        )
+    return "".join(segments)
 
 
 def _training_status_card(data: dict) -> str:
     ts = data.get("training_status") or {}
-    history = data.get("training_status_history") or []
+    history = data.get("training_status_daily_history") or []
     if not ts and not history and data.get("training_status_err"):
         return f'<div class="card err">Training status unavailable — {_e(data.get("training_status_err"))}</div>'
 
-    label, color, blurb = _training_status_info(ts.get("status"))
-    sport = _label(ts.get("sport")) if ts.get("sport") else None
+    label, color = _training_status_info(ts.get("status"))
 
-    n = len(history)
-    segments = []
-    for i, wk in enumerate(history):
-        is_last = i == n - 1
-        weeks_ago = n - 1 - i
-        wk_label, wk_color, _ = _training_status_info(wk.get("status"))
-        tooltip = "This week" if is_last else f"{weeks_ago} week{'s' if weeks_ago != 1 else ''} ago"
-        axis_label = "This wk" if is_last else f"-{weeks_ago}wk"
-        axis_color = "var(--color-accent-200)" if is_last else "var(--color-neutral-600)"
-        segments.append(
-            f'<div class="js-bar" data-date="{_e(tooltip)}" data-value="{_e(wk_label)}" '
-            f'style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">'
-            f'<div style="width:100%;height:10px;border-radius:5px;background:{wk_color}"></div>'
-            f'<div style="font-size:9px;color:{axis_color}">{axis_label}</div></div>'
-        )
-    bar_segments = "".join(segments)
+    bar_7 = _training_status_day_segments(history[-7:], gap=True)
+    bar_28 = _training_status_day_segments(history, gap=False)
+    no_history = '<div class="muted" style="font-size:12px">No recent history.</div>'
+
+    range_radios = (
+        '<input class="hide" type="radio" name="ts-range" id="ts-range-7">'
+        '<input class="hide" type="radio" name="ts-range" id="ts-range-28" checked>'
+    )
+    range_toggle = ('<div class="ts-toggle"><label for="ts-range-7">7d</label>'
+                     '<label for="ts-range-28">28d</label></div>')
 
     return f"""
     <div>
       <div class="section-title">Training status</div>
-      <div class="card" style="padding:16px;gap:14px">
+      {range_radios}
+      <div class="card ts-card" style="padding:16px;gap:14px">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <div style="min-width:0">
-            <div style="font-family:var(--font-heading);font-size:24px;color:{color}">{_e(label)}</div>
-            <div style="font-size:12px;color:var(--color-neutral-400);margin-top:4px">{_e(blurb)}</div>
-          </div>
-          {f'<div class="kicker" style="text-align:right;white-space:nowrap">{sport}</div>' if sport else ""}
+          <div style="font-family:var(--font-heading);font-size:24px;color:{color}">{_e(label)}</div>
+          {range_toggle}
         </div>
-        <div>
-          <div style="display:flex;gap:8px">{bar_segments or '<div class="muted" style="font-size:12px">No recent history.</div>'}</div>
-          <div class="kicker" style="margin-top:8px">Last 4 weeks</div>
-        </div>
+        <div class="ts-bar-7" style="gap:3px">{bar_7 or no_history}</div>
+        <div class="ts-bar-28" style="border-radius:5px;overflow:hidden">{bar_28 or no_history}</div>
       </div>
     </div>"""
 
@@ -1050,6 +1051,19 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #ftp-wkg:checked ~ .ftp-card .ftp-val-wkg { display:inline; }
 #ftp-w:checked ~ .ftp-card .ftp-toggle label[for=ftp-w],
 #ftp-wkg:checked ~ .ftp-card .ftp-toggle label[for=ftp-wkg] {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent-200);
+}
+
+/* ── training-status history bar's 7d/28d toggle (Today tab, issue 92) ── */
+.ts-toggle { display:flex; gap:2px; padding:2px; border-radius:999px; border:1px solid var(--color-divider); }
+.ts-toggle label { border:0; cursor:pointer; font:inherit; font-size:9px; padding:3px 7px;
+                    border-radius:999px; color:var(--color-neutral-500); }
+.ts-bar-7, .ts-bar-28 { display:none; }
+#ts-range-7:checked ~ .ts-card .ts-bar-7,
+#ts-range-28:checked ~ .ts-card .ts-bar-28 { display:flex; }
+#ts-range-7:checked ~ .ts-card .ts-toggle label[for=ts-range-7],
+#ts-range-28:checked ~ .ts-card .ts-toggle label[for=ts-range-28] {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
   color: var(--color-accent-200);
 }
