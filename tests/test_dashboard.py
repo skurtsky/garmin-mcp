@@ -77,7 +77,8 @@ SAMPLE = {
     }},
     "training_err": None,
     "training_status": {"vo2max": {"running": 52, "cycling": 48}, "acwr": 1.3,
-                        "acwr_status": "OPTIMAL", "status": "PRODUCTIVE_2", "sport": "RUNNING"},
+                        "acwr_status": "OPTIMAL", "status": "PRODUCTIVE_2", "sport": "RUNNING",
+                        "load_balance": "BALANCED"},
     "training_status_err": None,
     "training_status_daily_history": _status_history(
         ["MAINTAINING_1"] * 10 + ["STRAINED_0"] * 4 + ["PRODUCTIVE_1"] * 7 + [None] * 3 + ["PRODUCTIVE_2"] * 4
@@ -540,6 +541,37 @@ def test_training_status_widget_offers_7d_28d_toggle_defaulting_to_28d():
     assert 'checked' not in html.split('id="ts-range-7"')[1].split('id="ts-range-28"')[0][:10]
 
 
+def test_training_status_kicker_lives_inside_the_card_not_outside():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    # the "Training status" label is the kicker inside .card.ts-card, not a
+    # sibling .section-title sitting above/outside the card.
+    assert '<div class="card ts-card"' in html
+    before, after = html.split('<div class="card ts-card"', 1)
+    card_and_after = '<div class="card ts-card"' + after
+    assert 'Training status</div>' in card_and_after.split("Load ratio", 1)[0]
+    # and it is *not* rendered as a section-title before the card opens
+    assert 'section-title">Training status' not in html
+
+
+def test_training_status_widget_shows_icon_and_load_focus():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    card = html.split('<div class="card ts-card"', 1)[1].split("Load ratio", 1)[0]
+
+    assert card.count("<svg") >= 2  # header kicker icon + coloured badge icon
+    assert "Load Focus" in card
+    assert "Balanced" in card
+
+
+def test_training_status_widget_shows_range_captions():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    card = html.split("Training status</div>", 1)[1].split("Load ratio", 1)[0]
+
+    assert "Last 7d" in card
+    assert "Last 4w" in card
+    assert "Since Jul 11" in card  # 7 days back from 2026-07-17
+    assert "Since Jun 20" in card  # 28 days back from 2026-07-17
+
+
 def test_training_status_widget_renders_daily_segments_for_both_ranges():
     html = dashboard.render_dashboard_html(SAMPLE)
     card = html.split("Training status</div>", 1)[1].split("Load ratio", 1)[0]
@@ -585,6 +617,23 @@ def test_training_status_colors_match_garmin_app_palette():
     assert colors["Detraining"] == "#9397ab"    # gray
     # every status maps to a distinct colour
     assert len(set(colors.values())) == len(colors)
+
+
+@pytest.mark.parametrize("raw, expected_icon", [
+    ("PEAKING_1", dashboard._TREND_UP_ICON),
+    ("PRODUCTIVE_2", dashboard._TREND_UP_ICON),
+    ("MAINTAINING_0", dashboard._TREND_FLAT_ICON),
+    ("RECOVERY_0", dashboard._TREND_FLAT_ICON),
+    ("STRAINED_1", dashboard._TREND_DOWN_ICON),
+    ("UNPRODUCTIVE_2", dashboard._TREND_DOWN_ICON),
+    ("OVERREACHING_1", dashboard._TREND_DOWN_ICON),
+    ("DETRAINING_2", dashboard._TREND_DOWN_ICON),
+    ("PAUSED_0", dashboard._PAUSE_ICON),
+    ("NO_STATUS_0", dashboard._HELP_ICON),
+    (None, dashboard._HELP_ICON),
+])
+def test_training_status_icon_matches_category(raw, expected_icon):
+    assert dashboard._training_status_icon(raw) == expected_icon
 
 
 def test_daily_training_status_history_covers_28_days_oldest_first():

@@ -559,6 +559,17 @@ def _short_date(iso_date):
         return None
 
 
+def _mon_day(iso_date):
+    """'2026-08-13...' -> 'Aug 13' (training-status widget's "Since ..." caption)."""
+    if not iso_date:
+        return None
+    try:
+        d = date.fromisoformat(str(iso_date)[:10])
+        return f"{d.strftime('%b')} {d.day}"
+    except ValueError:
+        return None
+
+
 def _month_year(value):
     """A date-ish string -> 'Aug 2026'; passthrough on parse failure."""
     if not value:
@@ -788,6 +799,32 @@ _TRAINING_STATUS_INFO = {
 }
 _DEFAULT_TRAINING_STATUS = _TRAINING_STATUS_INFO["NO_STATUS"]
 
+# Small stroke icons (trend up/down/flat, pause, help) representing each
+# training-status category — shown both in the widget's header kicker and,
+# tinted to the status colour, in the badge next to the status name.
+_TREND_UP_ICON = ('<polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline>'
+                  '<polyline points="17 6 23 6 23 12"></polyline>')
+_TREND_DOWN_ICON = ('<polyline points="23 18 13.5 8.5 8.5 13.5 1 6"></polyline>'
+                    '<polyline points="17 18 23 18 23 12"></polyline>')
+_TREND_FLAT_ICON = '<line x1="3" y1="12" x2="21" y2="12"></line>'
+_PAUSE_ICON = '<rect x="6" y="4" width="4" height="16" rx="1"></rect><rect x="14" y="4" width="4" height="16" rx="1"></rect>'
+_HELP_ICON = ('<circle cx="12" cy="12" r="10"></circle>'
+             '<path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>'
+             '<line x1="12" y1="17.01" x2="12.01" y2="17.01"></line>')
+
+_TRAINING_STATUS_ICON = {
+    "PEAKING": _TREND_UP_ICON, "PRODUCTIVE": _TREND_UP_ICON,
+    "MAINTAINING": _TREND_FLAT_ICON, "RECOVERY": _TREND_FLAT_ICON,
+    "STRAINED": _TREND_DOWN_ICON, "UNPRODUCTIVE": _TREND_DOWN_ICON,
+    "OVERREACHING": _TREND_DOWN_ICON, "DETRAINING": _TREND_DOWN_ICON,
+    "PAUSED": _PAUSE_ICON, "NO_STATUS": _HELP_ICON,
+}
+
+
+def _stroke_icon(inner: str, size: int = 18) -> str:
+    return (f'<svg viewBox="0 0 24 24" width="{size}" height="{size}" fill="none" stroke="currentColor" '
+            f'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">{inner}</svg>')
+
 
 def _training_status_key(raw) -> str | None:
     """Normalize a raw trainingStatusFeedbackPhrase ('PRODUCTIVE_2', 'no status')
@@ -804,6 +841,12 @@ def _training_status_key(raw) -> str | None:
 def _training_status_info(raw) -> tuple[str, str]:
     """(label, colour) for a raw training-status phrase."""
     return _TRAINING_STATUS_INFO.get(_training_status_key(raw), _DEFAULT_TRAINING_STATUS)
+
+
+def _training_status_icon(raw) -> str:
+    """Inner SVG markup (trend up/down/flat, pause, or help) for a raw
+    training-status phrase — pass to _stroke_icon() to render."""
+    return _TRAINING_STATUS_ICON.get(_training_status_key(raw), _HELP_ICON)
 
 
 def _daily_training_status_history(rows: list[dict], today: date, days: int = 28) -> list[dict]:
@@ -853,11 +896,17 @@ def _training_status_card(data: dict) -> str:
     if not ts and not history and data.get("training_status_err"):
         return f'<div class="card err">Training status unavailable — {_e(data.get("training_status_err"))}</div>'
 
-    label, color = _training_status_info(ts.get("status"))
+    status_raw = ts.get("status")
+    label, color = _training_status_info(status_raw)
+    icon = _training_status_icon(status_raw)
+    load_focus = _label(ts.get("load_balance")) if ts.get("load_balance") else None
 
     bar_7 = _training_status_day_segments(history[-7:], gap=True)
     bar_28 = _training_status_day_segments(history, gap=False)
     no_history = '<div class="muted" style="font-size:12px">No recent history.</div>'
+
+    since_7 = _mon_day(history[-7]["date"]) if len(history) >= 7 else (_mon_day(history[0]["date"]) if history else None)
+    since_28 = _mon_day(history[0]["date"]) if history else None
 
     range_radios = (
         '<input class="hide" type="radio" name="ts-range" id="ts-range-7">'
@@ -867,16 +916,29 @@ def _training_status_card(data: dict) -> str:
                      '<label for="ts-range-28">28d</label></div>')
 
     return f"""
-    <div>
-      <div class="section-title">Training status</div>
+    <div class="card ts-card" style="padding:16px;gap:14px">
       {range_radios}
-      <div class="card ts-card" style="padding:16px;gap:14px">
-        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-          <div style="font-family:var(--font-heading);font-size:24px;color:{color}">{_e(label)}</div>
-          {range_toggle}
+      <div style="display:flex;align-items:center;gap:6px;color:var(--color-neutral-500)">
+        {_stroke_icon(icon, 14)}<div class="kicker">Training status</div>
+      </div>
+      <div class="ts-status-row" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:12px">
+          <div style="width:40px;height:40px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;
+              background:color-mix(in srgb, {color} 18%, transparent);color:{color}">{_stroke_icon(icon, 20)}</div>
+          <div>
+            <div style="font-family:var(--font-heading);font-size:24px;color:{color};line-height:1.2">{_e(label)}</div>
+            {f'<div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">Load Focus &middot; {load_focus}</div>' if load_focus else ""}
+          </div>
         </div>
-        <div class="ts-bar-7" style="gap:3px">{bar_7 or no_history}</div>
-        <div class="ts-bar-28" style="border-radius:5px;overflow:hidden">{bar_28 or no_history}</div>
+        {range_toggle}
+      </div>
+      <div class="ts-bar-7" style="gap:3px">{bar_7 or no_history}</div>
+      <div class="ts-bar-28" style="border-radius:5px;overflow:hidden">{bar_28 or no_history}</div>
+      <div class="ts-cap-7" style="justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
+        <span>Last 7d</span><span>{f"Since {since_7}" if since_7 else ""}</span>
+      </div>
+      <div class="ts-cap-28" style="justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
+        <span>Last 4w</span><span>{f"Since {since_28}" if since_28 else ""}</span>
       </div>
     </div>"""
 
@@ -1055,15 +1117,22 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   color: var(--color-accent-200);
 }
 
-/* ── training-status history bar's 7d/28d toggle (Today tab, issue 92) ── */
+/* ── training-status history bar's 7d/28d toggle (Today tab, issue 92) ──
+   The range radios are direct children of .ts-card, siblings of the bar/
+   caption rows and of the .ts-status-row that holds .ts-toggle — so a plain
+   general-sibling selector (chained with a descendant selector for the
+   toggle's own label) reaches all of them without needing a .ts-card
+   ancestor prefix. ── */
 .ts-toggle { display:flex; gap:2px; padding:2px; border-radius:999px; border:1px solid var(--color-divider); }
 .ts-toggle label { border:0; cursor:pointer; font:inherit; font-size:9px; padding:3px 7px;
                     border-radius:999px; color:var(--color-neutral-500); }
-.ts-bar-7, .ts-bar-28 { display:none; }
-#ts-range-7:checked ~ .ts-card .ts-bar-7,
-#ts-range-28:checked ~ .ts-card .ts-bar-28 { display:flex; }
-#ts-range-7:checked ~ .ts-card .ts-toggle label[for=ts-range-7],
-#ts-range-28:checked ~ .ts-card .ts-toggle label[for=ts-range-28] {
+.ts-bar-7, .ts-bar-28, .ts-cap-7, .ts-cap-28 { display:none; }
+#ts-range-7:checked ~ .ts-bar-7,
+#ts-range-7:checked ~ .ts-cap-7,
+#ts-range-28:checked ~ .ts-bar-28,
+#ts-range-28:checked ~ .ts-cap-28 { display:flex; }
+#ts-range-7:checked ~ .ts-status-row .ts-toggle label[for=ts-range-7],
+#ts-range-28:checked ~ .ts-status-row .ts-toggle label[for=ts-range-28] {
   background: color-mix(in srgb, var(--color-accent) 20%, transparent);
   color: var(--color-accent-200);
 }
