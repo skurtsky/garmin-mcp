@@ -548,8 +548,33 @@ def test_render_shows_personal_records_grouped_by_sport():
 def test_render_shows_thresholds_from_athlete_profile():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "170" in html   # LTHR
-    assert "265" in html   # FTP
-    assert "72.9" in html  # weight
+    assert "265" in html   # FTP (W)
+    assert "3.64 W/kg" in html  # FTP, W/kg toggle target (265 W / 72.9 kg)
+
+
+def test_render_vo2max_gauges_show_rating_and_sport_labels():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "Running VO" in html
+    assert "Cycling VO" in html
+    assert "Excellent" in html  # 52 ml/kg/min running -> Excellent band
+    assert "Good" in html       # 48 ml/kg/min cycling -> Good band
+
+
+def test_render_ftp_card_offers_w_and_wkg_toggle():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert 'id="ftp-w"' in html
+    assert 'id="ftp-wkg"' in html
+    assert "ftp-val-w" in html
+    assert "ftp-val-wkg" in html
+
+
+def test_render_omits_ftp_toggle_without_weight():
+    data = dict(SAMPLE)
+    data["athlete"] = dict(SAMPLE["athlete"])
+    del data["athlete"]["weight_kg"]
+    html = dashboard.render_dashboard_html(data)
+    assert 'id="ftp-w"' not in html
+    assert "265" in html  # FTP still shown in watts
 
 
 def test_render_shows_activity_list_opening_the_detail_modal():

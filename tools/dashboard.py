@@ -597,9 +597,11 @@ _BOAT = ""
 _MEDAL = ""
 _PULSE = ""
 _WRENCH = ""
+_HEARTBEAT = ""
 
 # Icons the embedded Phosphor subset doesn't carry (More menu + its
-# off-dashboard links) — plain inline SVG, same approach as tools/navbar.py.
+# off-dashboard links, and FTP's "Lightning" glyph) — plain inline SVG, same
+# approach as tools/navbar.py.
 _MORE_ICON_PATH = ('<path d="M40,72H216a8,8,0,0,0,0-16H40a8,8,0,0,0,0,16Zm176,32H40a8,8,0,0,0,0,16H216a8,'
                    '8,0,0,0,0-16Zm0,48H40a8,8,0,0,0,0,16H216a8,8,0,0,0,0-16Z"/>')
 _CALENDAR_ICON_PATH = ('<path d="M208 32h-24v-8a8 8 0 0 0-16 0v8H88v-8a8 8 0 0 0-16 0v8H48a16 16 0 0 0-16 16v160'
@@ -608,6 +610,10 @@ _CALENDAR_ICON_PATH = ('<path d="M208 32h-24v-8a8 8 0 0 0-16 0v8H88v-8a8 8 0 0 0
 _CHART_ICON_PATH = ('<path d="M40 216a8 8 0 0 1-8-8V48a8 8 0 0 1 16 0v152h168a8 8 0 0 1 0 16Zm40-40a8 8 0 0 1-8-8v-40a8'
                     ' 8 0 0 1 16 0v40a8 8 0 0 1-8 8Zm48 0a8 8 0 0 1-8-8V96a8 8 0 0 1 16 0v72a8 8 0 0 1-8 8Zm48 0a8 8'
                     ' 0 0 1-8-8V64a8 8 0 0 1 16 0v104a8 8 0 0 1-8 8Z"/>')
+_LIGHTNING_ICON_PATH = ('<path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,'
+                        '8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17Z'
+                        'M109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06'
+                        'l52.8,19.8Z"/>')
 
 
 def _svg_icon(path: str, size: int = 19) -> str:
@@ -921,6 +927,19 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .more-menu-item:hover { background:color-mix(in srgb, var(--color-accent) 10%, transparent); }
 .more-menu-item i, .more-menu-item svg { flex:0 0 auto; font-size:19px; width:19px; height:19px;
   color:var(--color-accent-300); }
+
+/* ── FTP unit toggle (Fitness tab's Thresholds cards, issue 96) ── */
+.ftp-toggle { display:flex; gap:2px; padding:2px; border-radius:999px; border:1px solid var(--color-divider); }
+.ftp-toggle label { border:0; cursor:pointer; font:inherit; font-size:9px; padding:3px 7px;
+                     border-radius:999px; color:var(--color-neutral-500); }
+.ftp-val-w, .ftp-val-wkg { display:none; }
+#ftp-w:checked ~ .ftp-card .ftp-val-w,
+#ftp-wkg:checked ~ .ftp-card .ftp-val-wkg { display:inline; }
+#ftp-w:checked ~ .ftp-card .ftp-toggle label[for=ftp-w],
+#ftp-wkg:checked ~ .ftp-card .ftp-toggle label[for=ftp-wkg] {
+  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  color: var(--color-accent-200);
+}
 
 /* ── gear tracker forms (issue 53's tab) ── */
 .gear-form { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-top:10px;
@@ -1700,6 +1719,105 @@ def _activity_row_expandable(a: dict, max_load: float) -> str:
 
 
 # ── PANEL: FITNESS ───────────────────────────────────────────────────────────
+# VO2max gauge bands (ml/kg/min) and their ratings — issue #96's Nocturne
+# redesign of the VO2max/Thresholds section: a 5-band circular gauge per
+# sport (rather than the old dual dot-on-a-bar) plus individual threshold
+# cards, one of which (FTP) offers a W / W-per-kg unit toggle.
+_VO2_SEGS = (
+    (25, 41.7, "#cf5a4e"), (41.7, 45.4, "#d9a441"), (45.4, 51.1, "#4fae72"),
+    (51.1, 55.4, "#4aa7d8"), (55.4, 65, "#a07fe0"),
+)
+_VO2_MIN, _VO2_MAX = 25, 65
+_VO2_START_ANGLE, _VO2_SWEEP = 135, 300
+
+
+def _vo2_rating(value):
+    if value is None:
+        return None
+    if value >= 55.4:
+        return "Superior"
+    if value >= 51.1:
+        return "Excellent"
+    if value >= 45.4:
+        return "Good"
+    if value >= 41.7:
+        return "Fair"
+    return "Poor"
+
+
+def _vo2_gauge_svg(value, size: int = 132) -> str:
+    """A 5-band circular VO2max gauge (arc from _VO2_MIN to _VO2_MAX). The
+    current value gets a highlighted tail + dot; with no reading, just the
+    band track renders."""
+    cx = cy = size / 2
+    r = size / 2 - 15
+
+    def angle_for(v):
+        frac = max(0.0, min(1.0, (v - _VO2_MIN) / (_VO2_MAX - _VO2_MIN)))
+        return _VO2_START_ANGLE + frac * _VO2_SWEEP
+
+    def pt(a):
+        rad = math.radians(a)
+        return cx + r * math.cos(rad), cy + r * math.sin(rad)
+
+    def arc(a0, a1):
+        x0, y0 = pt(a0)
+        x1, y1 = pt(a1)
+        large = 1 if (a1 - a0) > 180 else 0
+        return f"M{x0:.1f} {y0:.1f} A{r:.1f} {r:.1f} 0 {large} 1 {x1:.1f} {y1:.1f}"
+
+    segs_svg = "".join(
+        f'<path d="{arc(angle_for(a), angle_for(b))}" fill="none" stroke="{c}" '
+        f'stroke-width="11" stroke-linecap="round"></path>'
+        for a, b, c in _VO2_SEGS
+    )
+
+    dot_svg = ""
+    if value is not None:
+        v = max(_VO2_MIN, min(_VO2_MAX, value))
+        v_angle = angle_for(v)
+        cur = next((s for s in _VO2_SEGS if s[0] <= v <= s[1]), _VO2_SEGS[-1])
+        tail = arc(max(angle_for(cur[0]), v_angle - 14), v_angle)
+        dot_x, dot_y = pt(v_angle)
+        dot_svg = (
+            f'<path d="{tail}" fill="none" stroke="{cur[2]}" stroke-width="11" stroke-linecap="round"></path>'
+            f'<circle cx="{dot_x:.1f}" cy="{dot_y:.1f}" r="6.5" fill="{cur[2]}" '
+            f'stroke="var(--color-surface)" stroke-width="2"></circle>'
+        )
+
+    return f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}">{segs_svg}{dot_svg}</svg>'
+
+
+def _vo2_gauge_block(value, label: str, icon: str) -> str:
+    rating = _vo2_rating(value)
+    size = 132
+    return f"""
+    <div style="display:flex;flex-direction:column;align-items:center;gap:8px">
+      <div style="font-size:11px;color:var(--color-neutral-500);display:flex;align-items:center;gap:5px">
+        <i class="ph">{icon}</i>{label} VO&#8322;
+      </div>
+      <div style="position:relative;width:{size}px;height:{size}px">
+        {_vo2_gauge_svg(value, size)}
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <div style="font-family:var(--font-heading);font-size:30px;line-height:1">{_num(value)}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500);margin-top:2px">{rating or "&mdash;"}</div>
+        </div>
+      </div>
+    </div>"""
+
+
+def _threshold_card(icon_html: str, color: str, value: str, label: str, extra: str = "", classes: str = "") -> str:
+    return f"""
+    <div class="card {classes}" style="padding:13px;gap:9px">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div style="width:30px;height:30px;border-radius:9px;display:grid;place-items:center;
+            background:color-mix(in srgb, {color} 18%, transparent);color:{color};font-size:15px">{icon_html}</div>
+        {extra}
+      </div>
+      <div style="font-family:var(--font-heading);font-size:19px;line-height:1.1">{value}</div>
+      <div style="font-size:10px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-neutral-500)">{label}</div>
+    </div>"""
+
 
 def _panel_fitness(data: dict) -> str:
     ts = data.get("training_status") or {}
@@ -1708,41 +1826,49 @@ def _panel_fitness(data: dict) -> str:
 
     vo2 = ts.get("vo2max") or {}
     run_v2, bike_v2 = vo2.get("running"), vo2.get("cycling")
-    run_pos = max(0, min(100, ((run_v2 or 30) - 30) / 40 * 100))
-    bike_pos = max(0, min(100, ((bike_v2 or 30) - 30) / 40 * 100))
     vo2_card = f"""
-    <div class="card" style="padding:16px;gap:12px">
+    <div class="card" style="padding:18px;gap:16px">
       <div class="kicker">VO&#8322; max</div>
-      <div style="display:flex;gap:22px;align-items:flex-end">
-        <div><div style="font-family:var(--font-heading);font-size:32px;line-height:1">{_num(run_v2)}</div>
-        <div style="font-size:11px;color:var(--color-neutral-500)"><i class="ph">{_RUN}</i> run</div></div>
-        <div><div style="font-family:var(--font-heading);font-size:32px;line-height:1">{_num(bike_v2)}</div>
-        <div style="font-size:11px;color:var(--color-neutral-500)"><i class="ph">{_BIKE}</i> bike</div></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:16px;justify-content:center">
+        {_vo2_gauge_block(run_v2, "Running", _RUN)}
+        {_vo2_gauge_block(bike_v2, "Cycling", _BIKE)}
       </div>
-      <div style="position:relative;height:22px">
-        <div style="position:absolute;left:0;right:0;top:9px;height:5px;border-radius:999px;
-            background:linear-gradient(90deg,var(--color-neutral-800),var(--color-accent-700),var(--color-accent))"></div>
-        <div style="position:absolute;left:{run_pos:.0f}%;top:3px;width:2px;height:17px;background:var(--color-neutral-200);border-radius:2px"></div>
-        <div style="position:absolute;left:{bike_pos:.0f}%;top:3px;width:2px;height:17px;background:var(--color-accent-300);border-radius:2px"></div>
-      </div>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)"><span>30</span><span>70</span></div>
     </div>"""
 
-    thresholds = [
-        ("LTHR", _num(athlete.get("lactate_threshold_hr"))),
-        ("LT pace", f"{athlete['lactate_threshold_pace']:.2f} /km" if athlete.get("lactate_threshold_pace") else "&mdash;"),
-        ("FTP", _num(athlete.get("ftp"), " W")),
-        ("Weight", _num(athlete.get("weight_kg"), " kg")),
-    ]
-    thresholds_html = "".join(
-        f'<div><div style="font-family:var(--font-heading);font-size:21px">{v}</div>'
-        f'<div style="font-size:10px;color:var(--color-neutral-500)">{k}</div></div>'
-        for k, v in thresholds
+    lthr_card = _threshold_card(f'<i class="ph">{_HEARTBEAT}</i>', "#cf5a4e",
+                                 _num(athlete.get("lactate_threshold_hr"), " bpm"), "LTHR")
+    lt_pace_card = _threshold_card(
+        f'<i class="ph">{_RUN}</i>', "#d9a441",
+        f"{athlete['lactate_threshold_pace']:.2f} /km" if athlete.get("lactate_threshold_pace") else "&mdash;",
+        "LT pace",
     )
+
+    ftp = athlete.get("ftp")
+    weight_kg = athlete.get("weight_kg")
+    lightning = _svg_icon(_LIGHTNING_ICON_PATH, size=15)
+    if ftp and weight_kg:
+        ftp_radios = (
+            '<input class="hide" type="radio" name="ftp-unit" id="ftp-w" checked>'
+            '<input class="hide" type="radio" name="ftp-unit" id="ftp-wkg">'
+        )
+        ftp_toggle = '<div class="ftp-toggle"><label for="ftp-w">W</label><label for="ftp-wkg">W/kg</label></div>'
+        ftp_value = (
+            f'<span class="ftp-val-w">{_num(ftp, " W")}</span>'
+            f'<span class="ftp-val-wkg">{ftp / weight_kg:.2f} W/kg</span>'
+        )
+        ftp_card = (
+            f"{ftp_radios}"
+            f"{_threshold_card(lightning, '#4fae72', ftp_value, 'FTP', extra=ftp_toggle, classes='ftp-card')}"
+        )
+    else:
+        ftp_card = _threshold_card(lightning, "#4fae72", _num(ftp, " W"), "FTP")
+
     thresholds_card = f"""
-    <div class="card" style="padding:16px;gap:10px">
-      <div class="kicker">Thresholds</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(84px,1fr));gap:12px">{thresholds_html}</div>
+    <div>
+      <div class="section-title">Thresholds</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px">
+        {lthr_card}{lt_pace_card}{ftp_card}
+      </div>
     </div>"""
 
     lthr = athlete.get("lactate_threshold_hr")
@@ -1812,7 +1938,8 @@ def _panel_fitness(data: dict) -> str:
     return f"""
     <section class="panel tabpanel tp-you" style="flex-direction:column;gap:16px">
       <div style="font-family:var(--font-heading);font-size:20px">Fitness</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">{vo2_card}{thresholds_card}</div>
+      {vo2_card}
+      {thresholds_card}
       {zones_card}
       {pr_html}
     </section>"""
@@ -2809,7 +2936,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
     <label for="tab-gear" class="more-menu-item" onclick="document.getElementById('more-menu').checked=false">
       <i class="ph">{_WRENCH}</i>Gear</label>
     <label for="tab-you" class="more-menu-item" onclick="document.getElementById('more-menu').checked=false">
-      <i class="ph">&#xe2ac;</i>Fitness</label>
+      <i class="ph">{_HEARTBEAT}</i>Fitness</label>
     <a class="more-menu-item more-menu-group-start" href="{_e(_pwa_asset_url('/weekly-summary', token))}">
       {_svg_icon(_CHART_ICON_PATH)}Weekly Summary</a>
     <a class="more-menu-item" href="{_e(_pwa_asset_url('/training-plan', token))}">
