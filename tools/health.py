@@ -1,6 +1,7 @@
 # tools/health.py
 from garmin_client import get_client
 from datetime import date, timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 def resolve_date(date_str: str) -> str:
     """Resolve 'today' and 'yesterday' to ISO date strings.
@@ -184,19 +185,30 @@ def get_training_status(date: str) -> dict:
     }
 
 
-def get_training_status_history(weeks: int = 4) -> list[dict]:
+_STATUS_HISTORY_MAX_WORKERS = 10  # bounded so a 28-day fetch doesn't fire 28 requests at once
+
+
+def get_training_status_daily_history(days: int = 28) -> list[dict]:
     """
-    Weekly training-status snapshots for the last `weeks` weeks (oldest
-    first) — the status Garmin reported as of each week's end date. Powers
-    the Today tab's 4-week training-status bar (issue 92).
+    Daily training-status snapshots for the last `days` days (oldest first) —
+    the status Garmin reported as of each day. Garmin has no batch/range
+    endpoint for this, so days are fetched concurrently on a bounded pool
+    (mirrors tools/trends.py's per-day metric fetch). Powers the Today tab's
+    training-status history bar (issue 92).
     """
     today = date.today()
-    history = []
-    for i in range(weeks - 1, -1, -1):
-        d = (today - timedelta(days=7 * i)).isoformat()
-        snapshot = get_training_status(d)
-        history.append({'date': d, 'status': snapshot.get('status')})
-    return history
+    dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+
+    def fetch_one(d):
+        try:
+            return d, get_training_status(d).get('status')
+        except Exception:
+            return d, None
+
+    with ThreadPoolExecutor(max_workers=_STATUS_HISTORY_MAX_WORKERS) as pool:
+        results = dict(pool.map(fetch_one, dates))
+
+    return [{'date': d, 'status': results[d]} for d in dates]
 
 
 def get_daily_health(date: str) -> dict:
