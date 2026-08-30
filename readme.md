@@ -159,10 +159,11 @@ they're independent Garmin API calls with no batch/range endpoint for most of
 them; a cold load is still on the order of a few seconds rather than the
 minute-plus a fully serial fetch would take. Five tabs:
 
-- **Today** — training readiness (score, level, contributing factors), body
-  battery, steps vs. goal, resting HR with a 14-day sparkline, HRV status,
-  last night's sleep (stages + stats), this week's load by day, and today's
-  activities.
+- **Today** — training readiness (score, level, contributing factors),
+  training status (Peaking/Productive/Maintaining/etc., colour-coded, with a
+  4-week history bar) and load ratio, body battery, steps vs. goal, resting HR
+  with a 14-day sparkline, HRV status, last night's sleep (stages + stats),
+  this week's load by day, and today's activities.
 - **Trends** — acute:chronic training-load ratio, and HRV / resting HR /
   sleep score / acute load / stress / steps sparkline cards over a 7d/14d/30d
   toggle, plus a 14-day daily-steps chart.
