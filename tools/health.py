@@ -184,6 +184,21 @@ def get_training_status(date: str) -> dict:
     }
 
 
+def get_training_status_history(weeks: int = 4) -> list[dict]:
+    """
+    Weekly training-status snapshots for the last `weeks` weeks (oldest
+    first) — the status Garmin reported as of each week's end date. Powers
+    the Today tab's 4-week training-status bar (issue 92).
+    """
+    today = date.today()
+    history = []
+    for i in range(weeks - 1, -1, -1):
+        d = (today - timedelta(days=7 * i)).isoformat()
+        snapshot = get_training_status(d)
+        history.append({'date': d, 'status': snapshot.get('status')})
+    return history
+
+
 def get_daily_health(date: str) -> dict:
     """
     Get a daily health snapshot for a given date — resting/max/min heart

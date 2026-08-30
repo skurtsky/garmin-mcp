@@ -242,7 +242,8 @@ def get_trend_metrics(start_date: str, end_date: str) -> list[dict]:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """SELECT metric_date, resting_hr, hrv, sleep_score, stress,
-                          steps, training_load, body_battery_wake, body_battery_drain
+                          steps, training_load, body_battery_wake, body_battery_drain,
+                          training_status_data
                    FROM daily_metrics
                    WHERE metric_date BETWEEN %s AND %s
                    ORDER BY metric_date""",

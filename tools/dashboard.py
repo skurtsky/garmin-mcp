@@ -67,6 +67,7 @@ _SECTION_CACHE_TTLS: dict[str, int] = {
     "sleep":            300,
     "training":         120,
     "training_status":  300,
+    "training_status_history": 300,
     "activities":       300,
     "week":             300,
     "trends":           900,
@@ -330,6 +331,8 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "training_err": None,
             "training_status": today_metrics.get("training_status_data"),
             "training_status_err": None,
+            "training_status_history": _weekly_training_status_history(trend_rows, now.date()),
+            "training_status_history_err": None,
             "activities": activities,
             "activities_err": None,
             "week": week_data,
@@ -381,6 +384,7 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         get_sleep,
         get_training_readiness,
         get_training_status,
+        get_training_status_history,
     )
     from tools.activities import get_activities, get_weekly_summary
     from tools.trends import get_trends
@@ -398,6 +402,7 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         "sleep":            (get_sleep, (today,), {}),
         "training":         (get_training_readiness, (today,), {}),
         "training_status":  (get_training_status, (today,), {}),
+        "training_status_history": (get_training_status_history, (), {}),
         "activities":       (get_activities, (), {"limit": 20}),
         "week":             (get_weekly_summary, (), {}),
         "trends":           (get_trends, (), {"period": TREND_PERIOD, "metrics": _TREND_METRICS}),
@@ -765,6 +770,114 @@ _READINESS_COLORS = {
 
 def _readiness_color(level):
     return _READINESS_COLORS.get(str(level or "").upper(), "var(--color-accent)")
+
+
+# Garmin's trainingStatusFeedbackPhrase (e.g. "PRODUCTIVE_2") — (label, colour,
+# one-line explanation) per status, from Garmin's own definitions (issue 92).
+_TRAINING_STATUS_INFO = {
+    "PEAKING":      ("Peaking", "#3fc9a0", "Ideal competitive form after a load taper."),
+    "PRODUCTIVE":   ("Productive", "#4fae72", "Fitness is rising thanks to effective training."),
+    "MAINTAINING":  ("Maintaining", "#5b8fd8", "Holding your current fitness, not yet building it."),
+    "STRAINED":     ("Strained", "#cf5a4e", "Performance is limited — recovery likely isn't keeping up."),
+    "UNPRODUCTIVE": ("Unproductive", "#e2734a", "Fitness is slipping despite the training effort."),
+    "OVERREACHING": ("Overreaching", "#a8443b", "Acute load is well above normal and recovery is struggling."),
+    "RECOVERY":     ("Recovery", "#4aa7d8", "Training is lighter; fitness is steady or dipping slightly."),
+    "DETRAINING":   ("Detraining", "#9397ab", "Fitness is declining from an extended break."),
+    "NO_STATUS":    ("No Status", "var(--color-neutral-500)", "Not enough data yet to determine your status."),
+    "PAUSED":       ("Paused", "var(--color-neutral-600)", "Training status is paused in your device settings."),
+}
+_DEFAULT_TRAINING_STATUS = _TRAINING_STATUS_INFO["NO_STATUS"]
+
+
+def _training_status_key(raw) -> str | None:
+    """Normalize a raw trainingStatusFeedbackPhrase ('PRODUCTIVE_2', 'no status')
+    to its lookup key ('PRODUCTIVE', 'NO_STATUS')."""
+    if not raw:
+        return None
+    parts = str(raw).strip().upper().replace("-", "_").replace(" ", "_").split("_")
+    if len(parts) > 1 and parts[-1].isdigit():
+        parts = parts[:-1]
+    key = "_".join(p for p in parts if p)
+    return key or None
+
+
+def _training_status_info(raw) -> tuple[str, str, str]:
+    """(label, colour, blurb) for a raw training-status phrase."""
+    return _TRAINING_STATUS_INFO.get(_training_status_key(raw), _DEFAULT_TRAINING_STATUS)
+
+
+def _weekly_training_status_history(rows: list[dict], today: date, weeks: int = 4) -> list[dict]:
+    """Bucket daily training_status_data (already fetched for the Trends tab's
+    wide date window) into `weeks` trailing 7-day windows ending on `today`,
+    oldest first — each entry the latest status Garmin reported within that
+    window. Powers the Today tab's 4-week training-status bar (issue 92);
+    piggybacks on the trend rows already fetched rather than a second query.
+    """
+    by_date: dict[date, str] = {}
+    for r in rows:
+        status = (r.get("training_status_data") or {}).get("status")
+        if not status:
+            continue
+        d = r.get("metric_date")
+        if not isinstance(d, date):
+            try:
+                d = date.fromisoformat(str(d)[:10])
+            except ValueError:
+                continue
+        by_date[d] = status
+
+    history = []
+    for i in range(weeks - 1, -1, -1):
+        window_end = today - timedelta(days=7 * i)
+        window_start = window_end - timedelta(days=6)
+        in_window = sorted((d for d in by_date if window_start <= d <= window_end), reverse=True)
+        history.append({"status": by_date[in_window[0]] if in_window else None})
+    return history
+
+
+def _training_status_card(data: dict) -> str:
+    ts = data.get("training_status") or {}
+    history = data.get("training_status_history") or []
+    if not ts and not history and data.get("training_status_err"):
+        return f'<div class="card err">Training status unavailable — {_e(data.get("training_status_err"))}</div>'
+
+    label, color, blurb = _training_status_info(ts.get("status"))
+    sport = _label(ts.get("sport")) if ts.get("sport") else None
+
+    n = len(history)
+    segments = []
+    for i, wk in enumerate(history):
+        is_last = i == n - 1
+        weeks_ago = n - 1 - i
+        wk_label, wk_color, _ = _training_status_info(wk.get("status"))
+        tooltip = "This week" if is_last else f"{weeks_ago} week{'s' if weeks_ago != 1 else ''} ago"
+        axis_label = "This wk" if is_last else f"-{weeks_ago}wk"
+        axis_color = "var(--color-accent-200)" if is_last else "var(--color-neutral-600)"
+        segments.append(
+            f'<div class="js-bar" data-date="{_e(tooltip)}" data-value="{_e(wk_label)}" '
+            f'style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px">'
+            f'<div style="width:100%;height:10px;border-radius:5px;background:{wk_color}"></div>'
+            f'<div style="font-size:9px;color:{axis_color}">{axis_label}</div></div>'
+        )
+    bar_segments = "".join(segments)
+
+    return f"""
+    <div>
+      <div class="section-title">Training status</div>
+      <div class="card" style="padding:16px;gap:14px">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <div style="min-width:0">
+            <div style="font-family:var(--font-heading);font-size:24px;color:{color}">{_e(label)}</div>
+            <div style="font-size:12px;color:var(--color-neutral-400);margin-top:4px">{_e(blurb)}</div>
+          </div>
+          {f'<div class="kicker" style="text-align:right;white-space:nowrap">{sport}</div>' if sport else ""}
+        </div>
+        <div>
+          <div style="display:flex;gap:8px">{bar_segments or '<div class="muted" style="font-size:12px">No recent history.</div>'}</div>
+          <div class="kicker" style="margin-top:8px">Last 4 weeks</div>
+        </div>
+      </div>
+    </div>"""
 
 
 def _step_goal(data: dict) -> int:
@@ -1172,6 +1285,7 @@ def _panel_today(data: dict) -> str:
           <div style="display:flex;flex-direction:column;gap:9px">{factor_rows or '<div class="muted" style="font-size:12px">No factor data.</div>'}</div>
         </div>"""
 
+    training_status_card = _training_status_card(data)
     load_ratio_card = _load_ratio_card(data)
 
     bb = readiness.get("body_battery") or {}
@@ -1349,7 +1463,7 @@ def _panel_today(data: dict) -> str:
 
     return (
         '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:22px">'
-        f"{hero}{load_ratio_card}{quick_cards}{stress_card}{sleep_card}{week_card}{today_acts_card}"
+        f"{hero}{training_status_card}{load_ratio_card}{quick_cards}{stress_card}{sleep_card}{week_card}{today_acts_card}"
         "</section>"
     )
 
