@@ -27,13 +27,13 @@ from tools.health import (
 from tools.trends import (
     get_performance_predictions,
     get_performance_trends,
-    get_trends as get_trends_impl,
 )
 from tools.performance import (
     get_endurance_score,
     get_running_tolerance,
     get_personal_records,
 )
+from tools import db_first
 from tools.weekly_summaries import save_summary as save_weekly_summary
 from tools.workout import (
     get_scheduled_workouts as get_scheduled_workouts_impl,
@@ -164,10 +164,14 @@ def sleep(date: str) -> dict:
     Garmin files sleep under the wake-up date — so 'last night's sleep'
     should use today's date, not yesterday's.
 
+    Served from the synced database when a copy is available (final for a
+    past day, or synced within the last ~15 min), else live from Garmin;
+    'data_source' says which ('db' or 'live', with 'synced_at').
+
     Args:
         date: Date in YYYY-MM-DD format. Use today's date for last night's sleep.
     """
-    return get_sleep(date)
+    return db_first.daily_payload("sleep_data", date, get_sleep)
 
 
 @mcp.tool()
@@ -178,10 +182,14 @@ def daily_readiness(date: str) -> dict:
     daily activity & stress stats (RHR, 7-day RHR average, average and
     max stress, steps, active seconds).
 
+    Served from the synced database when a copy is available (final for a
+    past day, or synced within the last ~15 min), else live from Garmin;
+    'data_source' says which ('db' or 'live', with 'synced_at').
+
     Args:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
-    return get_daily_readiness(date)
+    return db_first.daily_payload("readiness_data", date, get_daily_readiness)
 
 
 @mcp.tool()
@@ -192,10 +200,14 @@ def daily_health(date: str = 'today') -> dict:
     minutes), body battery charged/drained, and respiration rate
     (waking/sleep averages and range).
 
+    Served from the synced database when a copy is available (final for a
+    past day, or synced within the last ~15 min), else live from Garmin;
+    'data_source' says which ('db' or 'live', with 'synced_at').
+
     Args:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
-    return get_daily_health(date)
+    return db_first.daily_payload("health_data", date, get_daily_health)
 
 
 @mcp.tool()
@@ -205,10 +217,14 @@ def training_status(date: str) -> dict:
     (ACWR) and status, training load balance phrase, training status
     feedback phrase and sport, and current VO2max for running and cycling.
 
+    Served from the synced database when a copy is available (final for a
+    past day, or synced within the last ~15 min), else live from Garmin;
+    'data_source' says which ('db' or 'live', with 'synced_at').
+
     Args:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
-    return get_training_status(date)
+    return db_first.daily_payload("training_status_data", date, get_training_status)
 
 @mcp.tool()
 def performance_predictions() -> dict:
@@ -252,11 +268,15 @@ def get_trends(period: str = '1m', metrics: Optional[list] = None) -> dict:
     window min/max/avg. 'body_battery' expands into two series
     ('body_battery_wake', 'body_battery_drain').
 
+    Days already synced to the database are read from there and only the
+    rest are fetched live; 'data_source' reports the split ('db', 'live' or
+    'db+live', with db_days / live_days and 'synced_at').
+
     Args:
         period:  One of 7d, 14d, 1m, 42d, 3m, 6m, 1y (default 1m).
         metrics: Optional list of metric names to include (defaults to all).
     """
-    return get_trends_impl(period=period, metrics=metrics)
+    return db_first.get_trends(period=period, metrics=metrics)
 
 @mcp.tool()
 def training_readiness(date: str = 'today') -> dict:
@@ -266,10 +286,14 @@ def training_readiness(date: str = 'today') -> dict:
     contributing factors (sleep, recovery, ACWR, stress, HRV), and the
     morning readiness snapshot.
 
+    Served from the synced database when a copy is available (final for a
+    past day, or synced within the last ~15 min), else live from Garmin;
+    'data_source' says which ('db' or 'live', with 'synced_at').
+
     Args:
         date: Date in YYYY-MM-DD format, or 'today' / 'yesterday'
     """
-    return get_training_readiness(date)
+    return db_first.daily_payload("training_data", date, get_training_readiness)
 
 
 @mcp.tool()

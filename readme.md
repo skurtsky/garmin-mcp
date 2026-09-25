@@ -331,6 +331,34 @@ Optional environment variables:
 | `GEAR_TRACKER_DATA_PATH` | `~/.garminconnect/gear-tracker/gear_data.json` | Where the data file is stored |
 | `GEAR_TRACKER_DEFAULT_INTERVALS_KM` | *(built-in table)* | JSON object overriding/extending the default maintenance intervals |
 
+## Database-First Tool Reads
+
+When `DATABASE_URL` is set (the same PostgreSQL the dashboard and the
+`sync_garmin.py` job use), these MCP tools read from the database before
+calling Garmin Connect:
+
+| Tool | Database source |
+|---|---|
+| `sleep`, `daily_health`, `daily_readiness`, `training_readiness`, `training_status` | The day's `daily_metrics` row, which stores each tool's output exactly as returned |
+| `get_trends` | `daily_metrics` for every synced day in the window; only the rest are fetched live |
+
+A synced day is used when it's **final** (synced after that day ended in
+local time, per `DASHBOARD_TZ_OFFSET_HOURS`) or **fresh** (synced within
+`MCP_DB_MAX_AGE_SECONDS`). Otherwise the tool calls Garmin as before. If that
+live call fails and an older synced copy exists, the older copy is returned,
+marked `"stale": true`. Every response includes a `data_source` block
+(`source`: `db`, `live` or `db+live`, plus `synced_at`, and for `get_trends`
+`db_days` / `live_days`).
+
+`get_trends` over long windows is only fast after the history has been
+backfilled, e.g. `python sync_garmin.py --daily-only --since 2025-09-01`.
+The sync job itself always calls Garmin directly.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_DB_FIRST` | `1` | Set `0` to make every tool call Garmin live |
+| `MCP_DB_MAX_AGE_SECONDS` | `900` | How recently today's (still-changing) row must have been synced to be used |
+
 ## Testing
 
 ### Run the test suite
@@ -374,6 +402,7 @@ garmin-mcp/
 │   ├── activities.py      # get_activities, get_activity, get_activity_summary, get_weekly_summary, get_swim_records
 │   ├── challenges.py      # get_active_goals, get_earned_badges, get_adhoc_challenges
 │   ├── dashboard.py       # build_dashboard_data, render_dashboard_html (/dashboard route)
+│   ├── db_first.py        # database-first reads for the per-day health tools and get_trends
 │   ├── gear_tracker.py    # storage + API routes + MCP tools for bike component maintenance (dashboard.py's Gear tab)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── navbar.py          # shared site nav bar injected into every hosted page
@@ -389,6 +418,7 @@ garmin-mcp/
 │   ├── test_challenges.py
 │   ├── test_client.py
 │   ├── test_dashboard.py
+│   ├── test_db_first.py
 │   ├── test_gear_tracker.py
 │   ├── test_health.py
 │   ├── test_navbar.py

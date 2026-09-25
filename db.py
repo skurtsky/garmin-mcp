@@ -252,6 +252,32 @@ def get_trend_metrics(start_date: str, end_date: str) -> list[dict]:
             return cur.fetchall()
 
 
+def get_trend_series_rows(start_date: str, end_date: str) -> list[dict]:
+    """Per-day trend values for the get_trends MCP tool, one row per synced
+    day. HRV and body battery come out of the stored tool payloads rather than
+    the scalar columns, since those JSON fields are what the live get_trends
+    reads (the hrv column holds sleep's avgOvernightHrv, and the
+    body_battery_* columns aren't populated by the sync job)."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT metric_date, resting_hr, sleep_score, stress, steps,
+                          training_load,
+                          COALESCE((readiness_data -> 'hrv' ->> 'last_night_avg')::numeric,
+                                   hrv) AS hrv,
+                          COALESCE((readiness_data -> 'body_battery' ->> 'highest')::numeric,
+                                   body_battery_wake) AS body_battery_wake,
+                          COALESCE((readiness_data -> 'body_battery' ->> 'drained')::numeric,
+                                   body_battery_drain) AS body_battery_drain,
+                          synced_at
+                   FROM daily_metrics
+                   WHERE metric_date BETWEEN %s AND %s
+                   ORDER BY metric_date""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
 def get_recent_activities(limit: int = 20) -> list[dict]:
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
