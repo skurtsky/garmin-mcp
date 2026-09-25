@@ -415,3 +415,8 @@ including token persistence and SSL configuration.
   SSO flow and stores OAuth tokens in `~/.garminconnect/garmin_tokens.json`
 - Token persistence in containerized environments requires mounting a volume or
   storing token JSON in a secret — see deployment notes
+- Garmin 401s recover automatically: the client reloads tokens from disk, then
+  falls back to a fresh login, and retries the call once. After a failed fresh
+  login (MFA, 429) it waits `GARMIN_RELOGIN_COOLDOWN_SECONDS` (default `900`)
+  before logging in again — see "Refreshing Garmin Tokens" in the
+  [deployment guide](test-deployment.md) for when manual steps are still needed

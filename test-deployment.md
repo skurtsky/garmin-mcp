@@ -138,7 +138,9 @@ az containerapp logs show `
 
 ## Refreshing Garmin Tokens
 
-Garmin OAuth tokens expire periodically. If tool calls start returning authentication errors, refresh the tokens:
+Garmin OAuth tokens expire periodically. **In most cases the server now recovers on its own:** when a Garmin call returns a 401 it reloads `garmin_tokens.json` from the file share (the `garmin-sync` job may have saved fresher tokens), falls back to a fresh login with `GARMIN_EMAIL` / `GARMIN_PASSWORD` if that doesn't work, and retries the call once. No restart needed.
+
+The manual steps below are only needed when the logs show `Garmin fresh login failed: …` — usually because Garmin wants MFA or is rate-limiting logins (429). Tool calls then fail with `Garmin session expired and automatic re-login failed (…)`. After a failed login the server waits `GARMIN_RELOGIN_COOLDOWN_SECONDS` (default 900) before trying another fresh login, so it doesn't hammer Garmin's SSO.
 
 **Step 1 — Re-authenticate locally**
 
@@ -173,6 +175,8 @@ az storage file upload `
 ```
 
 **Step 3 — Restart the container**
+
+A restart is no longer strictly required: the next 401 reloads the uploaded tokens from disk, even during the login cooldown. Restarting is still the guaranteed way to pick them up immediately:
 
 ```powershell
 az containerapp revision restart `

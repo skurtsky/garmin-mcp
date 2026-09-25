@@ -4,11 +4,14 @@ from concurrent.futures import ThreadPoolExecutor
 from garminconnect import Garmin
 
 def test_client_returns_garmin_instance(client):
-    """Client should return an authenticated Garmin instance."""
-    assert isinstance(client, Garmin)
+    """get_client() returns the self-healing proxy, backed by an
+    authenticated Garmin instance."""
+    from garmin_client import GarminClientProxy, current_garmin
+    assert isinstance(client, GarminClientProxy)
+    assert isinstance(current_garmin(), Garmin)
 
 def test_client_is_cached(client):
-    """Calling get_client() twice should return the same instance."""
+    """Calling get_client() twice should return the same proxy object."""
     from garmin_client import get_client
     client2 = get_client()
     assert client is client2
@@ -29,6 +32,9 @@ def test_client_initialization_is_shared_across_threads(monkeypatch, tmp_path):
         def dump(self, directory):
             pass
 
+        def dumps(self):
+            return "{}"
+
     class FakeGarmin:
         login_count = 0
         session = FakeSession()
@@ -41,6 +47,8 @@ def test_client_initialization_is_shared_across_threads(monkeypatch, tmp_path):
 
     monkeypatch.setattr(garmin_client, "Garmin", FakeGarmin)
     monkeypatch.setattr(garmin_client, "_client", None)
+    monkeypatch.setattr(garmin_client, "_last_login_failure", None)
+    monkeypatch.setattr(garmin_client, "_last_recovery_failure", None)
     monkeypatch.setattr(garmin_client, "TOKEN_DIR", str(tmp_path))
 
     with ThreadPoolExecutor(max_workers=8) as pool:
