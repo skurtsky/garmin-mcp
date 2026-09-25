@@ -69,8 +69,9 @@ def test_nav_token_is_url_encoded():
 def test_nav_styles_are_scoped_to_the_nav_id():
     """Injected into pages this repo doesn't own — it must not restyle them.
 
-    The one deliberate exception is ``body`` padding, which reserves the room
-    the fixed pill would otherwise cover.
+    The deliberate exceptions are ``body`` padding, which reserves the room
+    the fixed pill would otherwise cover, and ``html`` top padding, which keeps
+    content out from under the iPhone notch / Dynamic Island on mobile.
     """
     nav = navbar.render_nav_html("dashboard", "t0k")
     style = nav[nav.index("<style>") + len("<style>"): nav.index("</style>")]
@@ -81,7 +82,17 @@ def test_nav_styles_are_scoped_to_the_nav_id():
         if "{" in line and not line.strip().startswith(("@", "/*"))
     ]
     unscoped = [s for s in selectors if not (s.startswith("#gm-nav") or s.startswith(".gm-nav-more"))]
-    assert unscoped == ["body"]
+    assert unscoped == ["body", "html"]
+
+
+def test_nav_respects_ios_safe_areas():
+    """The pill hugs the home indicator (not a full 16px above the whole
+    inset), and mobile pages are pushed below the notch."""
+    nav = navbar.render_nav_html("dashboard", "t0k")
+    assert "max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px))" in nav
+    assert "calc(16px + env(safe-area-inset-bottom" not in nav
+    assert "@media (max-width: 899px)" in nav
+    assert "html { padding-top: env(safe-area-inset-top, 0px); }" in nav
 
 
 def test_nav_is_removed_from_normal_flow():

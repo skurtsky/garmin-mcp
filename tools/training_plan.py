@@ -65,6 +65,9 @@ _STYLE = """
   --accent:#9184d9; --accent-soft:#423a6a; --err:#e0736f; --ok:#7fb87a; --warn:#d9b35a;
 }
 * { box-sizing: border-box; }
+@media (max-width: 899px) {
+  html { padding-top: env(safe-area-inset-top, 0px); }
+}
 body {
   margin:0; background:var(--bg); color:var(--fg); line-height:1.55; font-size:15px;
   font-family:"Inter", system-ui, -apple-system, "Segoe UI", sans-serif;

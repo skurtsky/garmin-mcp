@@ -115,7 +115,7 @@ a:hover { color: var(--color-accent); }
 
 /* — floating nav — */
 .nav-wrap { position:fixed; left:0; right:0; bottom:0; z-index:30; display:flex; justify-content:center;
-  padding:0 16px calc(16px + env(safe-area-inset-bottom)); pointer-events:none; }
+  padding:0 16px max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px)); pointer-events:none; }
 .nav-pill { pointer-events:auto; display:flex; gap:2px; padding:6px; border-radius:999px; width:min(420px,100%);
   background: color-mix(in srgb, var(--color-surface) 92%, transparent); backdrop-filter: blur(16px);
   box-shadow: var(--shadow-md); }
@@ -126,7 +126,7 @@ a:hover { color: var(--color-accent); }
 .navbtn span { font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
 
 .nav-backdrop { position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.5); }
-.nav-sheet { position:fixed; left:16px; right:16px; bottom:calc(96px + env(safe-area-inset-bottom)); z-index:26;
+.nav-sheet { position:fixed; left:16px; right:16px; bottom:calc(80px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px))); z-index:26;
   max-width:420px; margin:0 auto; border-radius:20px; overflow:hidden;
   background: var(--color-surface); box-shadow: var(--shadow-lg); }
 .nav-sheet-item { width:100%; display:flex; align-items:center; gap:12px; padding:16px 18px; border:0;
@@ -140,6 +140,8 @@ a:hover { color: var(--color-accent); }
 /* The one responsive decision that matters: seven columns on a desktop
    screen, a single readable stack on a phone. */
 @media (max-width: 899px) {
+  /* Clear the notch / Dynamic Island when installed to the home screen. */
+  #app { padding-top: env(safe-area-inset-top, 0px); }
   .week-grid { display:flex; flex-direction:column; gap:28px; padding:0 18px 24px; }
 }
 @media (min-width: 900px) {
@@ -1157,7 +1159,7 @@ render();
 .wmenu-pop button.danger { color:#e0736f; }
 .rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
 .rev-row:first-child { border-top:none; }
-.saving-pill { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;
+.saving-pill { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;
   font-size:12px; background: var(--color-surface); box-shadow: var(--shadow-md); color: var(--color-accent-200); }
 select.input { appearance:auto; }</style>
 </body>

@@ -78,7 +78,9 @@ _NAV_STYLE = """
 #gm-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483647;
   display: flex; justify-content: center;
-  padding: 0 16px calc(16px + env(safe-area-inset-bottom, 0px));
+  /* Sit just clear of the iPhone home indicator rather than a full 16px above
+     the whole safe-area inset, which floated the pill noticeably high. */
+  padding: 0 16px max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px));
   pointer-events: none;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
@@ -105,7 +107,13 @@ _NAV_STYLE = """
 }
 /* Reserve the room the fixed bar would otherwise cover — a bottom pill now,
    not a top bar, so it's padding-bottom rather than padding-top. */
-body { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)) !important; }
+body { padding-bottom: calc(68px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px))) !important; }
+/* Standalone iOS (black-translucent status bar) draws the page under the
+   notch / Dynamic Island. Pad the root, not <body>, so a host page's own body
+   padding is left alone. Zero on desktop and notch-less screens anyway. */
+@media (max-width: 899px) {
+  html { padding-top: env(safe-area-inset-top, 0px); }
+}
 
 /* ── "More" popup (Activity / Gear) — floats above the pill, same surface /
    blur / shadow / rounding as the pill itself. ── */
@@ -115,7 +123,7 @@ body { padding-bottom: calc(84px + env(safe-area-inset-bottom, 0px)) !important;
 }
 #gm-nav-more:checked ~ .gm-nav-more-sheet { display: flex; }
 .gm-nav-more-sheet {
-  position: fixed; left: 16px; right: 16px; bottom: calc(84px + env(safe-area-inset-bottom, 0px));
+  position: fixed; left: 16px; right: 16px; bottom: calc(68px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px)));
   z-index: 2147483647; flex-direction: column; max-width: 420px; margin: 0 auto; padding: 6px;
   background: color-mix(in srgb, #232532 92%, transparent); backdrop-filter: blur(16px);
   border-radius: 20px; box-shadow: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, .55);
