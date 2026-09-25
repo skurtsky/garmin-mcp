@@ -38,7 +38,8 @@ from urllib.parse import urlencode
 
 from tools.navbar import ICON_LINKS
 
-# Auto-refresh the browser page this often (seconds). 0 disables refresh.
+# Coming back to the app once the page is this old (seconds) refreshes it
+# (see _APP_JS). 0 disables refreshing.
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 
 # The Trends tab's range toggle (7d/14d/30d) is backed by one get_trends() call
@@ -244,6 +245,24 @@ def _build_trends_from_db(rows: list[dict], days: int) -> dict:
     return {"period": TREND_PERIOD, "days": days, "metrics": metrics}
 
 
+def _past_week_from_db(week_offset: int) -> tuple[dict | None, str | None]:
+    """One closed week's summary from PostgreSQL, via the per-offset cache.
+
+    A past week's activities don't change, so a week already viewed this
+    session costs no DB round trip at all (issue 85).
+    """
+    from tools.activities import get_weekly_summary_from_db
+    cache_key = _activity_week_cache_key(week_offset)
+    cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
+    if is_fresh and (cached_value is not None or cached_err is not None):
+        logger.info("dashboard timing: weekly_summary(offset=%s) served from cache", week_offset)
+        return cached_value, cached_err
+    with _timed(f"weekly_summary(offset={week_offset})"):
+        value, err = _safe(get_weekly_summary_from_db, week_offset)
+    _set_cached(cache_key, value, err)
+    return value, err
+
+
 def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
     """Try to build dashboard data from PostgreSQL. Returns None if DB is
     empty or unavailable, signalling the caller to fall back to Garmin."""
@@ -286,15 +305,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         if week_offset == 0:
             activity_week_data, activity_week_err = week_data, None
         else:
-            cache_key = _activity_week_cache_key(week_offset)
-            cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
-            if is_fresh and (cached_value is not None or cached_err is not None):
-                activity_week_data, activity_week_err = cached_value, cached_err
-                logger.info("dashboard timing: weekly_summary(offset=%s) served from cache", week_offset)
-            else:
-                with _timed(f"weekly_summary(offset={week_offset})"):
-                    activity_week_data, activity_week_err = _safe(get_weekly_summary_from_db, week_offset)
-                _set_cached(cache_key, activity_week_data, activity_week_err)
+            activity_week_data, activity_week_err = _past_week_from_db(week_offset)
 
         # Profile, records, goals from DB
         with _timed("personal_records"):
@@ -464,6 +475,41 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     data["activity_week_offset"] = week_offset
 
     return data
+
+
+def get_activity_week_data(week_offset: int = 0) -> dict:
+    """Just what the Activity tab needs to render one week — the data behind
+    its in-place week navigation (``/dashboard/activity-week``), which swaps
+    the tab's panel without rebuilding the whole dashboard.
+
+    PostgreSQL first, the same as the full page; live Garmin (through the
+    same section cache) only when the DB isn't configured or its read fails.
+    """
+    import db
+    week_offset = max(0, week_offset)
+    value, err = None, "no data"
+    if db.is_configured():
+        if week_offset:
+            value, err = _past_week_from_db(week_offset)
+        else:
+            from tools.activities import get_weekly_summary_from_db
+            value, err = _safe(get_weekly_summary_from_db)
+    if value is None:
+        from tools.activities import get_weekly_summary
+        cache_key = _activity_week_cache_key(week_offset)
+        ttl = _ACTIVITY_WEEK_TTL if week_offset else None
+        cached_value, cached_err, is_fresh = _get_cached(cache_key, ttl)
+        if cached_value is not None and is_fresh:
+            value, err = cached_value, cached_err
+        else:
+            value, err = _safe(get_weekly_summary, week_offset=week_offset)
+            if value is not None:
+                _set_cached(cache_key, value, err)
+    return {
+        "activity_week": value,
+        "activity_week_err": err,
+        "activity_week_offset": week_offset,
+    }
 
 
 def get_dashboard_data(week_offset: int = 0) -> dict:
@@ -1225,6 +1271,50 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
 .actcard-click { cursor:pointer; }
 .actcard-click:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
 
+/* ── loading skeleton (_BOOT_HTML), shown until the streamed body arrives ── */
+#dash-boot { position:fixed; inset:0; z-index:50; overflow:hidden; background:var(--color-bg); }
+#dash-boot .boot-top { border-bottom:1px solid var(--color-divider); padding-top:env(safe-area-inset-top, 0px); }
+#dash-boot .boot-inner { max-width:1120px; margin:0 auto; padding:11px 16px; display:flex; align-items:center; gap:12px; }
+#dash-boot .boot-cards { flex-direction:column; align-items:stretch; gap:12px; padding-top:16px; }
+#dash-boot .boot-nav { position:absolute; left:0; right:0; display:flex; justify-content:center; padding:0 16px;
+  bottom:max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px)); }
+#dash-boot .boot-nav .sk { width:min(420px, 100%); height:58px; border-radius:999px; box-shadow:var(--shadow-md); }
+.sk { border-radius:var(--radius-md); background:linear-gradient(100deg, var(--color-surface) 40%,
+  color-mix(in srgb, var(--color-surface) 70%, var(--color-neutral-700)) 50%, var(--color-surface) 60%)
+  var(--color-surface); background-size:200% 100%; animation:sk-shimmer 1.3s linear infinite; }
+@keyframes sk-shimmer { from { background-position:100% 0; } to { background-position:-100% 0; } }
+
+/* ── spinners: the Activity tab's week change (only after a short delay),
+   and the top bar's "Updating" chip while a stale page is refreshed ── */
+@keyframes dash-spin { to { transform:rotate(360deg); } }
+.tp-activity.is-loading > * { opacity:.4; pointer-events:none; transition:opacity .2s; }
+.tp-activity.is-loading::after { content:""; position:fixed; left:50%; top:50%; z-index:25;
+  width:30px; height:30px; margin:-15px 0 0 -15px; border-radius:50%;
+  border:3px solid color-mix(in srgb, var(--color-accent) 25%, transparent); border-top-color:var(--color-accent);
+  animation:dash-spin .8s linear infinite; }
+.dash-updating { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--color-neutral-400); }
+.dash-updating[hidden] { display:none; }
+.dash-spin { width:12px; height:12px; border-radius:50%; border:2px solid var(--color-neutral-700);
+  border-top-color:var(--color-accent); animation:dash-spin .8s linear infinite; }
+
+/* ── a new Activity week slides in from the side it came from ── */
+@keyframes dash-from-left { from { opacity:0; transform:translateX(-28px); } to { opacity:1; transform:none; } }
+@keyframes dash-from-right { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
+.slide-from-left { animation:dash-from-left .22s ease-out; }
+.slide-from-right { animation:dash-from-right .22s ease-out; }
+
+/* ── tap feedback: a quick press so a tap visibly registered ── */
+html { -webkit-tap-highlight-color:transparent; }
+.botnav label, .pillbar label, .more-menu-item, .actcard-click, a[data-week], .btn {
+  transition:transform .12s ease, opacity .12s ease; }
+.botnav label:active, .pillbar label:active, .more-menu-item:active, a[data-week]:active, .btn:active {
+  transform:scale(.94); opacity:.75; }
+.actcard-click:active { transform:scale(.985); }
+
+@media (prefers-reduced-motion: reduce) {
+  .sk, .slide-from-left, .slide-from-right { animation:none; }
+}
+
 /* ── activity-detail modal (issue 74) ── */
 .activity-modal { display:none; position:fixed; inset:0; z-index:1000; }
 .activity-modal.open { display:block; }
@@ -1800,7 +1890,7 @@ def _activity_nav_button(direction: str, token: str | None, offset: int, disable
     return f'<span aria-hidden="true" style="{base_style};color:var(--color-neutral-700)">{arrow}</span>'
   url = _e(_activity_week_url(token, offset))
   return (
-    f'<a href="{url}" aria-label="{label}" style="{base_style};color:var(--color-text);text-decoration:none">'
+    f'<a href="{url}" data-week="{offset}" aria-label="{label}" style="{base_style};color:var(--color-text);text-decoration:none">'
     f'{arrow}</a>'
   )
 
@@ -1812,7 +1902,7 @@ def _activity_current_week_link(token: str | None, offset: int) -> str:
     return ""
   url = _e(_activity_week_url(token, 0))
   return (
-    f'<a href="{url}" style="font-size:11px;color:var(--color-accent);text-decoration:none;'
+    f'<a href="{url}" data-week="0" style="font-size:11px;color:var(--color-accent);text-decoration:none;'
     'white-space:nowrap;padding:6px 2px">This week</a>'
   )
 
@@ -1825,7 +1915,8 @@ def _panel_activity(data: dict, token: str | None = None) -> str:
     activities = data.get("activities")
     if not week and not activities:
         err = data.get("activity_week_err") or data.get("week_err") or data.get("activities_err") or "no data"
-        return f'<section class="panel tabpanel tp-activity"><div class="err">Activity data unavailable — {_e(err)}</div></section>'
+        return (f'<section class="panel tabpanel tp-activity" data-week="{offset}">'
+                f'<div class="err">Activity data unavailable — {_e(err)}</div></section>')
 
     week = week or {}
 
@@ -1877,7 +1968,7 @@ def _panel_activity(data: dict, token: str | None = None) -> str:
       )
 
     return f"""
-    <section class="panel tabpanel tp-activity" style="flex-direction:column;gap:16px">
+    <section class="panel tabpanel tp-activity" data-week="{offset}" style="flex-direction:column;gap:16px">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
         <div>
           <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
@@ -3033,6 +3124,225 @@ def _sync_time_utc_iso(value):
         return None
 
 
+# The dashboard's app-like behaviour on a phone:
+#  - the open tab, Activity filter and Activity week live in the URL (kept
+#    there with replaceState), so a reload lands back where you were;
+#  - the Activity tab changes week in place — its panel is fetched from
+#    /dashboard/activity-week and swapped in (the neighbouring older week is
+#    prefetched), with a spinner if that takes more than a moment, instead of
+#    reloading the whole dashboard; a clearly sideways swipe does the same;
+#  - coming back to the app once the page is stale refreshes it. With the
+#    service worker in control the fresh page is fetched in the background
+#    (sw.js) and only then swapped in, so the old one stays on screen while
+#    "Updating" shows in the top bar, rather than a blank screen.
+_APP_JS = """
+(function () {
+  var cfg = window.__DASH || {};
+  var token = document.body.getAttribute('data-token') || '';
+  var TAB_BY_ID = { 'tab-today': 'today', 'tab-trends': 'trends', 'tab-activity': 'activity',
+                    'tab-you': 'fitness', 'tab-gear': 'gear' };
+
+  // Enables :active tap feedback on iOS Safari.
+  document.addEventListener('touchstart', function () {}, { passive: true });
+
+  // ── state in the URL ──
+  function setParams(params) {
+    try {
+      var url = new URL(location.href);
+      Object.keys(params).forEach(function (name) {
+        var value = params[name];
+        if (value === null || value === '') url.searchParams.delete(name);
+        else url.searchParams.set(name, value);
+      });
+      history.replaceState(history.state, '', url.toString());
+    } catch (e) { /* URL / history unavailable — state just isn't kept */ }
+  }
+  function check(id) { var el = document.getElementById(id); if (el) el.checked = true; }
+
+  // A page served from the service worker's cache was rendered for whatever
+  // tab / filter it was fetched with, so re-apply the ones in this URL.
+  (function applyUrlState() {
+    var q = new URLSearchParams(location.search);
+    var tab = q.get('tab') || 'today';
+    Object.keys(TAB_BY_ID).forEach(function (id) { if (TAB_BY_ID[id] === tab) check(id); });
+    check('activity-filter-' + (q.get('filter') || 'all'));
+  })();
+
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t || t.type !== 'radio') return;
+    if (t.name === 'tab' && TAB_BY_ID[t.id]) {
+      var tab = TAB_BY_ID[t.id];
+      setParams({ tab: tab === 'today' ? null : tab, error: null });
+    } else if (t.name === 'activity-filter') {
+      var f = t.id.replace('activity-filter-', '');
+      setParams({ filter: f === 'all' ? null : f });
+    }
+  });
+
+  // ── Activity tab: change week in place ──
+  var weekCache = {};
+  var loadingWeek = false;
+  function panel() { return document.querySelector('.tp-activity'); }
+  function currentWeek() { var p = panel(); return p ? (parseInt(p.getAttribute('data-week'), 10) || 0) : 0; }
+  function weekUrl(offset) {
+    var q = new URLSearchParams();
+    q.set('week', String(offset));
+    if (token) q.set('token', token);
+    return '/dashboard/activity-week?' + q.toString();
+  }
+  function fetchWeek(offset) {
+    if (!weekCache[offset]) {
+      weekCache[offset] = fetch(weekUrl(offset), { credentials: 'same-origin' }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.text();
+      });
+      weekCache[offset].catch(function () { delete weekCache[offset]; });
+    }
+    return weekCache[offset];
+  }
+  function prefetch(offset) { if (offset >= 0) fetchWeek(offset).catch(function () {}); }
+  function fullPageUrl(offset) {
+    var url = new URL(location.href);
+    url.searchParams.set('tab', 'activity');
+    url.searchParams.set('week', String(offset));
+    return url.toString();
+  }
+
+  function goToWeek(offset) {
+    var old = panel();
+    var from = currentWeek();
+    if (!old || loadingWeek || offset < 0 || offset === from) return;
+    loadingWeek = true;
+    // Only show the spinner if the week isn't there almost at once (it's
+    // usually prefetched, and a flash of spinner reads as jank).
+    var spinTimer = setTimeout(function () { old.classList.add('is-loading'); }, 250);
+    fetchWeek(offset).then(function (markup) {
+      var tpl = document.createElement('template');
+      tpl.innerHTML = markup.trim();
+      var fresh = tpl.content.firstElementChild;
+      if (!fresh) throw new Error('empty response');
+      old.replaceWith(fresh);
+      if (window.__wireCharts) window.__wireCharts(fresh);
+      // Older weeks come in from the left, newer from the right — the way
+      // the content would move under a swipe.
+      fresh.classList.add(offset > from ? 'slide-from-left' : 'slide-from-right');
+      setParams({ week: offset ? String(offset) : null });
+      var bar = document.querySelector('.topbar');
+      var top = fresh.getBoundingClientRect().top - (bar ? bar.offsetHeight : 0) - 8;
+      if (top < 0) window.scrollBy(0, top);
+      prefetch(offset + 1);
+    }).catch(function () {
+      location.href = fullPageUrl(offset);          // fall back to a full page load
+    }).then(function () {
+      clearTimeout(spinTimer);
+      old.classList.remove('is-loading');
+      loadingWeek = false;
+    });
+  }
+
+  if (panel()) {
+    weekCache[currentWeek()] = Promise.resolve(panel().outerHTML);
+    setTimeout(function () { prefetch(currentWeek() + 1); }, 1500);
+  }
+
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest && e.target.closest('.tp-activity a[data-week]');
+    if (!link || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    goToWeek(parseInt(link.getAttribute('data-week'), 10) || 0);
+  });
+
+  // ── swipe left / right on the Activity tab ──
+  // Only a clearly sideways, reasonably quick swipe counts, so scrolling the
+  // list (or a slightly diagonal scroll) never flips the week.
+  function inSideScroller(el) {
+    for (; el && el !== document.body; el = el.parentElement) {
+      var ox = getComputedStyle(el).overflowX;
+      if ((ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth) return true;
+    }
+    return false;
+  }
+  var swipe = null;
+  document.addEventListener('touchstart', function (e) {
+    swipe = null;
+    if (e.touches.length !== 1) return;
+    var t = e.touches[0];
+    var target = e.target;
+    var tab = document.getElementById('tab-activity');
+    if (!tab || !tab.checked || !target.closest || !target.closest('.tp-activity')) return;
+    if (t.clientX < 24 || t.clientX > window.innerWidth - 24) return;   // leave the screen edges to iOS
+    if (target.closest('.js-bar, .js-linechart, input, select, textarea, .activity-modal.open')) return;
+    if (inSideScroller(target)) return;
+    swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+  }, { passive: true });
+  document.addEventListener('touchcancel', function () { swipe = null; }, { passive: true });
+  document.addEventListener('touchend', function (e) {
+    if (!swipe) return;
+    var t = e.changedTouches[0];
+    var dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, took = Date.now() - swipe.at;
+    swipe = null;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2 || took > 700) return;
+    var week = currentWeek();
+    if (dx < 0) { if (week > 0) goToWeek(week - 1); }   // swipe left → newer week
+    else goToWeek(week + 1);                            // swipe right → older week
+  }, { passive: true });
+
+  // ── refresh when coming back to a stale page ──
+  var LOAD_STALE_MS = 60 * 1000;   // a page this old on load came from the SW cache
+  var renderedAt = cfg.renderedAt || Date.now();
+  var refreshing = false;
+  function age() { return Date.now() - renderedAt; }
+  function busy() {
+    return !!document.querySelector('.activity-modal.open, .gear-modal:target')
+      || /^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement || {}).tagName || '');
+  }
+  function remember(key, value) { try { sessionStorage.setItem(key, value); } catch (e) {} }
+  function recall(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+
+  function refresh() {
+    if (refreshing || busy()) return;
+    refreshing = true;
+    remember('dash-scroll', String(window.scrollY));
+    remember('dash-refreshed-at', String(Date.now()));
+    var chip = document.getElementById('dash-updating');
+    if (chip) chip.hidden = false;
+    var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
+    if (!sw) { location.reload(); return; }
+    var done = false;
+    function finish(ok) {
+      if (done) return;
+      done = true;
+      navigator.serviceWorker.removeEventListener('message', onMessage);
+      if (ok) { location.reload(); return; }        // now served, fresh, from the SW cache
+      refreshing = false;
+      if (chip) chip.hidden = true;                 // offline / failed: keep what's shown
+    }
+    function onMessage(e) { if (e.data && e.data.type === 'dashboard-refreshed') finish(!!e.data.ok); }
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    sw.postMessage({ type: 'refresh-dashboard', url: location.href });
+    setTimeout(function () { finish(false); }, 30000);
+  }
+
+  function refreshIfStale() {
+    if (document.visibilityState === 'visible' && cfg.staleAfterMs && age() > cfg.staleAfterMs) refresh();
+  }
+  document.addEventListener('visibilitychange', refreshIfStale);
+  window.addEventListener('pageshow', function (e) { if (e.persisted) refreshIfStale(); });
+
+  var saved = recall('dash-scroll');
+  if (saved !== null) {
+    try { sessionStorage.removeItem('dash-scroll'); } catch (e) {}
+    window.scrollTo(0, parseInt(saved, 10) || 0);
+  }
+  // Opened from the cache with an old copy: show it, and fetch a fresh one.
+  // The 30s guard stops a loop if the fresh copy can't be had.
+  var lastRefresh = parseInt(recall('dash-refreshed-at') || '0', 10);
+  if (cfg.staleAfterMs && age() > LOAD_STALE_MS && Date.now() - lastRefresh > 30000) refresh();
+})();
+"""
+
+
 _TAB_IDS = {
     "today": "tab-today", "trends": "tab-trends", "activity": "tab-activity",
     "fitness": "tab-you", "gear": "tab-gear",
@@ -3040,23 +3350,59 @@ _TAB_IDS = {
 _DEFAULT_TAB = "today"
 
 
-def render_dashboard_html(data: dict, token: str | None = None,
-                          initial_tab: str | None = None, error: str | None = None) -> str:
-    """Render the dashboard data dict into a complete HTML document.
+def _dashboard_head(token: str | None) -> str:
+    """Everything up to and including ``<body>`` — no data needed, so the
+    streamed response (``stream_dashboard``) can send it, styles and all,
+    before the data has been fetched."""
+    return (
+        "<!doctype html>"
+        '<html lang="en"><head>'
+        '<meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+        '<meta name="mobile-web-app-capable" content="yes">'
+        '<meta name="apple-mobile-web-app-capable" content="yes">'
+        '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
+        f"{ICON_LINKS}"
+        "<title>Garmin Health Dashboard</title>"
+        f"<style>{_STYLE}</style>"
+        f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
+    )
 
-    ``token`` is threaded into the injected site navigation and every
-    gear-tracker form action, so navigating or submitting never drops the
-    ``?token=`` bearer auth.
 
-    ``initial_tab`` (one of "today" (default), "trends", "activity",
-    "fitness", "gear") selects which tab starts open — used so a gear-tracker
-    form submission can redirect back to the Gear tab specifically rather
-    than always landing on Today.
+# Placeholder shapes shown while the data is still being fetched: the top
+# bar, a few cards and the bottom nav pill, shimmering. Sent straight after
+# the head by ``stream_dashboard`` and hidden by the first line of the real
+# body (``#dash-boot{display:none}``) once that arrives — so launching the
+# app shows a loading screen immediately instead of a blank one.
+_BOOT_HTML = """
+<div id="dash-boot" role="status" aria-busy="true" aria-label="Loading dashboard">
+  <div class="boot-top"><div class="boot-inner">
+    <div class="sk" style="width:26px;height:26px;border-radius:50%"></div>
+    <div style="flex:1"><div class="sk" style="width:150px;height:13px"></div>
+      <div class="sk" style="width:96px;height:9px;margin-top:7px"></div></div>
+  </div></div>
+  <div class="boot-inner boot-cards">
+    <div class="sk" style="height:168px"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="sk" style="height:96px"></div><div class="sk" style="height:96px"></div></div>
+    <div class="sk" style="height:132px"></div>
+  </div>
+  <div class="boot-nav"><div class="sk"></div></div>
+</div>"""
 
-    ``error``, when given, is shown as a banner at the top of the Gear tab —
-    a gear-tracker form error (see ``_error_redirect_url`` in
-    tools/gear_tracker.py) redirects back here with ``?error=...``.
-    """
+# Last thing in a complete render. The service worker only caches a
+# dashboard page carrying this, so a failed or cut-off load is never
+# served back as the "instant" cached copy (see sw.js).
+DASHBOARD_COMPLETE_MARKER = "<!--dashboard-complete-->"
+
+
+def render_dashboard_body(data: dict, token: str | None = None,
+                          initial_tab: str | None = None, error: str | None = None,
+                          activity_filter: str | None = None) -> str:
+    """The data-dependent rest of the page after ``<body>``: every tab,
+    the nav, the scripts, and ``</body></html>``. See
+    :func:`render_dashboard_html` for the arguments."""
     weekday_line = data.get("date") or ""
     try:
         weekday_line = date.fromisoformat(data["date"]).strftime("%A %-d %B")
@@ -3072,26 +3418,10 @@ def render_dashboard_html(data: dict, token: str | None = None,
         if sync_time else "Live from Garmin Connect"
     )
 
-    # A plain <meta http-equiv="refresh"> reloads unconditionally on its
-    # timer — including mid-look at the activity-detail modal (issue 74
-    # feedback: the page would reload and silently close it out from under
-    # whoever was reading it). This does the same periodic refresh from JS
-    # instead, so it can check first and defer while that modal is open.
-    refresh_script = (
-        f"""<script>(function () {{
-  var seconds = {REFRESH_SECONDS};
-  function tick() {{
-    var modal = document.getElementById('activity-modal');
-    if (modal && modal.classList.contains('open')) {{ setTimeout(tick, 15000); return; }}
-    location.reload();
-  }}
-  setTimeout(tick, seconds * 1000);
-}})();</script>""" if REFRESH_SECONDS > 0 else ""
-    )
-
     active_tab_id = _TAB_IDS.get(initial_tab, _TAB_IDS[_DEFAULT_TAB])
+    checked_filter = activity_filter if activity_filter in _ACTIVITY_FILTERS else "all"
     activity_filter_inputs = "".join(
-      f'<input class="hide" type="radio" name="activity-filter" id="activity-filter-{key}"{" checked" if key == "all" else ""}>'
+      f'<input class="hide" type="radio" name="activity-filter" id="activity-filter-{key}"{" checked" if key == checked_filter else ""}>'
       for key in _ACTIVITY_FILTERS
     )
 
@@ -3112,6 +3442,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
         <div style="font-family:var(--font-heading);font-size:15px;line-height:1.1">{_e(weekday_line)}</div>
         <div style="font-size:11px;color:var(--color-neutral-500)">{sync_line}</div>
       </div>
+      <span id="dash-updating" class="dash-updating" hidden><span class="dash-spin"></span>Updating</span>
     </div>
   </div>
 
@@ -3161,25 +3492,75 @@ def render_dashboard_html(data: dict, token: str | None = None,
   </div>
 </div>"""
 
+    # When this page was rendered (epoch ms) and how old it may get before
+    # coming back to the app refreshes it — read by _APP_JS.
+    app_config = json.dumps({
+        "renderedAt": int(time.time() * 1000),
+        "staleAfterMs": max(0, REFRESH_SECONDS) * 1000,
+    })
     return (
-        "<!doctype html>"
-        '<html lang="en"><head>'
-        '<meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
-        '<meta name="mobile-web-app-capable" content="yes">'
-        '<meta name="apple-mobile-web-app-capable" content="yes">'
-        '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
-        f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
-        f"{ICON_LINKS}"
-        f"{refresh_script}"
-        "<title>Garmin Health Dashboard</title>"
-        f"<style>{_STYLE}</style>"
-        f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
+        "<style>#dash-boot{display:none}</style>"
         f"{body}"
+        f"<script>window.__DASH = {app_config};</script>"
         f"<script>{_CHART_JS}</script>"
         f"<script>{_TZ_JS}</script>"
         f"<script>{_GEAR_MODAL_JS}</script>"
         f"<script>{_ACTIVITY_MODAL_JS}</script>"
+        f"<script>{_APP_JS}</script>"
         f'<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("{_e(_pwa_asset_url("/sw.js", token))}");</script>'
+        f"{DASHBOARD_COMPLETE_MARKER}"
         "</body></html>"
     )
+
+
+def render_dashboard_html(data: dict, token: str | None = None,
+                          initial_tab: str | None = None, error: str | None = None,
+                          activity_filter: str | None = None) -> str:
+    """Render the dashboard data dict into a complete HTML document.
+
+    ``token`` is threaded into the injected site navigation and every
+    gear-tracker form action, so navigating or submitting never drops the
+    ``?token=`` bearer auth.
+
+    ``initial_tab`` (one of "today" (default), "trends", "activity",
+    "fitness", "gear") selects which tab starts open — used so a gear-tracker
+    form submission can redirect back to the Gear tab specifically rather
+    than always landing on Today.
+
+    ``error``, when given, is shown as a banner at the top of the Gear tab —
+    a gear-tracker form error (see ``_error_redirect_url`` in
+    tools/gear_tracker.py) redirects back here with ``?error=...``.
+
+    ``activity_filter`` (one of ``_ACTIVITY_FILTERS``; default "all") picks
+    the Activity tab's starting sport filter, so a reload keeps it.
+    """
+    return _dashboard_head(token) + render_dashboard_body(data, token, initial_tab, error, activity_filter)
+
+
+async def stream_dashboard(week_offset: int = 0, token: str | None = None,
+                           initial_tab: str | None = None, error: str | None = None,
+                           activity_filter: str | None = None):
+    """The dashboard as two chunks: the head plus a loading skeleton right
+    away, then the real page once its data has been fetched (in a worker
+    thread, so a slow fetch doesn't block other requests).
+
+    The status line has already gone out by the time the data fetch runs,
+    so a failure is shown in the page rather than as a 500.
+    """
+    import anyio
+    yield _dashboard_head(token) + _BOOT_HTML
+    try:
+        data = await anyio.to_thread.run_sync(get_dashboard_data, week_offset)
+        yield render_dashboard_body(data, token, initial_tab, error, activity_filter)
+    except Exception as e:  # noqa: BLE001 — shown in the page, never raised
+        logger.exception("Dashboard render failed")
+        yield ("<style>#dash-boot{display:none}</style>"
+               f'<div class="err" style="padding:calc(24px + env(safe-area-inset-top, 0px)) 16px">'
+               f"Dashboard error: {_e(e)}</div></body></html>")
+
+
+def render_activity_panel(data: dict, token: str | None = None) -> str:
+    """Just the Activity tab's panel (``<section class="tp-activity">``) for
+    one week — what ``/dashboard/activity-week`` returns for the tab's
+    in-place week navigation (``_APP_JS``)."""
+    return _panel_activity(data, token)

@@ -1,6 +1,7 @@
 # server.py
 import os
 import logging
+import zlib
 from fastmcp import FastMCP
 from dotenv import load_dotenv
 
@@ -832,6 +833,37 @@ def update_workout_weights(
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────
 
+def _week_offset(query: dict) -> int:
+    """The dashboard's ?week= (issue 85): 0 = current week, 1 = last week,
+    etc. Clamped to >=0 — there's no data for future weeks, so a
+    negative/garbage value just falls back to the current week."""
+    try:
+        return max(0, int(query.get("week", ["0"])[0]))
+    except ValueError:
+        return 0
+
+
+def _accepts_gzip(scope) -> bool:
+    for name, value in scope.get("headers", []):
+        if name == b"accept-encoding":
+            return b"gzip" in value.lower()
+    return False
+
+
+async def _gzip_flushing(chunks):
+    """Gzip a streamed response, flushing after every chunk.
+
+    Starlette's GZipMiddleware holds streamed output in its compressor until
+    the response ends, which would keep the dashboard's loading skeleton from
+    reaching the browser until the whole page was ready. A response that
+    already has a Content-Encoding is passed through by that middleware.
+    """
+    compressor = zlib.compressobj(6, zlib.DEFLATED, 31)   # wbits=31 → gzip framing
+    async for chunk in chunks:
+        yield compressor.compress(chunk.encode()) + compressor.flush(zlib.Z_SYNC_FLUSH)
+    yield compressor.flush()
+
+
 def build_asgi_app():
     """The full HTTP surface: bearer-token auth in front of the MCP app plus
     the server-rendered HTML routes (/dashboard, /training-plan,
@@ -841,7 +873,10 @@ def build_asgi_app():
     from starlette.responses import Response as StarletteResponse
     from starlette.responses import FileResponse, HTMLResponse, JSONResponse
 
-    from tools.dashboard import get_dashboard_data, render_dashboard_html
+    from starlette.concurrency import run_in_threadpool
+    from starlette.responses import StreamingResponse
+
+    from tools.dashboard import get_activity_week_data, render_activity_panel, stream_dashboard
     from tools import training_plan
     from tools import weekly_summaries
     from tools import gear_tracker
@@ -922,28 +957,41 @@ def build_asgi_app():
         # auth (via ?token=), just a different route. Data is fetched live on
         # each request.
         if scope["type"] == "http" and scope.get("path") == "/dashboard":
+            # The token is threaded into the nav links so navigating to the
+            # training plan or the weekly reports keeps the ?token= auth.
+            # ?tab= opens a specific tab (e.g. "gear" — used by gear-tracker
+            # form submissions redirecting back here) instead of Today, and
+            # ?filter= the Activity tab's sport filter.
+            query = parse_qs(scope.get("query_string", b"").decode())
+            token = query.get("token", [None])[0]
+            initial_tab = query.get("tab", [None])[0]
+            error = query.get("error", [None])[0]
+            activity_filter = query.get("filter", [None])[0]
+            week_offset = _week_offset(query)
+            # Streamed: the head and a loading skeleton go out at once, the
+            # rest once the data is in (tools.dashboard.stream_dashboard).
+            chunks = stream_dashboard(week_offset, token, initial_tab, error, activity_filter)
+            headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+            if _accepts_gzip(scope):
+                chunks = _gzip_flushing(chunks)
+                headers["Content-Encoding"] = "gzip"
+                headers["Vary"] = "Accept-Encoding"
+            response = StreamingResponse(chunks, media_type="text/html; charset=utf-8", headers=headers)
+            await response(scope, receive, send)
+            return
+
+        # One week of the dashboard's Activity tab, as just its panel — the
+        # tab swaps this in to change week without reloading the page.
+        if scope["type"] == "http" and scope.get("path") == "/dashboard/activity-week":
+            query = parse_qs(scope.get("query_string", b"").decode())
+            token = query.get("token", [None])[0]
             try:
-                # The token is threaded into the nav links so navigating to the
-                # training plan or the weekly reports keeps the ?token= auth.
-                # ?tab= opens a specific tab (e.g. "gear" — used by gear-tracker
-                # form submissions redirecting back here) instead of Today.
-                query = parse_qs(scope.get("query_string", b"").decode())
-                token = query.get("token", [None])[0]
-                initial_tab = query.get("tab", [None])[0]
-                error = query.get("error", [None])[0]
-                # ?week= navigates the Activity tab (issue 85): 0 = current
-                # week, 1 = last week, etc. Clamped to >=0 — there's no data
-                # for future weeks, so a negative/garbage value just falls
-                # back to the current week.
-                try:
-                    week_offset = max(0, int(query.get("week", ["0"])[0]))
-                except ValueError:
-                    week_offset = 0
-                page = render_dashboard_html(get_dashboard_data(week_offset), token, initial_tab, error)
-                response = HTMLResponse(page)
+                data = await run_in_threadpool(get_activity_week_data, _week_offset(query))
+                response = HTMLResponse(render_activity_panel(data, token),
+                                        headers={"Cache-Control": "no-store"})
             except Exception as e:  # pragma: no cover — defensive
-                logger.exception("Dashboard render failed")
-                response = HTMLResponse(f"Dashboard error: {e}", status_code=500)
+                logger.exception("Activity week render failed")
+                response = HTMLResponse(f"Activity week error: {e}", status_code=500)
             await response(scope, receive, send)
             return
 

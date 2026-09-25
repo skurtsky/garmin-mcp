@@ -34,3 +34,34 @@ def test_create_workout_docstring_documents_repeat_and_targets():
     assert "target" in doc.lower()
     assert "pace" in doc.lower()
     assert "power" in doc.lower()
+
+
+def test_week_offset_is_clamped_to_zero_or_more():
+    assert server._week_offset({"week": ["3"]}) == 3
+    assert server._week_offset({"week": ["-2"]}) == 0
+    assert server._week_offset({"week": ["nope"]}) == 0
+    assert server._week_offset({}) == 0
+
+
+def test_accepts_gzip_reads_the_request_header():
+    assert server._accepts_gzip({"headers": [(b"accept-encoding", b"br, GZIP")]})
+    assert not server._accepts_gzip({"headers": [(b"accept-encoding", b"identity")]})
+    assert not server._accepts_gzip({"headers": []})
+
+
+def test_gzip_flushing_makes_each_chunk_readable_as_soon_as_it_is_sent():
+    """The dashboard's loading skeleton (the first chunk) must be decodable
+    before the rest of the page exists — that's the point of streaming it."""
+    import zlib
+
+    async def chunks():
+        yield "<head>skeleton</head>"
+        yield "<main>page</main>"
+
+    async def collect():
+        return [part async for part in server._gzip_flushing(chunks())]
+
+    parts = asyncio.run(collect())
+    decoder = zlib.decompressobj(31)
+    assert decoder.decompress(parts[0]) == b"<head>skeleton</head>"
+    assert decoder.decompress(b"".join(parts[1:])) == b"<main>page</main>"
