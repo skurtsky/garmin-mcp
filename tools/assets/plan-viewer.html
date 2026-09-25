@@ -129,6 +129,8 @@ a:hover { color: var(--color-accent); }
 .plan-head-main { flex:1; min-width:0; }
 .plan-head-kicker { font-size:12px; color:var(--color-neutral-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .plan-head-week { font-size:24px; font-weight:500; letter-spacing:-0.015em; line-height:1.25; }
+.plan-head-planned { font-size:13px; color:var(--color-neutral-400); margin-top:2px; }
+.plan-head-planned b { color:var(--color-text); font-weight:500; }
 .plan-head-progress { width:220px; display:flex; flex-direction:column; gap:6px; }
 .plan-head-row { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--color-neutral-400); }
 .phase-pick { position:relative; display:flex; align-items:center; gap:6px; }
@@ -150,7 +152,11 @@ a:hover { color: var(--color-accent); }
 @media (min-width: 900px) { .dl-long { display:none; } .dl-short { display:inline; } }
 .day-head.today { border-bottom-color: var(--color-accent); }
 .wcard.today { box-shadow: 0 0 0 1px var(--color-neutral-700); }
-.wcard-garmin { display:flex; align-items:center; gap:4px; font-size:11px; margin-top:5px; }
+.wcard-garmin { display:flex; align-items:center; gap:4px; font-size:11px; margin-top:5px; text-decoration:none; width:fit-content; }
+.wcard-garmin:hover { text-decoration:underline; }
+.garmin-link { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:12px; padding:10px 12px; text-decoration:none;
+  border-radius: var(--radius-md); background: var(--color-neutral-900); border:1px solid var(--color-neutral-800); }
+.garmin-link:hover { border-color: currentColor; }
 .day-head { display:flex; justify-content:space-between; align-items:baseline; padding:2px 2px 8px;
   border-bottom:1px solid var(--color-neutral-800); margin-bottom:8px; }
 .wcard { padding:12px; margin-bottom:8px; cursor:pointer; }
@@ -185,6 +191,14 @@ const READ_ONLY = !!SERVER.readOnly;
    etc.) is carried over unchanged. */
 const APP_QUERY = (typeof window !== 'undefined' && window.location && window.location.search) || '';
 function appLink(path) { return path + APP_QUERY; }
+/* A Garmin activity's detail, on the dashboard (it opens straight away there,
+   and closing it comes back here). Carries the ?token= auth. */
+function activityLink(id) {
+  const q = new URLSearchParams({ tab: 'activity', activity: String(id), from: 'plan' });
+  const token = new URLSearchParams(APP_QUERY).get('token');
+  if (token) q.set('token', token);
+  return '/dashboard?' + q.toString();
+}
 
 /* Server calls. Paths are the viewer's JSON API under /training-plan/api/;
    APP_QUERY carries the ?token= auth and any ?plan= selection. Every write
@@ -420,8 +434,8 @@ function distanceLabel(w) {
 function garminLine(w, color) {
   const act = state.completed[w.id] && state.activities[w.id];
   if (!act) return '';
-  return '<div class="wcard-garmin" style="color:' + color + ';">' + icon('link', 12) + 'Garmin'
-    + (act.durationMin ? ' · ' + esc(fmtDuration(act.durationMin)) : '') + '</div>';
+  return '<a class="wcard-garmin" data-garmin href="' + esc(activityLink(act.id)) + '" style="color:' + color + ';" title="Open the Garmin activity">' + icon('link', 12) + 'Garmin'
+    + (act.durationMin ? ' · ' + esc(fmtDuration(act.durationMin)) : '') + '</a>';
 }
 function workoutCard(w, dateStr) {
   const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
@@ -512,11 +526,16 @@ function planTab() {
   const pctDone = nonRest.length ? Math.round(doneCount / nonRest.length * 100) : 0;
   const range = wk ? dayMonth(wk.startDate) + ' – ' + (d(wk.startDate).getMonth() === d(wk.endDate).getMonth() ? d(wk.endDate).getDate() : dayMonth(wk.endDate)) : '';
   const race = RACE ? ' · Race day ' + longDate(RACE.date) : '';
+  /* The week's planned training, from its workouts (so it follows every edit). */
+  const weekWorkouts = wk ? (wk.days || []).flatMap(day => (day.workouts || []).filter(x => x.sport !== 'rest')) : [];
+  const plannedMin = weekWorkouts.reduce((sum, x) => sum + (Number(x.durationMinutes) || 0), 0);
 
   let h = readOnlyBanner() + '<div class="plan-head">'
     + '<div class="plan-head-main">'
       + '<div class="plan-head-kicker">' + esc(PLAN.meta.event) + esc(race) + '</div>'
       + '<div class="plan-head-week">Week ' + n + ' <span style="color:var(--color-neutral-600); font-weight:400;">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>'
+      + (wk ? '<div class="plan-head-planned"><b>' + esc(plannedMin ? fmtDuration(plannedMin) : '0min') + '</b> planned'
+          + ' · ' + weekWorkouts.length + ' session' + (weekWorkouts.length === 1 ? '' : 's') + '</div>' : '')
     + '</div>'
     + '<div class="plan-head-progress">'
       + '<div class="plan-head-row">'
@@ -535,7 +554,7 @@ function planTab() {
   const focus = wk ? wk.focus : phase.focus;
   if (focus || (wk && wk.isRecoveryWeek)) {
     h += '<div class="plan-focus" data-act="toggle-focus" title="Show the whole note">' + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2" style="margin-right:8px;">Recovery week</span>' : '')
-      + esc(focus || '') + (wk && wk.targetHours ? ' <span style="color:var(--color-neutral-600);">· ' + esc(wk.targetHours) + 'h target</span>' : '') + '</div>';
+      + esc(focus || '') + '</div>';
   }
 
   if (!wk) {
@@ -689,10 +708,10 @@ function modal() {
         + (w.difficulty ? '<span class="tag" style="background:' + tint(DIFFICULTY_COLORS[w.difficulty] || '#7c8194') + '; color:' + (DIFFICULTY_COLORS[w.difficulty] || 'var(--color-neutral-300)') + ';">' + esc(w.difficulty) + '</span>' : '')
         + (w.primaryZone ? '<span class="tag" style="background:' + (zc ? tint(zc) : 'var(--color-neutral-800)') + '; color:' + (zc || 'var(--color-neutral-300)') + ';">' + esc(w.primaryZone) + '</span>' : '')
       + '</div>'
-      + (done && state.activities[w.id] ? '<div style="display:flex; align-items:center; gap:6px; font-size:13px; margin-bottom:10px; color:' + color + ';">' + icon('link', 14)
-          + '<span>Done with <b style="font-weight:500;">' + esc(state.activities[w.id].name || 'Garmin activity') + '</b>'
+      + (done && state.activities[w.id] ? '<a class="garmin-link" href="' + esc(activityLink(state.activities[w.id].id)) + '" style="color:' + color + ';">' + icon('link', 14)
+          + '<span style="flex:1; min-width:0;">Done with <b style="font-weight:500;">' + esc(state.activities[w.id].name || 'Garmin activity') + '</b>'
           + [state.activities[w.id].distanceKm ? fmtKm(state.activities[w.id].distanceKm) : '', state.activities[w.id].durationMin ? fmtDuration(state.activities[w.id].durationMin) : ''].filter(Boolean).map(x => ' · ' + esc(x)).join('')
-          + '</span></div>' : '')
+          + '</span>' + icon('right', 14) + '</a>' : '')
       + '<div style="font-size:13px; color:var(--color-neutral-300); margin-bottom:12px;">' + esc(w.description) + '</div>'
       + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
     + '</div>'
@@ -812,6 +831,7 @@ function toggleCompleted(id) {
 }
 
 document.getElementById('app').addEventListener('click', e => {
+  if (e.target.closest('a[data-garmin]')) return;
   const toggle = e.target.closest('[data-toggle]');
   if (toggle) {
     e.stopPropagation();
@@ -1045,6 +1065,22 @@ document.addEventListener('click', e => {
   e.preventDefault();
   setView(link.getAttribute('data-nav'));
 });
+
+/* ?workout=<id> opens that workout on its week (Today's Tomorrow card links
+   here); the parameter is dropped so a reload doesn't reopen it. */
+(function openFromUrl() {
+  const id = new URLSearchParams(APP_QUERY).get('workout');
+  const hit = id && workoutById(id);
+  if (!hit) return;
+  state.tab = 'plan';
+  state.planWeekNumber = hit.week;
+  state.modalId = id;
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete('workout');
+    history.replaceState(history.state, '', url.toString());
+  } catch (e) { /* history unavailable */ }
+})();
 
 render();
 if (state.tab === 'settings') setView('settings');

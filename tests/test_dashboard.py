@@ -241,16 +241,16 @@ def test_nav_pill_is_today_plan_trends_activity_and_more():
     assert html.index('id="tab-today"') < html.index('<nav id="gm-nav"')
 
 
-def test_more_menu_lists_fitness_gear_reports_plans_pdf_and_settings():
+def test_more_menu_lists_fitness_gear_reports_pdf_and_settings():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
     sheet = html[html.index('class="gm-nav-more-sheet"'):html.index('id="chart-tooltip"')]
 
     assert 'for="tab-you"' in sheet and "Fitness" in sheet
     assert 'for="tab-gear"' in sheet and "Gear" in sheet
     assert 'href="/weekly-summary?token=t0k"' in sheet
-    assert 'href="/training-plan/plans?token=t0k"' in sheet
     assert 'href="/training-plan/pdf?token=t0k"' in sheet
     assert 'href="/training-plan?view=settings&amp;token=t0k"' in sheet
+    assert "/training-plan/plans" not in sheet   # the plan list lives under Settings
 
 
 def test_desktop_rail_is_titled_with_the_athlete_from_the_plan():
@@ -583,13 +583,14 @@ def test_training_status_widget_has_no_blurb_or_sport():
     assert "ideal competitive form" not in card.lower()
 
 
-def test_training_status_widget_offers_7d_28d_toggle_defaulting_to_28d():
+def test_trends_training_status_follows_the_range_picker():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert 'id="ts-range-7"' in html
-    assert 'id="ts-range-28"' in html
-    # 28d is the default-checked option
-    assert 'checked' in html.split('id="ts-range-28"')[1][:10]
-    assert 'checked' not in html.split('id="ts-range-7"')[1].split('id="ts-range-28"')[0][:10]
+    trends = _section(html, "tp-trends")
+    # No toggle of its own: one card per range set, each with that range's strip.
+    assert 'name="ts-range"' not in html
+    for r in (7, 14, 30):
+        rs = trends.split(f'class="range-set rs-{r}"', 1)[1].split('class="range-set', 1)[0]
+        assert rs.count('class="card ts-card"') == 1
 
 
 def test_training_status_kicker_lives_inside_the_card_not_outside():
@@ -614,26 +615,36 @@ def test_training_status_widget_shows_icon_and_load_focus():
 
 
 def test_training_status_widget_shows_range_captions():
+    trends = _section(dashboard.render_dashboard_html(SAMPLE), "tp-trends")
+    card_7 = trends.split('class="range-set rs-7"', 1)[1].split('class="card ts-card"', 1)[1]
+    card_30 = trends.split('class="range-set rs-30"', 1)[1].split('class="card ts-card"', 1)[1]
+
+    assert "Last 7d" in card_7 and "Since Jul 11" in card_7      # 7 days back from 2026-07-17
+    assert "Last 1 month" in card_30 and "Since Jun 20" in card_30  # all 28 days on hand
+
+
+def test_training_status_widget_renders_one_segment_per_day_of_the_range():
+    trends = _section(dashboard.render_dashboard_html(SAMPLE), "tp-trends")
+
+    def strip(r):
+        rs = trends.split(f'class="range-set rs-{r}"', 1)[1]
+        return rs.split('class="card ts-card"', 1)[1].split("Last ", 1)[0]
+
+    assert strip(7).count('class="js-bar"') == 7
+    assert strip(14).count('class="js-bar"') == 14
+    assert strip(30).count('class="js-bar"') == 28   # only 28 days of history exist
+    assert "Maintaining" in strip(30) and "Strained" in strip(30)
+
+
+def test_trends_defaults_to_7d_and_remembers_the_last_range():
     html = dashboard.render_dashboard_html(SAMPLE)
-    trends = re.search(r'<section class="panel tabpanel tp-trends".*?</section>', html, re.S).group(0)
-    card = trends.split('class="card ts-card"', 1)[1]
-
-    assert "Last 7d" in card
-    assert "Last 4w" in card
-    assert "Since Jul 11" in card  # 7 days back from 2026-07-17
-    assert "Since Jun 20" in card  # 28 days back from 2026-07-17
+    assert 'id="range-7" checked' in html
+    assert "localStorage.setItem(RANGE_KEY" in html
 
 
-def test_training_status_widget_renders_daily_segments_for_both_ranges():
-    html = dashboard.render_dashboard_html(SAMPLE)
-    trends = re.search(r'<section class="panel tabpanel tp-trends".*?</section>', html, re.S).group(0)
-    card = trends.split('class="card ts-card"', 1)[1].split('class="range-body"', 1)[0]
-
-    # 7 days for the 7d bar, 28 for the 28d bar — both present in the markup
-    # (CSS toggles which is visible), each as a per-day tooltip segment.
-    assert card.count('class="js-bar"') == 28 + 7
-    assert "Maintaining" in card  # an early day's status, in a tooltip data-value
-    assert "Strained" in card
+def test_trends_has_no_daily_steps_card():
+    trends = _section(dashboard.render_dashboard_html(SAMPLE), "tp-trends")
+    assert "Daily steps" not in trends
 
 
 def test_in_focus_training_status_shows_the_last_seven_days():
@@ -752,7 +763,6 @@ def test_range_toggle_offers_7_14_30_when_30_days_fetched():
     assert 'id="range-7"' in html
     assert 'id="range-14"' in html
     assert 'id="range-30"' in html
-    assert 'checked' in html.split('id="range-30"')[1][:20]
 
 
 def test_range_toggle_shrinks_to_available_days():
@@ -1106,7 +1116,7 @@ def test_build_dashboard_data_from_db_derives_training_status_history_from_trend
 
     assert data["training_status_daily_history_err"] is None
     history = data["training_status_daily_history"]
-    assert len(history) == 28
+    assert len(history) == 90          # the longest Trends range
     assert history[-1]["date"] == "2026-07-17"
     assert history[-1]["status"] == "PRODUCTIVE_2"  # today
     assert history[-8]["status"] == "STRAINED_0"     # 2026-07-10, 7 days back
@@ -1128,11 +1138,6 @@ def test_render_includes_longer_trend_ranges_when_data_is_available():
     assert 'id="range-42"' in html
     assert 'id="range-90"' in html
     assert ">3 months<" in html
-
-
-def test_render_uses_step_goal_from_active_goals():
-    html = dashboard.render_dashboard_html(SAMPLE)
-    assert "12,000" in html or "12000" in html
 
 
 def test_render_degrades_when_sections_missing():
@@ -1534,3 +1539,20 @@ def test_fitness_topbar_swaps_in_with_its_tab():
     assert 'class="topbar-fitness topbar-inner"' in html
     assert "Garmin + Winter Base Block — FTP Focus" in html
     assert "#tab-you:checked ~ .topbar .topbar-fitness { display:flex; }" in html
+
+
+def test_tomorrow_card_opens_that_workout_in_the_plan():
+    today = _section(dashboard.render_dashboard_html(_with_plan(), token="t0k"), "tp-today")
+    card = today.split(">Tomorrow<", 1)[0].rsplit("<a ", 1)[1]
+    assert 'href="/training-plan?workout=w2-sat-bike&amp;token=t0k"' in card
+
+
+def test_rest_tomorrow_is_not_a_link():
+    today = _section(dashboard.render_dashboard_html(_with_plan(tomorrow=[])), "tp-today")
+    card = today.split(">Tomorrow<", 1)[0].rsplit('class="t-card', 1)[1]
+    assert "t-link" not in card
+
+
+def test_activity_parameter_opens_the_activity_detail():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "q.get('activity')" in html and "returnOnClose = q.get('from') === 'plan'" in html

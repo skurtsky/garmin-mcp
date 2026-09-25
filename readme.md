@@ -137,7 +137,7 @@ Every hosted page — `/dashboard`, `/training-plan` and `/weekly-summary` —
 shares one navigation, so the dashboard and the training plan work as one app:
 
     Today · Plan · Trends · Activity · More
-    More → Fitness, Gear, Weekly Summary, Plans, Plan PDF, Settings
+    More → Fitness, Gear, Weekly Summary, Plan PDF, Settings
 
 On a phone it's a floating bottom pill; from 900px wide it becomes a side rail
 with everything visible. The current page is highlighted and the `?token=` is
@@ -214,7 +214,6 @@ Optional environment variables:
 | `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Offset from UTC for the "today" date and displayed local time (e.g. `-4`) |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | How old the dashboard can get before coming back to the app refreshes it; set `0` to disable |
 | `DASHBOARD_TREND_PERIOD` | `14d` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window. `get_trends` fetches its per-day metrics concurrently, but there's no batch endpoint for most of them, so wider windows still add latency; `1m` (30d) restores the full toggle at the cost of a slower load |
-| `DASHBOARD_STEP_GOAL` | `10000` | Fallback daily step goal used when there's no active Garmin step goal |
 
 ## Training Plan
 
