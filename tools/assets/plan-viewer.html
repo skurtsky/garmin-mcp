@@ -230,6 +230,9 @@ const ICONS = {
   house:'<path d="M128 26 222 104 222 224 34 224 34 104Z"/>',
   list:'<path d="M40 76h176a8 8 0 0 0 0-16H40a8 8 0 0 0 0 16Zm176 32H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Zm0 48H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Z"/>',
   chartbar:'<path d="M40 136h32v80H40Zm72-48h32v128h-32Zm72-48h32v176h-32Z"/>',
+  pencil:'<path d="M227.3 73.4 182.6 28.7a16 16 0 0 0-22.6 0L36.7 152A15.9 15.9 0 0 0 32 163.3V208a16 16 0 0 0 16 16h44.7a15.9 15.9 0 0 0 11.3-4.7L227.3 96a16 16 0 0 0 0-22.6ZM92.7 208H48v-44.7l88-88L180.7 120ZM192 108.7 147.3 64l24-24L216 84.7Z"/>',
+  copy:'<path d="M216 32H88a8 8 0 0 0-8 8v40H40a8 8 0 0 0-8 8v128a8 8 0 0 0 8 8h128a8 8 0 0 0 8-8v-40h40a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Zm-56 176H48V96h112Zm48-48h-32V88a8 8 0 0 0-8-8H96V48h112Z"/>',
+  trash:'<path d="M216 48h-40v-8a24 24 0 0 0-24-24h-48a24 24 0 0 0-24 24v8H40a8 8 0 0 0 0 16h8v144a16 16 0 0 0 16 16h128a16 16 0 0 0 16-16V64h8a8 8 0 0 0 0-16ZM96 40a8 8 0 0 1 8-8h48a8 8 0 0 1 8 8v8H96Zm96 168H64V64h128Zm-80-104v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Zm48 0v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Z"/>',
   plus:'<path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/>',
   history:'<path d="M136 80v43.5l36.1 21.7a8 8 0 0 1-8.2 13.7l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Zm-8-48a95.4 95.4 0 0 0-67.9 28.1C54 66.3 48.3 72.4 43 78.5V64a8 8 0 0 0-16 0v40a8 8 0 0 0 8 8h40a8 8 0 0 0 0-16H52.1c5.7-6.8 11.4-13.2 19.3-21.2a80 80 0 1 1 1.7 114.8 8 8 0 1 0-11 11.6A96 96 0 1 0 128 32Z"/>'
 };
@@ -348,6 +351,8 @@ const state = {
   menuOpen: false,
   saving: false,
   revisions: null,
+  historyOpen: false,
+  modalMenu: false,
   revisionsError: '',
   pdfGenerating: false
 };
@@ -697,6 +702,10 @@ function settingsTab() {
     + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
   h += '</div>';
 
+  h += settingsLinkCard('All plans', 'Switch the active plan, or open an archived plan read-only.',
+    appLink('/training-plan/plans'), 'list', 'View plans');
+  h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach. A new plan id becomes the active plan; the same id replaces this plan after a confirmation.',
+    appLink('/training-plan/upload'), 'up', 'Upload');
   h += historySection();
 
   h += '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">'
@@ -709,6 +718,14 @@ function settingsTab() {
   return h;
 }
 
+function settingsLinkCard(title, text, href, iconName, label) {
+  return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px;">'
+      + '<div class="card-title">' + esc(title) + '</div>'
+      + '<a class="btn btn-secondary" href="' + esc(href) + '" style="font-size:12px; padding:5px 10px;">' + icon(iconName, 14) + ' ' + esc(label) + '</a></div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px;">' + esc(text) + '</div></div>';
+}
+
 /* Every change to the plan (upload, edit here, coach via MCP, restore) is a
    revision on the server. Restoring one writes a new revision, so a restore
    can itself be undone. Completion ticks are separate and never roll back. */
@@ -718,7 +735,7 @@ function historySection() {
   let rows;
   if (state.revisionsError) rows = '<div style="font-size:13px; color:var(--color-neutral-400);">' + esc(state.revisionsError) + '</div>';
   else if (!state.revisions) rows = '<div style="font-size:13px; color:var(--color-neutral-400);">Loading…</div>';
-  else rows = state.revisions.map(r => {
+  else rows = (state.historyOpen ? state.revisions : state.revisions.slice(0, HISTORY_COLLAPSED)).map(r => {
     const current = r.version === SERVER.version;
     const when = new Date(r.created_at).toLocaleString(undefined, { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
     return '<div class="rev-row">'
@@ -733,7 +750,18 @@ function historySection() {
       + '<div class="card-title">History</div>'
       + '<a class="btn btn-secondary" href="' + esc(appLink('/training-plan/export.json')) + '" style="font-size:12px; padding:5px 10px;">' + icon('down',14) + ' Download JSON</a></div>'
     + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">Every change to the plan, newest first. Restoring brings back that version\'s workouts and zones; completion ticks are never rolled back.</div>'
-    + '<div class="rev-list">' + rows + '</div></div>';
+    + '<div class="rev-list' + (state.historyOpen ? ' open' : '') + '">' + rows + '</div>'
+    + historyToggle() + '</div>';
+}
+/* Collapsed (the default) shows only the most recent changes; the toggle
+   appears once there are more than that. */
+const HISTORY_COLLAPSED = 3;
+function historyToggle() {
+  const n = (state.revisions || []).length;
+  if (n <= HISTORY_COLLAPSED) return '';
+  return '<button type="button" class="btn btn-secondary history-toggle" data-act="toggle-history">'
+    + icon(state.historyOpen ? 'up' : 'down', 14)
+    + (state.historyOpen ? ' Show less' : ' Show all ' + n + ' changes') + '</button>';
 }
 function loadRevisions() {
   state.revisions = undefined;
@@ -771,12 +799,28 @@ function modal() {
       + '<div style="font-size:13px; color:var(--color-neutral-300); margin-bottom:12px;">' + esc(w.description) + '</div>'
       + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
     + '</div>'
-    + '<div class="dialog-actions">'
-      + (READ_ONLY ? '' : '<button type="button" class="btn btn-secondary" data-act="delete-workout" data-id="' + esc(w.id) + '">Delete</button>'
-        + '<button type="button" class="btn btn-secondary" data-act="open-edit" data-id="' + esc(w.id) + '">Edit</button>')
-      + '<button type="button" class="btn btn-secondary" data-act="close">Close</button>'
-      + (READ_ONLY ? '' : '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button>') + '</div>'
+    + '<div class="dialog-actions" style="justify-content:space-between; align-items:center;">'
+      + (READ_ONLY ? '<span></span>' : workoutMenu(w.id))
+      + '<div style="display:flex; gap:var(--space-2);">'
+        + '<button type="button" class="btn btn-secondary" data-act="close">Close</button>'
+        + (READ_ONLY ? '' : '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button>')
+      + '</div></div>'
   + '</div></div>';
+}
+
+/* The pencil in the workout dialog's bottom-left corner opens the
+   duplicate / edit / delete menu. */
+function workoutMenu(id) {
+  return '<div class="wmenu">'
+    + '<button type="button" class="btn btn-icon btn-secondary" data-act="toggle-wmenu" title="Duplicate, edit or delete" aria-label="Workout actions" aria-expanded="' + (state.modalMenu ? 'true' : 'false') + '">' + icon('pencil', 18) + '</button>'
+    + (state.modalMenu
+      ? '<div class="wmenu-pop" role="menu">'
+        + '<button type="button" role="menuitem" data-act="duplicate-workout" data-id="' + esc(id) + '">' + icon('copy', 16) + 'Duplicate</button>'
+        + '<button type="button" role="menuitem" data-act="open-edit" data-id="' + esc(id) + '">' + icon('pencil', 16) + 'Edit</button>'
+        + '<button type="button" role="menuitem" class="danger" data-act="delete-workout" data-id="' + esc(id) + '">' + icon('trash', 16) + 'Delete</button>'
+      + '</div>'
+      : '')
+  + '</div>';
 }
 
 /* One dialog for editing a workout and for adding one from a day's "+"
@@ -789,13 +833,20 @@ function workoutDistance(w, sport) {
   if (w.distanceKm != null) return w.distanceKm;
   return w.distanceMeters != null ? +(w.distanceMeters / 1000).toFixed(2) : '';
 }
+const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable'];
 function draftFor(w, date, mode) {
   const sport = w.sport || 'run';
   const dist = workoutDistance(w, sport);
+  /* A duplicate keeps the fields the form doesn't show (Rouvy tags, a
+     distance range, elevation, ...) so the copy is complete. */
+  const extra = {};
+  if (mode === 'duplicate') Object.keys(w).forEach(k => { if (!FORM_FIELDS.includes(k)) extra[k] = w[k]; });
   return { mode, date, name: w.name || '', sport, type: w.type || '', durationMinutes: w.durationMinutes ?? '',
     distance: dist, distanceOrig: dist, sportOrig: sport, primaryZone: w.primaryZone || '',
-    description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '' };
+    description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '', extra };
 }
+const EDIT_TITLES = { add:'Add workout', duplicate:'Duplicate workout', edit:'Edit workout' };
+const EDIT_SAVE_LABELS = { add:'Add', duplicate:'Create', edit:'Save' };
 function editModal() {
   if (!state.editId || !state.editDraft) return '';
   const d = state.editDraft;
@@ -806,7 +857,7 @@ function editModal() {
   const grid = (a, b) => '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">' + a + b + '</div>';
   return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
     + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
-      + '<span>' + (d.mode === 'add' ? 'Add workout' : 'Edit workout') + '</span>'
+      + '<span>' + EDIT_TITLES[d.mode] + '</span>'
       + '<button type="button" class="btn btn-icon" data-act="cancel-edit">' + icon('x') + '</button></div>'
     + '<div class="dialog-body" style="display:flex; flex-direction:column; gap:10px;">'
       + field('Name', 'name', 'type="text" maxlength="80" required')
@@ -819,19 +870,19 @@ function editModal() {
     + '</div>'
     + '<div class="dialog-actions">'
       + '<button type="button" class="btn btn-secondary" data-act="cancel-edit">Cancel</button>'
-      + '<button type="button" class="btn btn-primary" data-act="save-edit"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? 'Saving…' : (d.mode === 'add' ? 'Add' : 'Save')) + '</button></div>'
+      + '<button type="button" class="btn btn-primary" data-act="save-edit"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? 'Saving…' : EDIT_SAVE_LABELS[d.mode]) + '</button></div>'
   + '</div></div>';
 }
 function draftToFields(d) {
   const num = v => (v === '' || v == null) ? null : Number(v);
   const fields = { name: d.name.trim(), sport: d.sport, type: d.type.trim(), durationMinutes: num(d.durationMinutes),
     primaryZone: d.primaryZone.trim(), description: d.description.trim(), keyTargets: d.keyTargets.trim(), humanReadable: d.humanReadable };
-  if (d.mode === 'add' || String(d.distance) !== String(d.distanceOrig) || d.sport !== d.sportOrig) {
+  if (d.mode !== 'edit' || String(d.distance) !== String(d.distanceOrig) || d.sport !== d.sportOrig) {
     const dist = num(d.distance);
     if (d.sport === 'swim') { fields.distanceMeters = dist; fields.distanceKm = null; }
     else { fields.distanceKm = dist; fields.distanceMeters = null; }
   }
-  return fields;
+  return d.mode === 'duplicate' ? Object.assign({}, d.extra, fields) : fields;
 }
 
 function tabbar() {
@@ -863,9 +914,7 @@ function tabbar() {
         + sheetItem('Dashboard', 'gauge', { href: appLink('/dashboard') })
         + sheetItem('Weekly Summary', 'chartbar', { href: appLink('/weekly-summary') })
         + sheetItem(state.pdfGenerating ? 'Generating…' : 'Generate Plan PDF', 'down', { act:'generate-pdf', disabled: state.pdfGenerating })
-        + sheetItem('All plans', 'list', { href: appLink('/training-plan/plans') })
-        + sheetItem('Upload plan', 'up', { href: appLink('/training-plan/upload') })
-        + sheetItem('Settings & history', 'gear', { tab: 'settings' })
+        + sheetItem('Settings', 'gear', { tab: 'settings' })
       + '</div>'
     : '';
 
@@ -900,11 +949,11 @@ document.getElementById('app').addEventListener('click', e => {
   if (toggle) {
     e.stopPropagation();
     if (READ_ONLY) return;
-    if (toggle.closest('.dialog')) state.modalId = null;
+    if (toggle.closest('.dialog')) { state.modalId = null; state.modalMenu = false; }
     return toggleCompleted(toggle.getAttribute('data-toggle'));
   }
   const open = e.target.closest('[data-open]');
-  if (open) { state.modalId = open.getAttribute('data-open'); return render(); }
+  if (open) { state.modalId = open.getAttribute('data-open'); state.modalMenu = false; return render(); }
 
   const tab = e.target.closest('[data-tab]');
   if (tab) { state.tab = tab.getAttribute('data-tab'); state.menuOpen = false; return render(); }
@@ -922,14 +971,19 @@ document.getElementById('app').addEventListener('click', e => {
   }
 
   const act = e.target.closest('[data-act]');
+  const a = act ? act.getAttribute('data-act') : null;
+  if (state.modalMenu && a !== 'toggle-wmenu' && !e.target.closest('.wmenu-pop')) {
+    state.modalMenu = false;                         // any click elsewhere closes the menu
+    if (!act || a === 'backdrop') return render();
+  }
   if (!act) return;
-  const a = act.getAttribute('data-act');
   if (a === 'togglemenu') { state.menuOpen = !state.menuOpen; return render(); }
   if (a === 'closemenu') { state.menuOpen = false; return render(); }
   if (a === 'backdrop' && e.target !== act) return;
   if (a === 'prev') { state.planWeekNumber = Math.max(1, state.planWeekNumber - 1); return render(); }
   if (a === 'next') { state.planWeekNumber = Math.min(PLAN.meta.totalWeeks, state.planWeekNumber + 1); return render(); }
-  if (a === 'close' || a === 'backdrop') { state.modalId = null; state.editId = null; state.editDraft = null; return render(); }
+  if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
+  if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
   if (READ_ONLY && a !== 'generate-pdf') return;
   if (a === 'validate') {
     const sport = act.getAttribute('data-sport');
@@ -967,13 +1021,22 @@ document.getElementById('app').addEventListener('click', e => {
     state.modalId = null;
     return render();
   }
+  if (a === 'toggle-wmenu') { state.modalMenu = !state.modalMenu; return render(); }
+  if (a === 'duplicate-workout') {
+    const hit = workoutById(act.getAttribute('data-id'));
+    if (!hit) return;
+    state.editId = '__new__';
+    state.editDraft = draftFor(hit.wo, hit.date, 'duplicate');
+    state.modalId = null; state.modalMenu = false;
+    return render();
+  }
   if (a === 'open-edit') {
     const id = act.getAttribute('data-id');
     const hit = workoutById(id);
     if (!hit) return;
     state.editId = id;
     state.editDraft = draftFor(hit.wo, hit.date, 'edit');
-    state.modalId = null;
+    state.modalId = null; state.modalMenu = false;
     return render();
   }
   if (a === 'cancel-edit') { state.editId = null; state.editDraft = null; return render(); }
@@ -983,13 +1046,14 @@ document.getElementById('app').addEventListener('click', e => {
     if (!d.name.trim()) { alert('Give the workout a name.'); return; }
     if (!d.date) { alert('Pick a date.'); return; }
     const fields = draftToFields(d);
-    const op = d.mode === 'add'
+    const op = d.mode !== 'edit'
       ? { op: 'add_workout', date: d.date, workout: fields }
       : { op: 'update_workout', workout_id: state.editId, fields: Object.assign(fields, { date: d.date }) };
     return saveOps([op], () => { state.editId = null; state.editDraft = null; });
   }
   if (a === 'delete-workout') {
     const id = act.getAttribute('data-id');
+    state.modalMenu = false;
     if (id && confirm('Delete this workout from the plan? It can be restored from Settings → History.')) {
       state.modalId = null;
       return saveOps([{ op: 'remove_workout', workout_id: id }]);
@@ -1066,6 +1130,7 @@ document.getElementById('app').addEventListener('drop', e => {
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
+  else if (e.key === 'Escape' && state.modalMenu) { state.modalMenu = false; render(); }
   else if (e.key === 'Escape' && state.modalId) { state.modalId = null; render(); }
   if (e.key === 'Escape' && state.menuOpen) { state.menuOpen = false; render(); }
   if (state.tab === 'plan' && !state.modalId && !state.editId) {
@@ -1080,7 +1145,16 @@ render();
 .add-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; cursor:pointer;
   border:1px solid var(--color-neutral-700); border-radius:6px; background:transparent; color:var(--color-neutral-400); }
 .add-btn:hover { color: var(--color-accent); border-color: var(--color-accent); }
-.rev-list { display:flex; flex-direction:column; max-height:320px; overflow-y:auto; }
+.rev-list { display:flex; flex-direction:column; }
+.rev-list.open { max-height:420px; overflow-y:auto; }
+.history-toggle { margin-top:10px; width:100%; font-size:12px; padding:6px 10px; }
+.wmenu { position:relative; }
+.wmenu-pop { position:absolute; left:0; bottom:calc(100% + 6px); z-index:5; min-width:170px; display:flex; flex-direction:column;
+  padding:4px; border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-lg); }
+.wmenu-pop button { display:flex; align-items:center; gap:10px; width:100%; padding:9px 12px; border:0; border-radius:6px; cursor:pointer;
+  background:transparent; color: var(--color-text); font-family: var(--font-body); font-size:14px; text-align:left; }
+.wmenu-pop button:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
+.wmenu-pop button.danger { color:#e0736f; }
 .rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
 .rev-row:first-child { border-top:none; }
 .saving-pill { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;
