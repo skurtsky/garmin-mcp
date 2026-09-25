@@ -220,32 +220,42 @@ az containerapp logs show `
 
 ## Publishing a Training Plan
 
-The plan viewer stores its files on the same Azure File Share as the Garmin
-tokens, under `training-plan/`. Uploading through the browser is all that's
-normally needed:
+Training plans are stored in the PostgreSQL database (`DATABASE_URL`), not on
+the file share. The tables (`training_plans`, `training_plan_revisions`,
+`training_plan_workout_state`) are created automatically when the container
+starts — there's no manual migration step. `docs/postgres-schema.sql` has the
+same DDL if you ever want to create them by hand.
 
 1. Open `DEPLOYED_URL/training-plan/upload?token=YOUR_TOKEN`
-2. Pick the compiled `plan.html` and its `plan.json`, then submit — this
-   replaces any previous plan and redirects to `DEPLOYED_URL/training-plan?token=YOUR_TOKEN`
+2. Pick the plan `.json` the coach skill produced and submit. A new plan id
+   becomes the active plan (the previous one is archived); an id that's already
+   stored shows what replacing it would change and asks you to confirm.
 
-The plan survives redeploys because it lives on the file share, not in the
-image. To inspect or clear it out of band:
+Older plans are listed at `DEPLOYED_URL/training-plan/plans?token=YOUR_TOKEN`
+(view read-only, download, make active again, or delete).
+
+**Checking the tables from Azure Cloud Shell (PowerShell)** — optional, after
+the first deploy. Cloud Shell has `psql` built in. If the server's firewall
+doesn't already allow all IPs, add Cloud Shell's address first and remove it
+afterwards:
 
 ```powershell
-$STORAGE_KEY = az storage account keys list `
-  --account-name garminmcpkurt `
-  --resource-group garmin-mcp-rg `
-  --query "[0].value" -o tsv
+$ip = Invoke-RestMethod https://api.ipify.org
+az postgres flexible-server firewall-rule create `
+  --resource-group garmin-mcp-rg --name garmin-mcp-db `
+  --rule-name cloudshell-temp --start-ip-address $ip --end-ip-address $ip
 
-az storage file list `
-  --share-name garminconnect `
-  --path training-plan `
-  --account-name garminmcpkurt `
-  --account-key $STORAGE_KEY -o table
+psql "host=garmin-mcp-db.postgres.database.azure.com dbname=garmin user=garminadmin sslmode=require"
+#   \dt training_plan*
+#   SELECT id, status, version, updated_at FROM training_plans;
+#   SELECT version, source, summary, created_at FROM training_plan_revisions ORDER BY created_at DESC LIMIT 10;
+
+az postgres flexible-server firewall-rule delete `
+  --resource-group garmin-mcp-rg --name garmin-mcp-db --rule-name cloudshell-temp --yes
 ```
 
-Deleting the plan is easier via the app: `POST DEPLOYED_URL/training-plan/reset?token=YOUR_TOKEN`
-(the upload form has a "Delete active plan" button that does this).
+Plans uploaded before this change (the `training-plan/` folder on the file
+share) are no longer read; delete that folder whenever convenient.
 
 ---
 
@@ -257,5 +267,5 @@ Deleting the plan is easier via the app: `POST DEPLOYED_URL/training-plan/reset?
 | Build & push image | After code changes | 2 commands |
 | Deploy to Azure | After pushing image | 1 command |
 | Refresh Garmin tokens | Auth errors appear | ~5 minutes |
-| Publish a training plan | New plan generated | Upload 2 files in the browser |
+| Publish a training plan | New plan generated | Upload the plan JSON in the browser |
 | Check logs | Something broken | 1 command |

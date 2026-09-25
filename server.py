@@ -49,6 +49,7 @@ from tools.gear_tracker import (
     log_maintenance as log_maintenance_impl,
     get_maintenance_status as get_maintenance_status_impl,
 )
+from tools import plan_tools
 
 load_dotenv()
 
@@ -373,6 +374,158 @@ def get_maintenance_status(gear_name: Optional[str] = None) -> dict:
                    Omit to get every registered piece of gear.
     """
     return get_maintenance_status_impl(gear_name=gear_name)
+
+
+# ── TRAINING PLAN (Claude Coach, stored in PostgreSQL) ───────────────────────
+
+@mcp.tool()
+def get_training_plan(
+    plan_id: Optional[str] = None,
+    week_number: Optional[int] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    include_details: bool = True,
+) -> dict:
+    """
+    Read the athlete's training plan (the Claude Coach plan uploaded at
+    /training-plan). Defaults to the active plan.
+
+    Always returns the plan meta, version, current thresholds (FTP, LTHRs,
+    threshold pace, CSS — including any updated in the viewer), phases, and a
+    one-line summary per week (planned vs target hours, completed count).
+    Workout detail is returned for week_number, or for the weeks overlapping
+    start_date..end_date, or by default for the current and next week. Each
+    workout carries its id, date, completion state, the Garmin activity that
+    completed it, and any Garmin Connect workout already scheduled for it
+    (garminWorkoutId) — check that before scheduling to avoid duplicates.
+
+    Args:
+        plan_id: Plan id (meta.id). Omit for the active plan.
+        week_number: One week of detail.
+        start_date / end_date: YYYY-MM-DD range of weeks to detail.
+        include_details: False omits description/humanReadable to save tokens.
+    """
+    return plan_tools.get_training_plan(plan_id, week_number, start_date, end_date, include_details)
+
+
+@mcp.tool()
+def list_training_plans() -> list:
+    """
+    List every stored training plan (id, event, athlete, dates, status
+    active/archived, version, last update). Only one plan is active.
+    """
+    return plan_tools.list_training_plans()
+
+
+@mcp.tool()
+def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[str] = None) -> dict:
+    """
+    Change a few days of the active training plan without regenerating it.
+    All operations apply atomically (all or none), are saved as one revision
+    labelled with `reason` (restorable from the plan's history), and weekly
+    totals are recomputed. Archived plans are read-only.
+
+    Operations (each a dict with "op"):
+      {"op": "add_workout", "date": "YYYY-MM-DD", "workout": {"sport": "run",
+          "name": "...", "type": "...", "durationMinutes": 45, "distanceKm": 8,
+          "primaryZone": "Zone 2", "description": "...", "keyTargets": "...",
+          "humanReadable": "..."}}          — id is generated (w{week}-{day}-{sport})
+      {"op": "update_workout", "workout_id": "w5-thu-run", "fields": {...}}
+          — only the given fields change; null/"" removes a field; a "date"
+            field moves the workout
+      {"op": "move_workout", "workout_id": "...", "date": "YYYY-MM-DD"}
+      {"op": "remove_workout", "workout_id": "..."}
+      {"op": "update_week", "week_number": 5, "fields": {"focus": "...",
+          "targetHours": 8.5, "isRecoveryWeek": true, "phase": "..."}}
+      {"op": "set_zones", "ftp": 262, "bikeLthr": 164, "runLthr": 170,
+          "thresholdPace": "4:10", "cssLabel": "2:05/100m"}  — any subset;
+            null resets one to the plan's original value
+      {"op": "set_zone_validation", "sport": "bike", "validated": true}
+      {"op": "set_unit", "unit": "metric" | "imperial"}
+
+    sport is one of swim, bike, run, brick, strength, race, rest, other.
+    Follow the coach skill's field budgets (description/keyTargets ≤ 120
+    characters) and humanReadable template with zone tokens.
+
+    Args:
+        operations: The edits, applied in order.
+        reason: Short why, shown in the plan history (e.g. "Travel Thu–Fri").
+        plan_id: Omit for the active plan.
+
+    Returns the new version, one message per change, the touched workout ids,
+    and the recomputed summaries of the affected weeks.
+    """
+    return plan_tools.amend_training_plan(operations, reason, plan_id)
+
+
+@mcp.tool()
+def complete_plan_workout(
+    workout_id: Optional[str] = None,
+    activity_id: Optional[int] = None,
+    activity_date: Optional[str] = None,
+    sport: Optional[str] = None,
+    notes: Optional[str] = None,
+    completed: bool = True,
+    plan_id: Optional[str] = None,
+) -> dict:
+    """
+    Mark a planned workout complete (or not) — e.g. after post-workout
+    analysis. Give workout_id directly, or give the Garmin activity_id and the
+    planned workout is found by date and sport (from the synced activity, or
+    from activity_date/sport when it isn't synced yet). If several workouts
+    match, or none does, the error lists the candidates to pick a workout_id.
+
+    Args:
+        workout_id: Planned workout id (from get_training_plan).
+        activity_id: Garmin activity that completed it (stored with the tick).
+        activity_date: YYYY-MM-DD, when the activity isn't synced yet.
+        sport: swim / bike / run / strength / brick, to narrow the match.
+        notes: Optional short note stored with the completion.
+        completed: False clears the tick.
+        plan_id: Omit for the active plan.
+    """
+    return plan_tools.complete_plan_workout(workout_id, activity_id, activity_date, sport,
+                                           notes, completed, plan_id)
+
+
+@mcp.tool()
+def link_plan_workout_to_garmin(
+    workout_id: str,
+    garmin_workout_id: Optional[int] = None,
+    scheduled_date: Optional[str] = None,
+    plan_id: Optional[str] = None,
+) -> dict:
+    """
+    Record the Garmin Connect workout scheduled for a planned workout (after
+    create_workout / schedule_workout), so later reads of the plan show it's
+    already on the Garmin calendar. Pass garmin_workout_id=None to clear it.
+
+    Args:
+        workout_id: Planned workout id.
+        garmin_workout_id: The Garmin workout id that was scheduled.
+        scheduled_date: YYYY-MM-DD it was scheduled on (default: the planned date).
+        plan_id: Omit for the active plan.
+    """
+    return plan_tools.link_plan_workout_to_garmin(workout_id, garmin_workout_id, scheduled_date, plan_id)
+
+
+@mcp.tool()
+def get_training_plan_revisions(plan_id: Optional[str] = None, limit: int = 20) -> list:
+    """
+    List a plan's revision history, newest first: version, source (upload /
+    web / mcp), summary of the change, and when it happened.
+    """
+    return plan_tools.get_training_plan_revisions(plan_id, limit)
+
+
+@mcp.tool()
+def restore_training_plan_revision(version: int, plan_id: Optional[str] = None) -> dict:
+    """
+    Restore a past revision's workouts and zones as the current plan. The
+    restore is itself a new revision, so it can be undone; completion ticks
+    are never rolled back.
+    """
+    return plan_tools.restore_training_plan_revision(version, plan_id)
 
 
 @mcp.tool()
@@ -784,8 +937,8 @@ def build_asgi_app():
             await activity_detail_app(scope, receive, send)
             return
 
-        # Training-plan viewer — serves the uploaded Claude Coach plan app from
-        # the mounted file share, same bearer-token auth.
+        # Training-plan viewer — the Claude Coach plan stored in PostgreSQL,
+        # served inside the viewer template, same bearer-token auth.
         if scope["type"] == "http" and training_plan.owns_path(scope.get("path", "")):
             await training_plan_app(scope, receive, send)
             return
