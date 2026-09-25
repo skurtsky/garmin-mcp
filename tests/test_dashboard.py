@@ -170,6 +170,12 @@ def test_render_includes_mobile_app_metadata():
     assert 'rel="manifest"' in html
 
 
+def test_render_includes_favicon_and_touch_icon():
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'rel="icon"' in html
+    assert 'rel="apple-touch-icon" href="/icons/apple-touch-icon.png"' in html
+
+
 def test_render_omits_the_shared_navbar_now_that_more_menu_replaces_it():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
     assert 'id="gm-nav"' not in html

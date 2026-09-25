@@ -19,7 +19,9 @@ COPY garmin_client.py .
 COPY server.py .
 COPY db.py .
 COPY sync_garmin.py .
+COPY sw.js .
 COPY tools/ ./tools/
+COPY static/ ./static/
 
 # Create token directory
 RUN mkdir -p /root/.garminconnect

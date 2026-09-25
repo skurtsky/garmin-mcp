@@ -52,6 +52,13 @@ _MORE_TOGGLE_ID = "gm-nav-more"
 _BODY_TAG_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 _HEAD_TAG_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _VIEWPORT_TAG_RE = re.compile(r"<meta\b(?=[^>]*\bname=[\"']viewport[\"'])[^>]*>", re.IGNORECASE)
+# Browser-tab favicon and iOS home-screen icon. Served from /icons/* without
+# the bearer token (see server.py) — iOS fetches the touch icon without it.
+ICON_LINKS = (
+  '<link rel="icon" href="/favicon.ico" sizes="any">'
+  '<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">'
+  '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">'
+)
 _NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
 
 _ICON_PATHS = {
@@ -196,6 +203,21 @@ def inject_no_zoom_meta(page: str) -> str:
     head_match = _HEAD_TAG_RE.search(page)
     if head_match:
         return page[:head_match.end()] + _NO_ZOOM_META + page[head_match.end():]
+    return page
+
+
+def inject_icon_links(page: str) -> str:
+    """Add the site favicon / touch-icon links to a page's ``<head>``.
+
+    For pages this module doesn't render itself (the plan viewer template,
+    uploaded weekly reports). A page that already carries them, or has no
+    ``<head>``, is returned unchanged.
+    """
+    if 'rel="apple-touch-icon"' in page:
+        return page
+    head_match = _HEAD_TAG_RE.search(page)
+    if head_match:
+        return page[:head_match.end()] + ICON_LINKS + page[head_match.end():]
     return page
 
 

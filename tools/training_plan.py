@@ -38,7 +38,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from tools import plan_doc, plan_service
-from tools.navbar import inject_no_zoom_meta
+from tools.navbar import ICON_LINKS, inject_icon_links, inject_no_zoom_meta
 from tools.pdf_route import render_plan_pdf
 from tools.plan_doc import PlanError
 from tools.plan_service import PlanStorageUnavailable
@@ -120,6 +120,7 @@ def _page(title: str, body: str) -> str:
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        f"{ICON_LINKS}"
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
@@ -140,7 +141,7 @@ def render_viewer_html(row: dict) -> str:
     page = page.replace("__PLAN_TITLE__", _e(plan_doc.plan_title(row["plan"])))
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(plan_service.view_payload(row)))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
-    return inject_no_zoom_meta(page)
+    return inject_icon_links(inject_no_zoom_meta(page))
 
 
 def render_message_html(title: str, message: str, token: str | None) -> str:

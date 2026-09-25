@@ -859,7 +859,26 @@ def build_asgi_app():
     # Wrap the app with a simple ASGI auth wrapper
     bearer = BEARER_TOKEN
 
+    # App icons are public: iOS fetches the home-screen icon (and browsers the
+    # favicon) without the ?token= query, so these skip the bearer check.
+    icons_dir = os.path.join(os.path.dirname(__file__), "static", "icons")
+    icon_files = {
+        "/favicon.ico": ("favicon.ico", "image/x-icon"),
+        "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+        "/icons/favicon-32.png": ("favicon-32.png", "image/png"),
+        "/icons/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+        "/icons/icon-192.png": ("icon-192.png", "image/png"),
+        "/icons/icon-512.png": ("icon-512.png", "image/png"),
+    }
+
     async def auth_app(scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") in icon_files:
+            filename, media_type = icon_files[scope["path"]]
+            response = FileResponse(os.path.join(icons_dir, filename), media_type=media_type,
+                                    headers={"Cache-Control": "public, max-age=86400"})
+            await response(scope, receive, send)
+            return
+
         if bearer and scope["type"] == "http":
             query_string = scope.get("query_string", b"").decode()
             params = dict(p.split("=") for p in query_string.split("&") if "=" in p)
@@ -883,6 +902,12 @@ def build_asgi_app():
                 "background_color": "#161826",
                 "theme_color": "#161826",
                 "description": "A personal Garmin health dashboard",
+                "icons": [
+                    {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
+                    {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
+                    {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png",
+                     "purpose": "maskable"},
+                ],
             })
             await response(scope, receive, send)
             return
