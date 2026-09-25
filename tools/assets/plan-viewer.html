@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>__PLAN_TITLE__</title>
+<style>
+/* ═══ Nocturne tokens ═══ */
+:root {
+  --color-bg: #161826;
+  --color-surface: #232532;
+  --color-text: #e9e9ed;
+  --color-accent: #9184d9;
+  --color-accent-2: #a7a1db;
+  --color-divider: color-mix(in srgb, #e9e9ed 16%, transparent);
+  --color-neutral-100:#f3f5fe; --color-neutral-200:#e4e7f5; --color-neutral-300:#cfd3e5;
+  --color-neutral-400:#b2b6ca; --color-neutral-500:#9397ab; --color-neutral-600:#75798c;
+  --color-neutral-700:#595d6c; --color-neutral-800:#3f424d; --color-neutral-900:#292b31;
+  --color-accent-100:#f5f4ff; --color-accent-200:#e7e5fe; --color-accent-300:#d2cefd;
+  --color-accent-400:#b5abfc; --color-accent-500:#968ae0; --color-accent-600:#796cbf;
+  --color-accent-700:#5d5294; --color-accent-800:#423a6a; --color-accent-900:#2b2741;
+  --color-accent-2-800:#423e5d; --color-accent-2-100:#f5f4ff;
+  --font-heading: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-heading-weight: 500;
+  --space-1:2.8px; --space-2:5.6px; --space-3:8.4px; --space-4:11.2px; --space-6:16.8px; --space-8:22.4px;
+  --radius-sm:4px; --radius-md:8px; --radius-lg:14px;
+  --shadow-sm: 0 0 0 1px #3f424d;
+  --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0,0,0,0.55);
+  --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0,0,0,0.65);
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0; font-size: 15px; line-height: 1.55; font-weight: 400;
+  background: var(--color-bg); color: var(--color-text); font-family: var(--font-body);
+  -webkit-text-size-adjust: 100%;
+}
+h1,h2,h3,h4 { font-family: var(--font-heading); font-weight: var(--font-heading-weight); line-height:1.12; letter-spacing:-0.015em; margin:0 0 var(--space-2); }
+a { color: var(--color-accent-300); text-underline-offset:3px; }
+a:hover { color: var(--color-accent); }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+::selection { background: color-mix(in srgb, var(--color-accent) 30%, transparent); }
+::-webkit-scrollbar { width:8px; height:8px; }
+::-webkit-scrollbar-thumb { background: var(--color-neutral-700); border-radius:8px; }
+
+.hr { height:1px; border:0; margin: var(--space-4) 0;
+  background: linear-gradient(to right, transparent, var(--color-divider) 48px, var(--color-divider) calc(100% - 48px), transparent); }
+
+/* — buttons — */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:6px; cursor:pointer; text-decoration:none;
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size:14px; line-height:1.2;
+  color: var(--color-text); background: transparent; border:1px solid transparent;
+  padding: var(--space-2) calc(var(--space-3) * 1.2); border-radius: var(--radius-md); }
+.btn svg { display:block; }
+.btn:disabled { opacity:0.45; cursor:not-allowed; }
+.btn-primary { color: var(--color-accent); border-color: var(--color-accent); }
+.btn-primary:hover { background: color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.btn-secondary { border-color: var(--color-divider); }
+.btn-secondary:hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+.btn-icon { width:36px; height:36px; padding:0; }
+
+/* — forms — */
+.field > label { display:block; font-size:12px; margin-bottom:5px; color: color-mix(in srgb, var(--color-text) 70%, transparent); }
+.input { width:100%; min-height:36px; padding:6px 10px; font:inherit; font-size:14px; color:var(--color-text);
+  caret-color: var(--color-accent); background: var(--color-surface);
+  border:1px solid var(--color-divider); border-radius: var(--radius-md); }
+.input:hover { border-color: color-mix(in srgb, var(--color-text) 45%, transparent); }
+.input:focus-visible { border-color: var(--color-accent); outline-offset:0; }
+.seg { display:inline-flex; overflow:hidden; border:1px solid var(--color-divider); border-radius: var(--radius-md); }
+.seg-opt { display:inline-flex; align-items:center; gap:6px; padding:7px 12px; font-size:13px; cursor:pointer; }
+.seg-opt + .seg-opt { border-left:1px solid var(--color-divider); }
+.seg-opt input { position:absolute; opacity:0; width:0; height:0; pointer-events:none; }
+.seg-opt:has(input:checked) { color: var(--color-accent); box-shadow: inset 0 0 0 1px var(--color-accent); }
+.seg-opt:not(:has(input:checked)):hover { background: color-mix(in srgb, var(--color-text) 7%, transparent); }
+
+/* — cards — */
+.card { display:flex; flex-direction:column; gap: var(--space-2); padding: var(--space-3);
+  border-radius: var(--radius-md); background: var(--color-surface); }
+.card-kicker { font-size:10px; letter-spacing:0.1em; text-transform:uppercase; color: var(--color-accent); }
+.card-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size:17px; line-height:1.2; }
+.elev-sm { box-shadow: var(--shadow-sm); }
+.elev-md { box-shadow: var(--shadow-md); }
+.elev-lg { box-shadow: var(--shadow-lg); }
+
+/* — tags — */
+.tag { display:inline-flex; align-items:center; font-size:11px; letter-spacing:0.02em; padding:3px 10px;
+  border-radius: calc(var(--radius-md) * 0.75); }
+.tag-outline { border:1px solid var(--color-accent); color: var(--color-accent); }
+.tag-accent-2 { background: var(--color-accent-2-800); color: var(--color-accent-2-100); }
+
+/* — tables — */
+.table { width:100%; border-collapse:collapse; font-size:14px; }
+.table th { text-align:left; font-size:11px; letter-spacing:0.08em; text-transform:uppercase;
+  color: color-mix(in srgb, var(--color-text) 60%, transparent); padding: var(--space-2); }
+.table td { padding: var(--space-2); }
+.table thead tr { background: linear-gradient(to right, transparent, var(--color-divider) 24px,
+  var(--color-divider) calc(100% - 24px), transparent) no-repeat bottom / 100% 1px; }
+.table tbody tr { background: linear-gradient(to right, transparent, color-mix(in srgb, var(--color-text) 8%, transparent) 24px,
+  color-mix(in srgb, var(--color-text) 8%, transparent) calc(100% - 24px), transparent) no-repeat bottom / 100% 1px; }
+
+/* — dialog — */
+.dialog-backdrop { position:fixed; inset:0; display:grid; place-items:center; padding: var(--space-4); z-index:40;
+  background: color-mix(in srgb, var(--color-neutral-900) 60%, transparent); }
+.dialog { width:min(520px,100%); display:flex; flex-direction:column; gap: var(--space-3); padding: var(--space-4);
+  border-radius: var(--radius-lg); background: var(--color-surface); box-shadow: var(--shadow-lg);
+  max-height: 82vh; overflow-y: auto; }
+.dialog-title { font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size:20px; }
+.dialog-body { font-size:14px; opacity:0.9; }
+.dialog-actions { display:flex; justify-content:flex-end; gap: var(--space-2); margin-top: var(--space-2); }
+
+/* — layout — */
+#app { min-height:100vh; display:flex; flex-direction:column; padding-bottom:104px; position:relative; }
+.scroller { flex:1; padding-bottom:24px; }
+
+/* — floating nav — */
+.nav-wrap { position:fixed; left:0; right:0; bottom:0; z-index:30; display:flex; justify-content:center;
+  padding:0 16px calc(16px + env(safe-area-inset-bottom)); pointer-events:none; }
+.nav-pill { pointer-events:auto; display:flex; gap:2px; padding:6px; border-radius:999px; width:min(420px,100%);
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent); backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-md); }
+.navbtn { flex:1; border:0; cursor:pointer; font-family: var(--font-body); background:transparent;
+  color: var(--color-neutral-500); border-radius:999px; padding:8px 0;
+  display:flex; flex-direction:column; align-items:center; gap:2px; }
+.navbtn.active { background: color-mix(in srgb, var(--color-accent) 20%, transparent); color: var(--color-accent-200); }
+.navbtn span { font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
+
+.nav-backdrop { position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.5); }
+.nav-sheet { position:fixed; left:16px; right:16px; bottom:calc(96px + env(safe-area-inset-bottom)); z-index:26;
+  max-width:420px; margin:0 auto; border-radius:20px; overflow:hidden;
+  background: var(--color-surface); box-shadow: var(--shadow-lg); }
+.nav-sheet-item { width:100%; display:flex; align-items:center; gap:12px; padding:16px 18px; border:0;
+  border-top:1px solid var(--color-neutral-800); background:transparent; color: var(--color-text);
+  font-family: var(--font-body); font-size:15px; text-align:left; cursor:pointer; text-decoration:none; }
+.nav-sheet-item:first-child { border-top:none; }
+.nav-sheet-item.disabled { color: var(--color-neutral-600); cursor:default; }
+.nav-sheet-item .soon-badge { margin-left:auto; font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+  color: var(--color-neutral-600); background: rgba(255,255,255,.06); padding:3px 8px; border-radius:999px; }
+
+/* The one responsive decision that matters: seven columns on a desktop
+   screen, a single readable stack on a phone. */
+@media (max-width: 899px) {
+  .week-grid { display:flex; flex-direction:column; gap:28px; padding:0 18px 24px; }
+}
+@media (min-width: 900px) {
+  .week-grid { display:grid; grid-template-columns: repeat(7, 1fr); gap:10px; align-items:start; padding:0 18px 24px; }
+  .content-wrap { max-width: 1440px; margin: 0 auto; }
+}
+.day-head { display:flex; justify-content:space-between; align-items:baseline; padding:2px 2px 8px;
+  border-bottom:1px solid var(--color-neutral-800); margin-bottom:8px; }
+.wcard { padding:12px; margin-bottom:8px; cursor:pointer; }
+.wcard:hover { box-shadow: var(--shadow-md); }
+.wcard[draggable="true"] { cursor:grab; }
+.wcard.dragging { opacity:0.4; }
+.day-col.drag-over { outline:2px dashed var(--color-accent); outline-offset:2px; border-radius: var(--radius-md); }
+.rest-slot { padding:14px; text-align:center; color: var(--color-neutral-500); font-size:12px;
+  border:1px dashed var(--color-neutral-800); border-radius: var(--radius-md); }
+.pad { padding:0 18px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<input id="import-file" type="file" accept="application/json" style="display:none">
+<script id="plan-data" type="application/json">__PLAN_JSON__</script>
+<script>
+"use strict";
+const PLAN = JSON.parse(document.getElementById('plan-data').textContent);
+
+/* Links to sibling routes on whatever app is currently serving this page
+   (e.g. /dashboard, /weekly-summary). Using a root-relative path means the
+   browser resolves it against the current origin automatically — no need to
+   know the domain, and it works the same on localhost, a deployed host, or
+   behind a different domain later. The current query string (auth tokens,
+   etc.) is carried over unchanged. */
+const APP_QUERY = (typeof window !== 'undefined' && window.location && window.location.search) || '';
+function appLink(path) { return path + APP_QUERY; }
+
+/* The full plan plus everything only this browser knows about it (ticks,
+   threshold overrides, validated status, workout edits). Used both for the
+   local backup export and as the payload sent to the server when asking it
+   to rebuild the PDF, so the PDF reflects live zone edits, not just whatever
+   the server has on file. */
+function buildExportData() {
+  return Object.assign({}, PLAN, {
+    planId: PLAN.meta.id,
+    completed: state.completed,
+    unit: state.unit,
+    overrides: state.overrides,
+    zonesValidated: state.zonesValidated,
+    workoutEdits: state.workoutEdits
+  });
+}
+
+const SPORT_COLORS = { swim:'#5eb8c9', bike:'#7fb87a', run:'#d99a5e', strength:'#9184d9', brick:'#c97fa0', race:'#d9b35a', rest:'#7c8194' };
+const ZONE_COLORS = { '1':'#6c93b0','2':'#5eb8ad','3':'#8fb85e','4':'#d9b35a','5a':'#d98a5e','5b':'#d9705e','5c':'#c9506a' };
+/* Rouvy's own difficulty convention (blue/yellow/red) — reuses the same
+   hues as ZONE_COLORS zone1/zone4/zone5c rather than inventing a new
+   palette, since those already read as "easy/moderate/hardest" in this
+   app. Indoor-season bike workouts only (reference/rouvy-indoor-season.md). */
+const DIFFICULTY_COLORS = { Easy:'#6c93b0', Medium:'#d9b35a', Hard:'#c9506a' };
+const PHASE_COLORS = { 'Prep':'#6c93b0','Base 1':'#5ea0b8','Base 2':'#5eb0a3','Base 3':'#7fb87a','Base':'#5eb0a3',
+  'Build 1':'#b8b05e','Build 2':'#d9a05a','Build':'#b8b05e','Peak':'#d97a5e','Taper':'#9184d9','Race':'#d9506a' };
+
+const ICONS = {
+  gauge:'<path d="M128 40a96 96 0 1 0 96 96 96.1 96.1 0 0 0-96-96Zm0 176a80 80 0 1 1 80-80 80.1 80.1 0 0 1-80 80Zm45.7-125.7a8 8 0 0 1 0 11.4L139.3 136a16 16 0 1 1-11.3-11.3l34.3-34.4a8 8 0 0 1 11.4 0Z"/>',
+  calendar:'<path d="M208 32h-24v-8a8 8 0 0 0-16 0v8H88v-8a8 8 0 0 0-16 0v8H48a16 16 0 0 0-16 16v160a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16Zm0 176H48V96h160v112Zm0-128H48V48h24v8a8 8 0 0 0 16 0v-8h80v8a8 8 0 0 0 16 0v-8h24Z"/>',
+  gear:'<path d="M128 80a48 48 0 1 0 48 48 48.1 48.1 0 0 0-48-48Zm0 80a32 32 0 1 1 32-32 32 32 0 0 1-32 32Zm88-29.8v-4.4l14-17.5a8 8 0 0 0 1.5-7.1 104 104 0 0 0-10.5-25.3 8 8 0 0 0-6-3.9l-22.2-2.5q-1.5-1.6-3.1-3.1L187.2 44a8 8 0 0 0-3.9-6 104 104 0 0 0-25.3-10.5 8 8 0 0 0-7.1 1.5l-17.5 14h-4.4l-17.5-14a8 8 0 0 0-7.1-1.5A104 104 0 0 0 79.1 38a8 8 0 0 0-3.9 6l-2.5 22.2q-1.6 1.5-3.1 3.1L44 71.8a8 8 0 0 0-6 3.9 104 104 0 0 0-10.5 25.3 8 8 0 0 0 1.5 7.1l14 17.5v4.4l-14 17.5a8 8 0 0 0-1.5 7.1A104 104 0 0 0 38 179.9a8 8 0 0 0 6 3.9l22.2 2.5q1.5 1.6 3.1 3.1l2.5 22.2a8 8 0 0 0 3.9 6 104 104 0 0 0 25.3 10.5 8 8 0 0 0 7.1-1.5l17.5-14h4.4l17.5 14a8 8 0 0 0 7.1 1.5 104 104 0 0 0 25.3-10.5 8 8 0 0 0 3.9-6l2.5-22.2q1.6-1.5 3.1-3.1l22.2-2.5a8 8 0 0 0 6-3.9 104 104 0 0 0 10.5-25.3 8 8 0 0 0-1.5-7.1Z"/>',
+  left:'<path d="M165.7 202.3a8 8 0 0 1-11.4 11.4l-80-80a8 8 0 0 1 0-11.4l80-80a8 8 0 0 1 11.4 11.4L91.3 128Z"/>',
+  right:'<path d="M181.7 133.7l-80 80a8 8 0 0 1-11.4-11.4l74.4-74.3-74.4-74.3a8 8 0 0 1 11.4-11.4l80 80a8 8 0 0 1 0 11.4Z"/>',
+  x:'<path d="M205.7 194.3a8 8 0 0 1-11.4 11.4L128 139.3l-66.3 66.4a8 8 0 0 1-11.4-11.4l66.4-66.3-66.4-66.3a8 8 0 0 1 11.4-11.4l66.3 66.4 66.3-66.4a8 8 0 0 1 11.4 11.4L139.3 128Z"/>',
+  circle:'<path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24Zm0 192a88 88 0 1 1 88-88 88.1 88.1 0 0 1-88 88Z"/>',
+  check:'<path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24Zm45.7 85.7-56 56a8 8 0 0 1-11.4 0l-24-24a8 8 0 0 1 11.4-11.4L112 148.7l50.3-50.4a8 8 0 0 1 11.4 11.4Z"/>',
+  hourglass:'<path d="M200 75.3V40h8a8 8 0 0 0 0-16H48a8 8 0 0 0 0 16h8v35.3a44 44 0 0 0 17.6 35.2L102.7 128l-29.1 21.5A44 44 0 0 0 56 184.7V216h-8a8 8 0 0 0 0 16h160a8 8 0 0 0 0-16h-8v-31.3a44 44 0 0 0-17.6-35.2L153.3 128l29.1-21.5A44 44 0 0 0 200 75.3Z"/>',
+  down:'<path d="M74.3 85.7a8 8 0 0 1 11.4-11.4L120 108.7V32a8 8 0 0 1 16 0v76.7l34.3-34.4a8 8 0 0 1 11.4 11.4l-48 48a8 8 0 0 1-11.4 0ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
+  up:'<path d="M74.3 101.7 122.3 53.7a8 8 0 0 1 11.4 0l48 48a8 8 0 0 1-11.4 11.4L136 78.6V152a8 8 0 0 1-16 0V78.6l-34.3 34.5a8 8 0 0 1-11.4-11.4ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
+  house:'<path d="M128 26 222 104 222 224 34 224 34 104Z"/>',
+  list:'<path d="M40 76h176a8 8 0 0 0 0-16H40a8 8 0 0 0 0 16Zm176 32H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Zm0 48H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Z"/>',
+  chartbar:'<path d="M40 136h32v80H40Zm72-48h32v128h-32Zm72-48h32v176h-32Z"/>'
+};
+function icon(name, size) {
+  return '<svg viewBox="0 0 256 256" width="' + (size||18) + '" height="' + (size||18) + '" fill="currentColor" aria-hidden="true">' + ICONS[name] + '</svg>';
+}
+
+/* ── helpers ── */
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function tint(hex) { const n = parseInt(hex.slice(1),16); return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',0.16)'; }
+function fmtDuration(min) { if (!min) return ''; const h = Math.floor(min/60), m = Math.round(min%60);
+  return h && m ? h+'h '+m+'m' : h ? h+'h' : m+'min'; }
+function zoneColorFromLabel(label) { const m = String(label||'').match(/([1-5])([abc])?/i);
+  return m ? (ZONE_COLORS[m[1] + (m[2] ? m[2].toLowerCase() : '')] || null) : null; }
+function parseMMSS(str) { const m = String(str||'').match(/(\d+):(\d+)/); return m ? +m[1]*60 + +m[2] : null; }
+function fmtMMSS(totalSec) { const s = Math.round(totalSec); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); }
+function fmtSecPer100(sec) { return fmtMMSS(sec) + '/100m'; }
+/* A threshold/CSS value from the plan is sometimes written as a tested range
+   ("4:06-4:20/km") rather than one number. Averaging the range gives a single
+   working LT pace to drive the zone math and the settings field, rather than
+   silently grabbing whichever number the range happened to list first. */
+function resolveSinglePace(str) {
+  const secs = [...String(str||'').matchAll(/(\d+):(\d+)/g)].map(m => (+m[1])*60 + (+m[2]));
+  if (!secs.length) return '';
+  return fmtMMSS(secs.reduce((a,b) => a+b, 0) / secs.length);
+}
+function pct(base, p) { return Math.round(base * p / 100); }
+function d(dateStr) { return new Date(dateStr + 'T00:00:00'); }
+function dayMonth(dateStr) { return d(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric' }); }
+function longDate(dateStr) { return d(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }); }
+
+const KEY = k => 'coach:' + (PLAN.meta.id || 'plan') + ':' + k;
+function load(k, fallback) { try { const v = localStorage.getItem(KEY(k)); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; } }
+function save(k, v) { try { localStorage.setItem(KEY(k), JSON.stringify(v)); } catch (e) {} }
+
+/* Race-dependent behaviour: a plan without a race still has phases, weeks and
+   zones, so everything race-anchored degrades instead of erroring. */
+const RACE = (PLAN.raceStrategy && PLAN.raceStrategy.event && PLAN.raceStrategy.event.date) ? PLAN.raceStrategy.event : null;
+
+const ZONE_DEFAULTS = {
+  ftp: PLAN.zones?.bike?.power?.ftp ?? null,
+  bikeLthr: PLAN.zones?.bike?.hr?.lthr ?? null,
+  runLthr: PLAN.zones?.run?.hr?.lthr ?? null,
+  thresholdPace: resolveSinglePace(PLAN.zones?.run?.pace?.thresholdPace ?? ''),
+  cssLabel: PLAN.zones?.swim?.css ?? '',
+  cssSeconds: PLAN.zones?.swim?.cssSeconds ?? null
+};
+
+/* Standard zone tables (reference/zones.md — Friel 7-zone system). Zones are
+   computed live from each sport's threshold value instead of reading the
+   zones arrays baked into the plan JSON at generation time, since those are
+   sometimes partial or empty (e.g. a plan that calls run "pace-anchored"
+   still needs an HR column). This also makes overrides and zone validation
+   take effect immediately. */
+const HR_PCT_TABLE = [
+  { zone:'1',  name:'Recovery',      low:0,   high:81  },
+  { zone:'2',  name:'Aerobic',       low:81,  high:89  },
+  { zone:'3',  name:'Tempo',         low:90,  high:93  },
+  { zone:'4',  name:'Sub-threshold', low:94,  high:99  },
+  { zone:'5a', name:'Threshold',     low:100, high:102 },
+  { zone:'5b', name:'VO2max',        low:103, high:106 },
+  { zone:'5c', name:'Anaerobic',     low:106, high:120 }
+];
+const BIKE_POWER_PCT_TABLE = [
+  { zone:'1',  name:'Recovery',      low:0,   high:55  },
+  { zone:'2',  name:'Aerobic',       low:56,  high:75  },
+  { zone:'3',  name:'Tempo',         low:76,  high:90  },
+  { zone:'4',  name:'Sub-threshold', low:91,  high:99  },
+  { zone:'5a', name:'Threshold',     low:100, high:105 },
+  { zone:'5b', name:'VO2max',        low:106, high:120 },
+  { zone:'5c', name:'Anaerobic',     low:120, high:150 }
+];
+/* Run pace offsets in seconds/km from threshold pace (positive = slower).
+   Zones 2, 5b and 5c anchor to the Easy/Interval/Repetition figures in
+   reference/zones.md; 1, 3, 4 and 5a are interpolated onto the same 7 zones
+   as the HR table above so every row lines up. */
+const RUN_PACE_OFFSET_TABLE = [
+  { zone:'1',  name:'Recovery',      low:70,  high:90  },
+  { zone:'2',  name:'Aerobic',       low:50,  high:70  },
+  { zone:'3',  name:'Tempo',         low:15,  high:25  },
+  { zone:'4',  name:'Sub-threshold', low:5,   high:15  },
+  { zone:'5a', name:'Threshold',     low:-2,  high:2   },
+  { zone:'5b', name:'VO2max',        low:-20, high:-15 },
+  { zone:'5c', name:'Anaerobic',     low:-35, high:-25 }
+];
+/* Swim pace offsets in seconds/100m from CSS (reference/zones.md). */
+const SWIM_PACE_OFFSET_TABLE = [
+  { zone:'1', name:'Recovery',  low:15, high:20 },
+  { zone:'2', name:'Aerobic',   low:8,  high:12 },
+  { zone:'3', name:'Tempo',     low:3,  high:6  },
+  { zone:'4', name:'Threshold', low:0,  high:0  },
+  { zone:'5', name:'VO2max',    low:-5, high:-3 }
+];
+
+function sportStatus(sport) {
+  const v = state.zonesValidated[sport];
+  if (v && v.validated) return 'Validated';
+  const zz = PLAN.zones || {};
+  if (sport === 'swim' && zz.swim && zz.swim.cssStatus) return zz.swim.cssStatus;
+  return 'Estimated';
+}
+
+const state = {
+  tab: 'dashboard',
+  planWeekNumber: startWeek(),
+  completed: load('completed', {}),
+  unit: load('unit', 'metric'),
+  zoneSport: PLAN.zones?.bike ? 'bike' : (PLAN.zones?.run ? 'run' : 'swim'),
+  overrides: Object.assign({}, ZONE_DEFAULTS, load('overrides', {}) || {}),
+  zonesValidated: load('zonesValidated', {}),
+  workoutEdits: load('workoutEdits', {}),
+  modalId: null,
+  editId: null,
+  editDraft: null,
+  menuOpen: false,
+  importMessage: '',
+  pdfGenerating: false
+};
+
+function startWeek() {
+  const today = new Date();
+  const wk = (PLAN.weeks || []).find(w => d(w.startDate) <= today && today <= d(w.endDate));
+  if (wk) return wk.weekNumber;
+  const first = (PLAN.weeks || [])[0];
+  return first ? first.weekNumber : 1;
+}
+function weekByNumber(n) { return (PLAN.weeks || []).find(w => w.weekNumber === n); }
+function phaseForWeek(n) { return (PLAN.phases || []).find(p => n >= p.startWeek && n <= p.endWeek) || (PLAN.phases || [])[0] || { name:'Plan', focus:'' }; }
+function allWorkouts() {
+  const out = [];
+  (PLAN.weeks || []).forEach(w => (w.days || []).forEach(day => (day.workouts || []).forEach(wo => {
+    const edit = state.workoutEdits[wo.id];
+    if (edit && edit.deleted) return;
+    const date = (edit && edit.date) || day.date;
+    const merged = edit
+      ? Object.assign({}, wo, {
+          name: edit.name != null && edit.name !== '' ? edit.name : wo.name,
+          humanReadable: edit.humanReadable != null ? edit.humanReadable : wo.humanReadable
+        })
+      : wo;
+    out.push({ wo: merged, date, week: w.weekNumber });
+  })));
+  return out;
+}
+function workoutById(id) { const hit = allWorkouts().find(x => x.wo.id === id); return hit || null; }
+
+function fmtKm(km) { if (km == null) return ''; return state.unit === 'imperial' ? (km*0.621371).toFixed(1)+'mi' : km+'km'; }
+function fmtM(m) { if (m == null) return ''; return state.unit === 'imperial' ? Math.round(m*1.09361)+'yd' : m+'m'; }
+/* A distance range (e.g. a Rouvy route prescribed as "40-50K") shares the
+   same tag slot as a single distanceKm/distanceMeters value — just
+   formatted as a range. Both bounds convert to the current unit
+   independently so an imperial toggle doesn't just relabel the metric
+   range as-is. */
+function fmtKmRange(lo, hi) {
+  if (lo == null || hi == null) return '';
+  return state.unit === 'imperial'
+    ? rangeStr(lo * 0.621371, hi * 0.621371, v => v.toFixed(1), 'mi')
+    : rangeStr(lo, hi, String, 'km');
+}
+function distanceLabel(w) {
+  if (w.distanceKmRange) return fmtKmRange(w.distanceKmRange.low, w.distanceKmRange.high);
+  if (w.distanceKm != null) return fmtKm(w.distanceKm);
+  if (w.distanceMeters != null) return fmtM(w.distanceMeters);
+  return '';
+}
+
+/* ── views ── */
+function workoutCard(w, dateStr) {
+  const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
+  const done = !!state.completed[w.id];
+  const dist = distanceLabel(w);
+  const meta = [fmtDuration(w.durationMinutes), dist, w.primaryZone].filter(Boolean).map(esc).join(' · ');
+  return '<div class="card elev-sm wcard" draggable="true" data-drag-id="' + esc(w.id) + '" data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (done ? 0.55 : 1) + ';">'
+    + '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
+      + '<span class="tag" style="background:' + tint(color) + '; color:' + color + '; font-size:10px;">' + esc(w.sport) + '</span>'
+      + '<button type="button" data-toggle="' + esc(w.id) + '" title="Mark complete" style="background:none; border:none; cursor:pointer; padding:0; line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</button>'
+    + '</div>'
+    + '<div style="font-size:13.5px; font-weight:500; margin-top:6px; text-decoration:' + (done ? 'line-through' : 'none') + ';">' + esc(w.name) + '</div>'
+    + '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:3px;">' + meta + '</div>'
+  + '</div>';
+}
+
+function dashboard() {
+  const curWeek = startWeek();
+  const wk = weekByNumber(curWeek) || (PLAN.weeks || [])[0];
+  const phase = phaseForWeek(curWeek);
+  const phaseColor = PHASE_COLORS[phase.name] || '#7c8194';
+  const today = new Date();
+  let h = '';
+
+  h += '<div style="padding:24px 18px 8px;">'
+    + '<h1 style="font-size:26px; margin:10px 0 4px; line-height:1.15;">' + esc(PLAN.meta.event) + '</h1>'
+    + '<div style="color:var(--color-neutral-300); font-size:14px;">' + esc(PLAN.meta.athlete || '') + (RACE ? ' · Race day ' + esc(longDate(RACE.date)) : ' · ' + esc(PLAN.meta.totalWeeks) + '-week block') + '</div>'
+  + '</div>';
+
+  const countdown = RACE
+    ? { kicker:'Race countdown', big: String(Math.max(0, Math.ceil((d(RACE.date) - today)/86400000))), small:'days to go' }
+    : { kicker:'Plan window', big: String(PLAN.meta.totalWeeks), small:'weeks total' };
+
+  h += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 18px;">'
+    + '<div class="card elev-sm" style="padding:16px;"><div class="card-kicker">' + countdown.kicker + '</div>'
+      + '<div style="font-family:var(--font-heading); font-size:32px; font-weight:500; margin-top:4px;">' + countdown.big + '</div>'
+      + '<div style="color:var(--color-neutral-400); font-size:13px;">' + countdown.small + '</div></div>'
+    + '<div class="card elev-sm" style="padding:16px;"><div class="card-kicker">Current phase</div>'
+      + '<div style="display:flex; align-items:center; gap:8px; margin-top:6px;">'
+        + '<span style="width:10px; height:10px; border-radius:50%; background:' + phaseColor + '; flex-shrink:0;"></span>'
+        + '<span style="font-family:var(--font-heading); font-size:18px; font-weight:500;">' + esc(phase.name) + '</span></div>'
+      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-top:4px;">Week ' + curWeek + ' of ' + esc(PLAN.meta.totalWeeks) + '</div></div>'
+  + '</div>';
+
+  const nonRest = allWorkouts().filter(x => x.wo.sport !== 'rest');
+  const completedCount = nonRest.filter(x => state.completed[x.wo.id]).length;
+  const progressPct = nonRest.length ? Math.round(completedCount / nonRest.length * 100) : 0;
+  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">'
+      + '<div class="card-title">Plan progress</div>'
+      + '<span style="font-family:var(--font-heading); font-size:15px; color:var(--color-neutral-300);">' + completedCount + '/' + nonRest.length + '</span>'
+    + '</div>'
+    + '<div style="height:8px; border-radius:var(--radius-sm); background:var(--color-neutral-800); overflow:hidden; margin-top:8px;">'
+      + '<div style="height:100%; border-radius:var(--radius-sm); background:var(--color-accent); width:' + progressPct + '%;"></div></div>'
+    + '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:6px;">' + progressPct + '% of workouts complete</div>'
+  + '</div>';
+
+  if (wk && wk.summary) {
+    h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+      + '<div class="card-title" style="margin-bottom:2px;">Week ' + wk.weekNumber + ' target</div>'
+      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">' + esc(wk.focus || phase.focus || '') + '</div>';
+    Object.keys(wk.summary.bySport || {}).forEach(sport => {
+      const r = wk.summary.bySport[sport];
+      h += '<div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-top:1px solid var(--color-neutral-800);">'
+        + '<span style="width:10px; height:10px; border-radius:3px; background:' + (SPORT_COLORS[sport] || SPORT_COLORS.rest) + '; flex-shrink:0;"></span>'
+        + '<span style="flex:1; font-size:14px; text-transform:capitalize;">' + esc(sport) + '</span>'
+        + '<span style="font-size:13px; color:var(--color-neutral-300);">' + esc(r.sessions) + ' sessions</span>'
+        + '<span style="font-size:13px; color:var(--color-neutral-300); width:64px; text-align:right;">' + esc(r.hours) + 'h</span></div>';
+    });
+    h += '</div>';
+  }
+
+  const next = allWorkouts().filter(x => !state.completed[x.wo.id] && x.wo.sport !== 'rest').sort((a,b) => a.date < b.date ? -1 : 1)[0];
+  if (next) {
+    const color = SPORT_COLORS[next.wo.sport] || SPORT_COLORS.rest;
+    h += '<div class="card elev-md" style="margin:12px 18px; padding:16px; border-left:3px solid ' + color + '; cursor:pointer;" data-open="' + esc(next.wo.id) + '">'
+      + '<div class="card-kicker">Next key workout</div>'
+      + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-top:6px;"><div>'
+        + '<div style="font-family:var(--font-heading); font-size:16px; font-weight:500;">' + esc(next.wo.name) + '</div>'
+        + '<div style="color:var(--color-neutral-400); font-size:13px; margin-top:2px;">' + esc(dayMonth(next.date)) + ' · ' + esc(fmtDuration(next.wo.durationMinutes)) + (next.wo.primaryZone ? ' · ' + esc(next.wo.primaryZone) : '') + '</div></div>'
+        + '<span class="tag" style="background:' + tint(color) + '; color:' + color + ';">' + esc(next.wo.sport) + '</span></div>'
+    + '</div>';
+  }
+
+  h += zonesSection();
+  return h;
+}
+
+function zoneRow(color, cells) {
+  return '<tr><td><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + color + '; margin-right:6px;"></span>'
+    + cells.map(esc).join('</td><td>') + '</td></tr>';
+}
+
+function statusTag(sport) {
+  const s = sportStatus(sport);
+  return '<span class="tag ' + (s === 'Validated' ? 'tag-accent-2' : 'tag-outline') + '">' + esc(s) + '</span>';
+}
+function rangeStr(lo, hi, fmt, suffix) {
+  const vals = [lo, hi].sort((a,b) => a - b).map(fmt);
+  return (vals[0] === vals[1] ? vals[0] : vals[0] + '-' + vals[1]) + (suffix || '');
+}
+
+function zonesSection() {
+  const ov = state.overrides;
+  const z = PLAN.zones || {};
+  let h = '<div style="padding:16px 18px 4px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">'
+    + '<div class="card-title">Zones</div><div class="seg">'
+    + ['swim','bike','run'].filter(s => z[s]).map(s =>
+        '<label class="seg-opt"><input type="radio" name="zone-sport" data-zone="' + s + '"' + (state.zoneSport === s ? ' checked' : '') + '>' + s[0].toUpperCase() + s.slice(1) + '</label>').join('')
+    + '</div></div>';
+
+  if (state.zoneSport === 'bike' && z.bike) {
+    const rows = BIKE_POWER_PCT_TABLE.map((zz, i) => {
+      const hz = HR_PCT_TABLE[i];
+      return zoneRow(ZONE_COLORS[zz.zone] || '#7c8194', [
+        zz.zone, zz.name,
+        ov.ftp ? rangeStr(pct(ov.ftp, zz.low), pct(ov.ftp, zz.high), String, 'W') : '—',
+        ov.bikeLthr ? rangeStr(pct(ov.bikeLthr, hz.low), pct(ov.bikeLthr, hz.high), String) : '—'
+      ]);
+    }).join('');
+    h += '<div style="margin:0 18px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--color-neutral-400); font-size:13px;">'
+      + '<span>FTP ' + esc(ov.ftp) + 'W' + (ov.bikeLthr ? ' · Cycling LTHR ' + esc(ov.bikeLthr) + 'bpm' : '') + '</span>' + statusTag('bike') + '</div>'
+      + tableCard(['Zone','Name','Watts','HR'], rows);
+  }
+  if (state.zoneSport === 'run' && z.run) {
+    const thresholdSec = parseMMSS(ov.thresholdPace);
+    const rows = HR_PCT_TABLE.map((zz, i) => {
+      const pz = RUN_PACE_OFFSET_TABLE[i];
+      return zoneRow(ZONE_COLORS[zz.zone] || '#7c8194', [
+        zz.zone, zz.name,
+        ov.runLthr ? rangeStr(pct(ov.runLthr, zz.low), pct(ov.runLthr, zz.high), String) : '—',
+        thresholdSec != null ? rangeStr(thresholdSec + pz.low, thresholdSec + pz.high, fmtMMSS, '/km') : '—'
+      ]);
+    }).join('');
+    h += '<div style="margin:0 18px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--color-neutral-400); font-size:13px;">'
+      + '<span>Threshold pace ' + esc(ov.thresholdPace) + '/km' + (ov.runLthr ? ' · Run LTHR ' + esc(ov.runLthr) + 'bpm' : '') + '</span>' + statusTag('run') + '</div>'
+      + tableCard(['Zone','Name','HR','Pace'], rows);
+  }
+  if (state.zoneSport === 'swim' && z.swim) {
+    const rows = SWIM_PACE_OFFSET_TABLE.map(zz => zoneRow(ZONE_COLORS[zz.zone] || '#7c8194', [
+      zz.zone, zz.name,
+      ov.cssSeconds != null ? rangeStr(ov.cssSeconds + zz.low, ov.cssSeconds + zz.high, fmtMMSS, '/100m') : '—'
+    ])).join('');
+    h += '<div style="margin:0 18px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--color-neutral-400); font-size:13px;">'
+      + '<span>CSS ' + esc(ov.cssLabel) + '</span>' + statusTag('swim') + '</div>'
+      + tableCard(['Zone','Name','Pace /100m'], rows);
+  }
+  return h;
+}
+function tableCard(heads, rows) {
+  return '<div class="card elev-sm" style="margin:0 18px 20px; padding:0; overflow:hidden;">'
+    + '<table class="table"><thead><tr><th>' + heads.join('</th><th>') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+
+/* Zone tokens embedded in a workout's humanReadable text — e.g.
+   "{{run-pace:5a}}" or "{{bike-watts:2}}" — written by the plan author
+   instead of a hand-typed pace/watt number (see
+   reference/humanreadable-format.md). Resolved here using the exact same
+   tables and overrides as zonesSection() above, so a workout's numbers and
+   the Dashboard's zone table always agree and both move together when the
+   athlete edits a threshold on Settings. */
+const TOKEN_RE = /\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?)\s*\}\}/gi;
+function tableRow(table, code) { return table.find(z => z.zone === code) || null; }
+function resolveTokens(text) {
+  const ov = state.overrides;
+  return String(text || '').replace(TOKEN_RE, (match, kind, code) => {
+    kind = kind.toLowerCase();
+    code = code.toLowerCase();
+    if (kind === 'run-pace') {
+      const z = tableRow(RUN_PACE_OFFSET_TABLE, code);
+      const t = parseMMSS(ov.thresholdPace);
+      return (z && t != null) ? rangeStr(t + z.low, t + z.high, fmtMMSS, '/km') : 'Zone ' + code + ' pace';
+    }
+    if (kind === 'run-hr') {
+      const z = tableRow(HR_PCT_TABLE, code);
+      return (z && ov.runLthr) ? rangeStr(pct(ov.runLthr, z.low), pct(ov.runLthr, z.high), String, 'bpm') : 'Zone ' + code + ' HR';
+    }
+    if (kind === 'bike-watts') {
+      const z = tableRow(BIKE_POWER_PCT_TABLE, code);
+      return (z && ov.ftp) ? rangeStr(pct(ov.ftp, z.low), pct(ov.ftp, z.high), String, 'W') : 'Zone ' + code;
+    }
+    if (kind === 'bike-hr') {
+      const z = tableRow(HR_PCT_TABLE, code);
+      return (z && ov.bikeLthr) ? rangeStr(pct(ov.bikeLthr, z.low), pct(ov.bikeLthr, z.high), String, 'bpm') : 'Zone ' + code + ' HR';
+    }
+    if (kind === 'swim-pace') {
+      const z = tableRow(SWIM_PACE_OFFSET_TABLE, code);
+      return (z && ov.cssSeconds != null) ? rangeStr(ov.cssSeconds + z.low, ov.cssSeconds + z.high, fmtMMSS, '/100m') : 'Zone ' + code + ' pace';
+    }
+    return match;
+  });
+}
+
+function planTab() {
+  const n = state.planWeekNumber;
+  const wk = weekByNumber(n);
+  const phase = phaseForWeek(n);
+  const phaseColor = PHASE_COLORS[phase.name] || '#7c8194';
+  const first = (PLAN.weeks || [])[0]?.weekNumber || 1;
+  const last = PLAN.meta.totalWeeks || ((PLAN.weeks || []).slice(-1)[0]?.weekNumber || 1);
+
+  let h = '<div style="padding:20px 18px 10px; display:flex; align-items:center; justify-content:space-between;">'
+    + '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + '>' + icon('left') + '</button>'
+    + '<div style="text-align:center;"><div style="font-family:var(--font-heading); font-size:17px; font-weight:500;">Week ' + n
+      + ' <span style="color:var(--color-neutral-500); font-weight:400;">of ' + esc(last) + '</span></div>'
+      + '<div style="color:var(--color-neutral-400); font-size:12px;">' + (wk ? esc(wk.startDate) + ' – ' + esc(wk.endDate) : esc(phase.name) + ' phase') + '</div></div>'
+    + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last ? ' disabled' : '') + '>' + icon('right') + '</button></div>';
+
+  h += '<div style="padding:0 18px 12px; display:flex; gap:8px; align-items:center;">'
+    + '<span style="width:8px; height:8px; border-radius:50%; background:' + phaseColor + '; flex-shrink:0;"></span>'
+    + '<span style="font-size:13px; color:var(--color-neutral-300); flex:1;">' + esc(phase.name) + '</span>'
+    + '<select class="input" id="phase-select" style="width:auto; padding:6px 10px; font-size:13px;">'
+      + (PLAN.phases || []).map(p => '<option value="' + esc(p.name) + '"' + (p.name === phase.name ? ' selected' : '') + '>' + esc(p.name) + ' (wk ' + p.startWeek + '–' + p.endWeek + ')</option>').join('')
+    + '</select></div>';
+
+  h += '<div class="card elev-sm" style="margin:0 18px 14px; padding:14px 16px;">'
+    + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:8px;">'
+      + '<div class="card-title">' + (wk ? esc(wk.targetHours) + 'h target' : esc(phase.weeklyHoursRange?.low) + '–' + esc(phase.weeklyHoursRange?.high) + 'h target') + '</div>'
+      + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2">Recovery week</span>' : '') + '</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">' + esc(wk ? wk.focus : phase.focus) + '</div>';
+  if (wk && wk.summary) {
+    h += '<div style="display:flex; flex-wrap:wrap; gap:10px;">' + Object.keys(wk.summary.bySport || {}).map(sport => {
+      const r = wk.summary.bySport[sport];
+      return '<div style="display:flex; align-items:center; gap:6px; font-size:13px; background:var(--color-neutral-800); padding:6px 10px; border-radius:var(--radius-md);">'
+        + '<span style="width:8px; height:8px; border-radius:3px; background:' + (SPORT_COLORS[sport] || SPORT_COLORS.rest) + ';"></span>'
+        + '<span style="text-transform:capitalize;">' + esc(sport) + '</span>'
+        + '<span style="color:var(--color-neutral-400);">' + esc(r.sessions) + '× · ' + esc(r.hours) + 'h' + (r.km ? ' · ' + esc(fmtKm(r.km)) : '') + '</span></div>';
+    }).join('') + '</div>';
+  }
+  h += '</div>';
+
+  if (!wk) {
+    h += '<div style="margin:0 18px; padding:32px 20px; text-align:center; border:1px dashed var(--color-neutral-700); border-radius:var(--radius-lg); color:var(--color-neutral-400);">'
+      + icon('hourglass', 22) + '<div style="margin-top:8px; font-size:14px;">Not generated yet</div>'
+      + '<div style="font-size:12px; margin-top:4px;">This week has no detail in the plan file.</div></div>';
+    return h;
+  }
+
+  const dayDates = (wk.days || []).map(day => day.date);
+  const byDate = {};
+  allWorkouts().forEach(x => { if (dayDates.includes(x.date)) (byDate[x.date] = byDate[x.date] || []).push(x.wo); });
+
+  h += '<div class="week-grid">' + (wk.days || []).map(day => {
+    const workouts = (byDate[day.date] || []).filter(w => w.sport !== 'rest');
+    return '<div class="day-col" data-day-date="' + esc(day.date) + '">'
+      + '<div class="day-head"><span style="font-family:var(--font-heading); font-size:14px; font-weight:500;">' + esc(day.dayOfWeek) + '</span>'
+      + '<span style="font-size:12px; color:var(--color-neutral-500);">' + esc(dayMonth(day.date)) + '</span></div>'
+      + (workouts.length ? workouts.map(w => workoutCard(w, day.date)).join('') : '<div class="rest-slot" data-day-date="' + esc(day.date) + '">Rest day</div>')
+    + '</div>';
+  }).join('') + '</div>';
+  return h;
+}
+
+function settingsTab() {
+  const ov = state.overrides;
+  const z = PLAN.zones || {};
+  let h = '<div style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>';
+
+  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:10px;">Units</div>'
+    + '<div class="seg">'
+    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="metric"' + (state.unit === 'metric' ? ' checked' : '') + '>Metric (km/m)</label>'
+    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="imperial"' + (state.unit === 'imperial' ? ' checked' : '') + '>Imperial (mi/yd)</label>'
+    + '</div></div>';
+
+  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div class="card-title" style="margin-bottom:2px;">Zones &amp; thresholds</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the zone tables on Dashboard, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
+  const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
+    + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;">'
+      + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
+  if (z.bike) h += '<div class="sub-label">Bike</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
+    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" data-ov="ftp" value="' + esc(ov.ftp) + '"></div>'
+    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"></div></div>' + validateRow('bike');
+  if (z.run) h += '<div class="sub-label">Run</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
+    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" data-ov="runLthr" value="' + esc(ov.runLthr) + '"></div>'
+    + '<div class="field"><label>Threshold pace (min:sec/km)</label><input class="input" type="text" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"></div></div>' + validateRow('run');
+  if (z.swim) h += '<div class="sub-label">Swim</div><div class="field" style="margin-bottom:10px;"><label>CSS (/100m)</label>'
+    + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"></div>' + validateRow('swim');
+  h += '</div>';
+
+  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div class="card-title" style="margin-bottom:4px;">Backup &amp; restore</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">Completion progress and preferences are stored on this device only.</div>'
+    + '<div style="display:flex; gap:10px; flex-wrap:wrap;">'
+      + '<button type="button" class="btn btn-secondary" data-act="export">' + icon('down',16) + ' Export backup</button>'
+      + '<button type="button" class="btn btn-secondary" data-act="import">' + icon('up',16) + ' Import backup</button></div>'
+    + (state.importMessage ? '<div style="margin-top:10px; font-size:12px; color:var(--color-accent-300);">' + esc(state.importMessage) + '</div>' : '')
+  + '</div>';
+
+  h += '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">'
+    + '<div class="card-title" style="margin-bottom:4px;">About this plan</div>'
+    + '<div style="font-size:13px; color:var(--color-neutral-300); line-height:1.6;">Generated by ' + esc(PLAN.meta.generatedBy || 'Claude Coach')
+      + ' on ' + esc(new Date(PLAN.meta.createdAt).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })) + '.'
+      + (PLAN.meta.pilot ? '<br>' + esc(PLAN.meta.pilot) : '') + '</div>'
+    + '<div class="hr" style="margin:12px 0;"></div>'
+    + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + '</div></div>';
+  return h;
+}
+
+function modal() {
+  if (!state.modalId) return '';
+  const hit = workoutById(state.modalId);
+  if (!hit) return '';
+  const w = hit.wo;
+  const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
+  const zc = zoneColorFromLabel(w.primaryZone);
+  const done = !!state.completed[w.id];
+  const dist = distanceLabel(w);
+  return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
+    + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
+      + '<span>' + esc(w.name) + '</span>'
+      + '<button type="button" class="btn btn-icon" data-act="close">' + icon('x') + '</button></div>'
+    + '<div class="dialog-body">'
+      + '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">'
+        + '<span class="tag" style="background:' + tint(color) + '; color:' + color + ';">' + esc(w.sport) + '</span>'
+        + (w.type ? '<span class="tag tag-outline">' + esc(w.type) + '</span>' : '')
+        + '<span class="tag tag-outline">' + esc(dayMonth(hit.date)) + '</span>'
+        + (w.durationMinutes ? '<span class="tag tag-outline">' + esc(fmtDuration(w.durationMinutes)) + '</span>' : '')
+        + (dist ? '<span class="tag tag-outline">' + esc(dist) + '</span>' : '')
+        + (w.terrain ? '<span class="tag tag-outline">' + esc(w.terrain) + '</span>' : '')
+        + (w.trainingEffect ? '<span class="tag tag-outline">' + esc(w.trainingEffect) + '</span>' : '')
+        + (w.difficulty ? '<span class="tag" style="background:' + tint(DIFFICULTY_COLORS[w.difficulty] || '#7c8194') + '; color:' + (DIFFICULTY_COLORS[w.difficulty] || 'var(--color-neutral-300)') + ';">' + esc(w.difficulty) + '</span>' : '')
+        + (w.primaryZone ? '<span class="tag" style="background:' + (zc ? tint(zc) : 'var(--color-neutral-800)') + '; color:' + (zc || 'var(--color-neutral-300)') + ';">' + esc(w.primaryZone) + '</span>' : '')
+      + '</div>'
+      + '<div style="font-size:13px; color:var(--color-neutral-300); margin-bottom:12px;">' + esc(w.description) + '</div>'
+      + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
+    + '</div>'
+    + '<div class="dialog-actions">'
+      + '<button type="button" class="btn btn-secondary" data-act="delete-workout" data-id="' + esc(w.id) + '">Delete</button>'
+      + '<button type="button" class="btn btn-secondary" data-act="open-edit" data-id="' + esc(w.id) + '">Edit</button>'
+      + '<button type="button" class="btn btn-secondary" data-act="close">Close</button>'
+      + '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button></div>'
+  + '</div></div>';
+}
+
+function editModal() {
+  if (!state.editId || !state.editDraft) return '';
+  const draft = state.editDraft;
+  return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
+    + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
+      + '<span>Edit workout</span>'
+      + '<button type="button" class="btn btn-icon" data-act="cancel-edit">' + icon('x') + '</button></div>'
+    + '<div class="dialog-body" style="display:flex; flex-direction:column; gap:10px;">'
+      + '<div class="field"><label>Name</label><input class="input" type="text" data-edit-field="name" value="' + esc(draft.name) + '"></div>'
+      + '<div class="field"><label>Date</label><input class="input" type="date" data-edit-field="date" value="' + esc(draft.date) + '"></div>'
+      + '<div class="field"><label>Details</label><textarea class="input" rows="6" data-edit-field="humanReadable">' + esc(draft.humanReadable) + '</textarea></div>'
+    + '</div>'
+    + '<div class="dialog-actions">'
+      + '<button type="button" class="btn btn-secondary" data-act="cancel-edit">Cancel</button>'
+      + '<button type="button" class="btn btn-primary" data-act="save-edit">Save</button></div>'
+  + '</div></div>';
+}
+
+function tabbar() {
+  const navBtn = (id, name, label) => '<button type="button" class="navbtn' + (state.tab === id && !state.menuOpen ? ' active' : '') + '" data-tab="' + id + '">'
+    + icon(name, 19) + '<span>' + label + '</span></button>';
+  const moreBtn = '<button type="button" class="navbtn' + (state.menuOpen ? ' active' : '') + '" data-act="togglemenu">'
+    + icon('list', 19) + '<span>More</span></button>';
+
+  const sheetItem = (label, name, opts) => {
+    opts = opts || {};
+    const cls = 'nav-sheet-item' + (opts.disabled ? ' disabled' : '');
+    if (opts.href) {
+      return '<a href="' + esc(opts.href) + '" class="' + cls + '">' + icon(name, 20)
+        + '<span style="flex:1;">' + label + '</span></a>';
+    }
+    if (opts.act) {
+      return '<button type="button" class="' + cls + '" data-act="' + opts.act + '"' + (opts.disabled ? ' disabled' : '') + '>' + icon(name, 20)
+        + '<span style="flex:1;">' + label + '</span></button>';
+    }
+    const attr = opts.disabled ? '' : ' data-tab="' + opts.tab + '"';
+    return '<button type="button" class="' + cls + '"' + attr + '>' + icon(name, 20)
+      + '<span style="flex:1;">' + label + '</span>'
+      + (opts.disabled ? '<span class="soon-badge">Soon</span>' : '') + '</button>';
+  };
+
+  const sheet = state.menuOpen
+    ? '<div class="nav-backdrop" data-act="closemenu"></div>'
+      + '<div class="nav-sheet">'
+        + sheetItem('Dashboard', 'gauge', { href: appLink('/dashboard') })
+        + sheetItem('Weekly Summary', 'chartbar', { href: appLink('/weekly-summary') })
+        + sheetItem(state.pdfGenerating ? 'Generating…' : 'Generate Plan PDF', 'down', { act:'generate-pdf', disabled: state.pdfGenerating })
+        + sheetItem('Settings', 'gear', { tab: 'settings' })
+      + '</div>'
+    : '';
+
+  return sheet
+    + '<div class="nav-wrap"><div class="nav-pill">'
+      + navBtn('dashboard', 'house', 'Home')
+      + navBtn('plan', 'calendar', 'Plan')
+      + moreBtn
+    + '</div></div>';
+}
+
+function render() {
+  const body = state.tab === 'dashboard' ? dashboard() : state.tab === 'plan' ? planTab() : settingsTab();
+  document.getElementById('app').innerHTML =
+    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + tabbar() + modal() + editModal();
+}
+
+/* ── events ── */
+document.getElementById('app').addEventListener('click', e => {
+  const toggle = e.target.closest('[data-toggle]');
+  if (toggle) {
+    e.stopPropagation();
+    const id = toggle.getAttribute('data-toggle');
+    state.completed[id] = !state.completed[id];
+    save('completed', state.completed);
+    if (toggle.closest('.dialog')) state.modalId = null;
+    return render();
+  }
+  const open = e.target.closest('[data-open]');
+  if (open) { state.modalId = open.getAttribute('data-open'); return render(); }
+
+  const tab = e.target.closest('[data-tab]');
+  if (tab) { state.tab = tab.getAttribute('data-tab'); state.menuOpen = false; return render(); }
+
+  const zone = e.target.closest('[data-zone]');
+  if (zone) { state.zoneSport = zone.getAttribute('data-zone'); return render(); }
+
+  const unit = e.target.closest('[data-unit]');
+  if (unit) { state.unit = unit.getAttribute('data-unit'); save('unit', state.unit); return render(); }
+
+  const act = e.target.closest('[data-act]');
+  if (!act) return;
+  const a = act.getAttribute('data-act');
+  if (a === 'togglemenu') { state.menuOpen = !state.menuOpen; return render(); }
+  if (a === 'closemenu') { state.menuOpen = false; return render(); }
+  if (a === 'backdrop' && e.target !== act) return;
+  if (a === 'prev') { state.planWeekNumber = Math.max(1, state.planWeekNumber - 1); return render(); }
+  if (a === 'next') { state.planWeekNumber = Math.min(PLAN.meta.totalWeeks, state.planWeekNumber + 1); return render(); }
+  if (a === 'close' || a === 'backdrop') { state.modalId = null; state.editId = null; state.editDraft = null; return render(); }
+  if (a === 'validate') {
+    const sport = act.getAttribute('data-sport');
+    const cur = state.zonesValidated[sport];
+    state.zonesValidated[sport] = { validated: !(cur && cur.validated), at: new Date().toISOString().slice(0,10) };
+    save('zonesValidated', state.zonesValidated);
+    return render();
+  }
+  if (a === 'export') {
+    const blob = new Blob([JSON.stringify(buildExportData(), null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url; link.download = (PLAN.meta.id || 'training-plan') + '-export.json';
+    document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+    return;
+  }
+  if (a === 'generate-pdf') {
+    if (state.pdfGenerating) return;
+    state.pdfGenerating = true;
+    render();
+    fetch(appLink('/training-plan/pdf'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildExportData())
+    })
+      .then(res => { if (!res.ok) throw new Error('Server returned ' + res.status); return res.blob(); })
+      .then(blob => {
+        const url = URL.createObjectURL(blob), link = document.createElement('a');
+        link.href = url; link.download = (PLAN.meta.id || 'training-plan') + '.pdf';
+        document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+      })
+      .catch(() => alert('Could not generate the PDF. Try again in a moment.'))
+      .finally(() => { state.pdfGenerating = false; render(); });
+    return;
+  }
+  if (a === 'import') { document.getElementById('import-file').click(); return; }
+  if (a === 'open-edit') {
+    const id = act.getAttribute('data-id');
+    const hit = workoutById(id);
+    if (!hit) return;
+    state.editId = id;
+    state.editDraft = { name: hit.wo.name || '', date: hit.date, humanReadable: hit.wo.humanReadable || '' };
+    state.modalId = null;
+    return render();
+  }
+  if (a === 'cancel-edit') { state.editId = null; state.editDraft = null; return render(); }
+  if (a === 'save-edit') {
+    if (state.editId && state.editDraft) {
+      state.workoutEdits[state.editId] = Object.assign({}, state.workoutEdits[state.editId], state.editDraft);
+      save('workoutEdits', state.workoutEdits);
+    }
+    state.editId = null; state.editDraft = null;
+    return render();
+  }
+  if (a === 'delete-workout') {
+    const id = act.getAttribute('data-id');
+    if (id && confirm('Delete this workout? This only affects your copy of the plan.')) {
+      state.workoutEdits[id] = Object.assign({}, state.workoutEdits[id], { deleted: true });
+      save('workoutEdits', state.workoutEdits);
+      state.modalId = null;
+    }
+    return render();
+  }
+});
+
+document.getElementById('app').addEventListener('change', e => {
+  if (e.target.id === 'phase-select') {
+    const p = (PLAN.phases || []).find(x => x.name === e.target.value);
+    if (p) { state.planWeekNumber = p.startWeek; render(); }
+    return;
+  }
+  const ovKey = e.target.getAttribute && e.target.getAttribute('data-ov');
+  if (ovKey) {
+    const v = e.target.value;
+    if (ovKey === 'cssLabel') {
+      const secs = parseMMSS(v);
+      state.overrides.cssLabel = v;
+      if (secs != null) state.overrides.cssSeconds = secs;
+    } else if (ovKey === 'thresholdPace') {
+      state.overrides.thresholdPace = v;
+    } else {
+      state.overrides[ovKey] = parseInt(v, 10) || ZONE_DEFAULTS[ovKey];
+    }
+    save('overrides', state.overrides);
+    render();
+  }
+  const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
+  if (editField && state.editDraft) {
+    state.editDraft[editField] = e.target.value;
+    render();
+  }
+});
+
+document.getElementById('import-file').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      state.completed = Object.assign({}, state.completed, data.completed || {});
+      if (data.unit) state.unit = data.unit;
+      if (data.overrides) state.overrides = Object.assign({}, state.overrides, data.overrides);
+      if (data.zonesValidated) state.zonesValidated = Object.assign({}, state.zonesValidated, data.zonesValidated);
+      if (data.workoutEdits) state.workoutEdits = Object.assign({}, state.workoutEdits, data.workoutEdits);
+      save('completed', state.completed); save('unit', state.unit); save('overrides', state.overrides);
+      save('zonesValidated', state.zonesValidated); save('workoutEdits', state.workoutEdits);
+      state.importMessage = 'Backup imported successfully.';
+    } catch (err) { state.importMessage = 'Could not read that file.'; }
+    render();
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+
+document.getElementById('app').addEventListener('dragstart', e => {
+  const card = e.target.closest('[data-drag-id]');
+  if (!card) return;
+  card.classList.add('dragging');
+  e.dataTransfer.setData('text/plain', card.getAttribute('data-drag-id'));
+  e.dataTransfer.effectAllowed = 'move';
+});
+document.getElementById('app').addEventListener('dragend', e => {
+  const card = e.target.closest('[data-drag-id]');
+  if (card) card.classList.remove('dragging');
+  document.querySelectorAll('.day-col.drag-over').forEach(el => el.classList.remove('drag-over'));
+});
+document.getElementById('app').addEventListener('dragover', e => {
+  const col = e.target.closest('[data-day-date]');
+  if (!col) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const dayCol = col.closest('.day-col');
+  if (dayCol) dayCol.classList.add('drag-over');
+});
+document.getElementById('app').addEventListener('dragleave', e => {
+  const dayCol = e.target.closest && e.target.closest('.day-col');
+  if (dayCol && !dayCol.contains(e.relatedTarget)) dayCol.classList.remove('drag-over');
+});
+document.getElementById('app').addEventListener('drop', e => {
+  const col = e.target.closest('[data-day-date]');
+  if (!col) return;
+  e.preventDefault();
+  document.querySelectorAll('.day-col.drag-over').forEach(el => el.classList.remove('drag-over'));
+  const id = e.dataTransfer.getData('text/plain');
+  const newDate = col.getAttribute('data-day-date');
+  if (!id || !newDate) return;
+  state.workoutEdits[id] = Object.assign({}, state.workoutEdits[id], { date: newDate });
+  save('workoutEdits', state.workoutEdits);
+  render();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
+  else if (e.key === 'Escape' && state.modalId) { state.modalId = null; render(); }
+  if (e.key === 'Escape' && state.menuOpen) { state.menuOpen = false; render(); }
+  if (state.tab === 'plan' && !state.modalId && !state.editId) {
+    if (e.key === 'ArrowLeft') { state.planWeekNumber = Math.max(1, state.planWeekNumber - 1); render(); }
+    if (e.key === 'ArrowRight') { state.planWeekNumber = Math.min(PLAN.meta.totalWeeks, state.planWeekNumber + 1); render(); }
+  }
+});
+
+render();
+</script>
+<style>.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }</style>
+</body>
+</html>
