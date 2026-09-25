@@ -285,6 +285,7 @@ def _page(title: str, body: str, token: str | None = None) -> str:
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
+        f"{navbar.ICON_LINKS}"
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
@@ -356,6 +357,7 @@ def inject_nav(page: str, current_id: str, weeks: list[dict],
         "" if f'id="{navbar.NAV_ID}"' in page
         else navbar.render_nav_html("weekly-summary", token)
     )
+    page = navbar.inject_icon_links(page)
     nav = site_nav + render_nav_html(current_id, weeks, token)
     match = _BODY_TAG_RE.search(page)
     if match:

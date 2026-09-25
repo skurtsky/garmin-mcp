@@ -138,3 +138,21 @@ def test_inject_nav_is_idempotent():
     once = navbar.inject_nav(page, "dashboard", "t0k")
 
     assert navbar.inject_nav(once, "dashboard", "t0k") == once
+
+
+def test_inject_icon_links_adds_them_to_head():
+    page = navbar.inject_icon_links("<html><head><title>x</title></head><body></body></html>")
+    assert page.startswith("<html><head>" + navbar.ICON_LINKS)
+
+
+def test_inject_icon_links_is_idempotent_and_skips_headless_pages():
+    page = navbar.inject_icon_links("<html><head></head><body></body></html>")
+    assert navbar.inject_icon_links(page) == page
+    assert navbar.inject_icon_links("<p>fragment</p>") == "<p>fragment</p>"
+
+
+def test_icon_links_point_at_files_that_exist():
+    import os, re
+    root = os.path.join(os.path.dirname(__file__), "..", "static")
+    for href in re.findall(r'href="/icons/([^"]+)"', navbar.ICON_LINKS):
+        assert os.path.isfile(os.path.join(root, "icons", href)), href

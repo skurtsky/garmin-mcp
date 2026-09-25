@@ -36,6 +36,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+from tools.navbar import ICON_LINKS
+
 # Auto-refresh the browser page this often (seconds). 0 disables refresh.
 REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 
@@ -3163,6 +3165,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
         f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
+        f"{ICON_LINKS}"
         f"{refresh_script}"
         "<title>Garmin Health Dashboard</title>"
         f"<style>{_STYLE}</style>"
