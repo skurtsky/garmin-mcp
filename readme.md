@@ -133,20 +133,42 @@ variable to override.
 
 ## Site Navigation
 
-`/training-plan` and `/weekly-summary` share a navigation bar so they aren't
-dead ends: a horizontal bar across the top on desktop, a bottom tab bar on
-mobile, with the current page highlighted and the `?token=` carried into every
-link. Its "Gear" entry links straight into the dashboard's Gear tab
-(`/dashboard?tab=gear`).
+Every hosted page — `/dashboard`, `/training-plan` and `/weekly-summary` —
+shares one navigation, so the dashboard and the training plan work as one app:
 
-The bar is rendered by `tools/navbar.py` and injected server-side at request
-time (never baked into the uploaded plan or report files, so re-uploading picks
-up the current nav automatically). Its CSS is scoped under a `#gm-nav` wrapper
-so it can't collide with the Svelte plan app or a report's own styling.
+    Today · Plan · Trends · Activity · More
+    More → Fitness, Gear, Weekly Summary, Plans, Plan PDF, Settings
 
-`/dashboard` (below) has its own self-contained design with its own tab bar and
-doesn't use this shared nav — it links out to the latest weekly report from
-its footer instead.
+On a phone it's a floating bottom pill; from 900px wide it becomes a side rail
+with everything visible. The current page is highlighted and the `?token=` is
+carried into every link. Today, Trends, Activity, Fitness and Gear are
+dashboard tabs; Plan and Settings are the plan viewer.
+
+The nav is rendered by `tools/navbar.py`. The plan viewer and weekly reports
+get it injected server-side at request time (never baked into the uploaded
+plan or report files), with its CSS scoped under a `#gm-nav` wrapper so it
+can't collide with a page's own styling; the dashboard renders it with its tab
+items as labels for its CSS tab radios.
+
+### Plan ↔ Garmin
+
+Each planned workout is linked to the Garmin activity that did it, which is
+what lets the dashboard's **Today** screen show today's session next to the
+ride or run that completed it, and the plan show "Garmin · 52 min" on a done
+workout:
+
+- `sync_garmin.py` ticks off the planned workout a newly synced activity
+  completed (same date and sport; the closest planned duration when there are
+  several). Only first-time syncs match, so un-ticking a workout is never undone.
+- A workout ticked by hand (in the viewer, or before matching existed) gets its
+  activity attached on the next sync, or straight away when ticked in the viewer.
+- When a matched **FTP test** ride has power, Today and Fitness offer "Update
+  FTP from test": 95% of the best 20 minutes, written back to the plan as a
+  normal (restorable) revision, so its zones and power targets recalculate.
+
+The **Fitness** page shows each threshold as Garmin sees it next to the value
+the plan uses — tagged Tested, Provisional or Unvalidated from the plan's own
+source notes and zone validation — and the plan's swim / bike / run zones.
 
 ## Dashboard
 
@@ -438,11 +460,12 @@ garmin-mcp/
 │   ├── db_first.py        # database-first reads for the per-day health tools and get_trends
 │   ├── gear_tracker.py    # storage + API routes + MCP tools for bike component maintenance (dashboard.py's Gear tab)
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
-│   ├── navbar.py          # shared site nav bar injected into every hosted page
+│   ├── navbar.py          # the one site nav (bottom pill / desktop rail) on every hosted page
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
 │   ├── plan_doc.py        # training-plan document rules: validation, weekly totals, edit operations
-│   ├── plan_service.py    # training-plan storage (PostgreSQL) + completion / Garmin links
+│   ├── plan_service.py    # training-plan storage (PostgreSQL) + completion / Garmin links + auto-matching
+│   ├── plan_today.py      # the active plan as the dashboard's Today / Fitness screens show it
 │   ├── plan_tools.py      # training-plan MCP tools
 │   ├── training_plan.py   # /training-plan routes: viewer, upload, plans list, JSON API
 │   ├── assets/plan-viewer.html  # the plan viewer app the server fills with a stored plan

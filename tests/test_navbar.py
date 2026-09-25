@@ -12,12 +12,66 @@ def _markup(nav: str) -> str:
 
 
 def test_nav_links_all_hosted_pages():
-    nav = navbar.render_nav_html("dashboard", "t0k")
+    nav = navbar.render_nav_html("weekly-summary", "t0k")
 
     assert 'href="/dashboard?token=t0k"' in nav
     assert 'href="/training-plan?token=t0k"' in nav
     assert 'href="/weekly-summary?token=t0k"' in nav
-    assert "Dashboard" in nav and "Training Plan" in nav and "Weekly Summary" in nav
+    assert 'href="/training-plan/plans?token=t0k"' in nav
+    assert 'href="/training-plan?view=settings&amp;token=t0k"' in nav
+
+
+def test_nav_pill_is_today_plan_trends_activity_more():
+    markup = _markup(navbar.render_nav_html(None, "t0k"))
+    pill = markup[:markup.index('gm-nav__rail')]
+    labels = [part.split("<")[0] for part in pill.split('class="gm-nav__label">')[1:]]
+
+    assert labels == ["Today", "Plan", "Trends", "Activity"]
+    assert "More</span>" in markup
+
+
+def test_nav_more_sheet_holds_everything_else():
+    nav = navbar.render_nav_html(None, "t0k")
+    sheet = nav[nav.index("gm-nav-more-sheet\""):]
+    labels = [part.split("<")[0] for part in sheet.split("<span>")[1:]]
+
+    assert labels == ["Fitness", "Gear", "Weekly Summary", "Plans", "Plan PDF", "Settings"]
+    assert 'href="/training-plan/pdf?token=t0k" data-nav="plan-pdf" download' in sheet
+
+
+def test_nav_becomes_a_side_rail_on_desktop():
+    nav = navbar.render_nav_html("plan", "t0k", title="Kurt")
+    style = nav[:nav.index("</style>")]
+    desktop = style[style.index("@media (min-width: 900px)"):]
+
+    assert "width: 220px" in desktop and "padding-left: 220px" in desktop
+    assert ".gm-nav__more-btn { display: none; }" in desktop
+    assert '<div class="gm-nav__title">Kurt</div>' in nav
+    markup = _markup(nav)
+    rail = [part.split("<")[0] for part in markup.split('class="gm-nav__label">')[1:]]
+    assert rail[:10] == ["Today", "Plan", "Trends", "Activity", "Fitness", "Gear",
+                         "Weekly Summary", "Plans", "Settings", "More"]
+
+
+def test_dashboard_tabs_are_labels_that_follow_their_radio():
+    nav = navbar.render_nav_html(None, "t0k", tabs={"today": "tab-today", "fitness": "tab-you"})
+
+    assert '<label class="gm-nav__link" for="tab-today" data-nav="today">' in nav
+    assert 'class="gm-nav-more-item" for="tab-you"' in nav
+    assert "#tab-today:checked ~ #gm-nav [data-nav=today]" in nav
+    # A More-sheet tab lights the phone's More button.
+    assert "#tab-you:checked ~ #gm-nav .gm-nav__more-btn" in nav
+    assert 'href="/training-plan?token=t0k"' in nav      # Plan stays a link
+
+
+def test_a_more_page_highlights_the_more_button():
+    markup = _markup(navbar.render_nav_html("weekly-summary", "t0k"))
+    assert "gm-nav__more-btn gm-nav__more-btn--active" in markup
+
+
+def test_legacy_page_keys_still_highlight():
+    markup = _markup(navbar.render_nav_html("training-plan", "t0k"))
+    assert 'gm-nav__link--active" href="/training-plan?token=t0k"' in markup
 
 
 def test_nav_is_a_floating_bottom_pill():
@@ -27,13 +81,13 @@ def test_nav_is_a_floating_bottom_pill():
     assert "border-radius: 999px" in nav
 
 
-def test_nav_more_popup_links_to_activity_and_gear_dashboard_tabs():
+def test_nav_links_to_dashboard_tabs():
     nav = navbar.render_nav_html("dashboard", "t0k")
     popup = nav[nav.index('id="gm-nav-more"'):]
 
     assert 'href="/dashboard?tab=activity&amp;token=t0k"' in popup
     assert 'href="/dashboard?tab=gear&amp;token=t0k"' in popup
-    assert "Activity" in popup and "Gear" in popup
+    assert 'href="/dashboard?tab=fitness&amp;token=t0k"' in popup
 
 
 def test_nav_highlights_the_active_page_only():
@@ -42,7 +96,7 @@ def test_nav_highlights_the_active_page_only():
     assert markup.count("gm-nav__link--active") == 1
     assert markup.count('aria-current="page"') == 1
     active = markup[markup.index("gm-nav__link--active"):]
-    assert active.index("Training Plan") < active.index("Weekly Summary")
+    assert active.index("Plan") < active.index("Trends")
 
 
 def test_nav_without_an_active_page_highlights_nothing():
@@ -81,8 +135,8 @@ def test_nav_styles_are_scoped_to_the_nav_id():
         for line in style.splitlines()
         if "{" in line and not line.strip().startswith(("@", "/*"))
     ]
-    unscoped = [s for s in selectors if not (s.startswith("#gm-nav") or s.startswith(".gm-nav-more"))]
-    assert unscoped == ["body", "html"]
+    unscoped = {s for s in selectors if not (s.startswith("#gm-nav") or s.startswith(".gm-nav-more"))}
+    assert unscoped == {"body", "html"}
 
 
 def test_nav_respects_ios_safe_areas():

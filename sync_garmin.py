@@ -102,8 +102,9 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
     else:
         logger.info("Syncing activities")
         activities = get_activities(limit=20)
+    new_ids = []
     for act in activities:
-        db.upsert_activity(
+        inserted = db.upsert_activity(
             garmin_id=act["id"],
             activity_date=act.get("date"),
             activity_type=act.get("type"),
@@ -114,8 +115,29 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
             training_load=act.get("training_load"),
             summary=act,
         )
+        if inserted:
+            new_ids.append(act["id"])
     db.update_sync_state("activities", date.today().isoformat())
-    logger.info(f"Synced {len(activities)} activities")
+    logger.info(f"Synced {len(activities)} activities ({len(new_ids)} new)")
+    sync_plan_matches(new_ids)
+
+
+def sync_plan_matches(new_activity_ids: list[int]):
+    """Link synced activities to the active training plan: newly synced
+    activities tick off the planned workout they completed, and workouts
+    ticked by hand get the activity that did them attached.
+
+    A plan problem is logged, never fatal — activities are already stored.
+    """
+    from tools import plan_service
+
+    try:
+        ticked = plan_service.match_new_activities(new_activity_ids)
+        linked = plan_service.link_completed_workouts()
+    except Exception:
+        logger.exception("Matching activities to the training plan failed")
+        return
+    logger.info(f"Training plan: {len(ticked)} workout(s) ticked, {len(linked)} linked to activities")
 
 
 def sync_activity_details(limit: int = 10, overwrite: bool = False):

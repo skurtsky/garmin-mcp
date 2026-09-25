@@ -855,7 +855,7 @@ def get_activity(activity_id: int) -> dict:
 
 def _activity_summary_from_list(a: dict) -> dict:
     """Extract compact summary fields from a Garmin activities-list entry."""
-    return {
+    out = {
         'id':            a.get('activityId'),
         'name':          a.get('activityName'),
         'type':          a.get('activityType', {}).get('typeKey', ''),
@@ -865,6 +865,11 @@ def _activity_summary_from_list(a: dict) -> dict:
         'avg_hr':        a.get('averageHR'),
         'training_load': round(a.get('activityTrainingLoad') or 0, 1),
     }
+    # Best 20-minute power, on rides with a power meter — what an FTP field
+    # test is scored from (the dashboard's "Update FTP from test").
+    if a.get('max20MinPower'):
+        out['max_20min_power'] = round(a['max20MinPower'])
+    return out
 def get_activities(
     limit: int = 10,
     sport_type: str | None = None,

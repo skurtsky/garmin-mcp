@@ -14,7 +14,7 @@ upload or edit (its message is safe to show to the user).
 """
 import json
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import db
 from tools import plan_doc
@@ -90,13 +90,25 @@ def completed_map(plan_id: str) -> dict[str, bool]:
 
 
 def view_payload(row: dict) -> dict:
-    """What the viewer needs besides the plan itself."""
+    """What the viewer needs besides the plan itself: which workouts are
+    complete, and the Garmin activity each one was matched to."""
+    states = db.get_workout_states(row["id"])
+    briefs = db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
+    activities = {}
+    for wid, s in states.items():
+        act = briefs.get(s.get("activity_id"))
+        if s.get("completed") and act:
+            activities[wid] = {
+                "id": act["garmin_id"], "name": act.get("name"),
+                "durationMin": act.get("duration_min"), "distanceKm": act.get("distance_km"),
+            }
     return {
         "id": row["id"],
         "status": row["status"],
         "version": row["version"],
         "readOnly": row["status"] != "active",
-        "completed": completed_map(row["id"]),
+        "completed": {wid: True for wid, s in states.items() if s.get("completed")},
+        "activities": activities,
     }
 
 
@@ -322,6 +334,111 @@ def complete_from_activity(plan_id: str | None, activity_id: int | None = None,
         raise PlanError(f"Several planned workouts match on {day.isoformat()}: {json.dumps(choices)} — pass workout_id.")
     target = candidates[0][2]["id"]
     return set_completion(row["id"], target, completed, activity_id, notes)
+
+
+# ── AUTOMATIC MATCHING ────────────────────────────────────────────────────────
+# Linking each planned workout to the Garmin activity that did it is what lets
+# the dashboard's Today screen and the plan show the two together.
+
+def activity_day(activity: dict) -> str:
+    """An activity's local calendar date (YYYY-MM-DD)."""
+    local = ((activity.get("summary") or {}).get("date")) if isinstance(activity.get("summary"), dict) else None
+    return str(local or _iso(activity.get("activity_date")) or "")[:10]
+
+
+def _closest(hits: list[tuple], activity: dict) -> tuple:
+    """Of several candidate workouts, the one whose planned duration is
+    closest to what the activity actually took."""
+    took = activity.get("duration_min") or 0
+    return min(hits, key=lambda h: abs((h[2].get("durationMinutes") or 0) - took))
+
+
+def match_new_activities(activity_ids: list[int], plan_id: str | None = None) -> list[dict]:
+    """Tick off the planned workouts that newly synced activities completed.
+
+    Each activity completes the unticked workout on its date with the same
+    sport (the closest in duration when there are several). Only activities
+    synced for the first time are passed in, so un-ticking a workout in the
+    plan is never undone by the next sync. Returns one entry per tick.
+    """
+    if not activity_ids or not db.is_configured():
+        return []
+    row = db.get_training_plan(plan_id)
+    if row is None or row["status"] != "active":
+        return []
+    states = db.get_workout_states(row["id"])
+    linked = {s.get("activity_id") for s in states.values() if s.get("activity_id")}
+    activities = sorted(db.get_activities_by_ids(list(activity_ids)).values(), key=activity_day)
+    matched = []
+    for act in activities:
+        sport = sport_for_activity_type(act.get("activity_type"))
+        if act["garmin_id"] in linked or sport is None:
+            continue
+        try:
+            day = plan_doc.parse_date(activity_day(act))
+        except PlanError:
+            continue
+        hits = [h for h in match_activity(row["plan"], states, day, sport)
+                if not (states.get(h[2]["id"]) or {}).get("completed")]
+        if not hits:
+            continue
+        workout = _closest(hits, act)[2]
+        states[workout["id"]] = db.upsert_workout_state(
+            row["id"], workout["id"], completed=True,
+            completed_at=datetime.now(timezone.utc), activity_id=act["garmin_id"],
+        )
+        linked.add(act["garmin_id"])
+        matched.append({"workout_id": workout["id"], "activity_id": act["garmin_id"]})
+    return matched
+
+
+def link_completed_workouts(plan_id: str | None = None, workout_ids: list[str] | None = None,
+                            today: date | None = None) -> list[dict]:
+    """Attach a Garmin activity to workouts ticked by hand (in the viewer, or
+    before matching existed) that have none yet — the same date and sport,
+    not already linked elsewhere. Only fills in the link; never ticks or
+    un-ticks anything. ``workout_ids`` limits it to those workouts."""
+    if not db.is_configured():
+        return []
+    row = db.get_training_plan(plan_id)
+    if row is None or row["status"] != "active":
+        return []
+    today = today or date.today()
+    states = db.get_workout_states(row["id"])
+    pending = [
+        (d, w) for _, d, w in plan_doc.iter_workouts(row["plan"])
+        if (states.get(w.get("id")) or {}).get("completed") and not states[w["id"]].get("activity_id")
+        and (workout_ids is None or w.get("id") in workout_ids)
+        and str(d.get("date"))[:10] <= today.isoformat()
+    ]
+    if not pending:
+        return []
+    days = sorted(str(d.get("date"))[:10] for d, _ in pending)
+    end = (plan_doc.parse_date(days[-1]) + timedelta(days=1)).isoformat()
+    by_day: dict[str, list[dict]] = {}
+    for act in db.get_activities_in_range(days[0], end):
+        by_day.setdefault(activity_day(act), []).append(act)
+    linked = {s.get("activity_id") for s in states.values() if s.get("activity_id")}
+    done = []
+    for d, w in pending:
+        candidates = [
+            a for a in by_day.get(str(d.get("date"))[:10], [])
+            if a["garmin_id"] not in linked and _sport_fits(sport_for_activity_type(a.get("activity_type")), w.get("sport"))
+        ]
+        if not candidates:
+            continue
+        took = w.get("durationMinutes") or 0
+        act = min(candidates, key=lambda a: abs((a.get("duration_min") or 0) - took))
+        db.upsert_workout_state(row["id"], w["id"], activity_id=act["garmin_id"])
+        linked.add(act["garmin_id"])
+        done.append({"workout_id": w["id"], "activity_id": act["garmin_id"]})
+    return done
+
+
+def _sport_fits(activity_sport: str | None, workout_sport: str | None) -> bool:
+    if activity_sport is None:
+        return False
+    return activity_sport == workout_sport or "brick" in (activity_sport, workout_sport)
 
 
 def link_garmin_workout(plan_id: str | None, workout_id: str, garmin_workout_id: int | None,

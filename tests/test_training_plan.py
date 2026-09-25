@@ -45,7 +45,7 @@ def test_no_plan_page(client):
     assert "/training-plan/upload?token=t0k" in r.text
     assert "/training-plan/plans?token=t0k" in r.text
     assert r.headers["cache-control"] == "no-store"
-    assert 'id="gm-nav"' not in r.text
+    assert r.text.count('id="gm-nav"') == 1   # the site nav, like every page
 
 
 def test_without_a_database_the_pages_explain_why(monkeypatch):
@@ -73,7 +73,8 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     # weekly totals are recomputed on upload, not trusted from the file
     assert plan["weeks"][0]["summary"]["totalHours"] == 3.83
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
-                      "readOnly": False, "completed": {"w1-tue-run": True}}
+                      "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {}}
+    assert 'data-nav="plan" aria-current="page"' in r.text   # the site nav, on Plan
 
 
 def test_viewer_escapes_script_closers_in_plan_text(client):

@@ -170,12 +170,31 @@ class FakePlanDB:
     def get_activity_brief(self, garmin_id):
         return self.activities.get(garmin_id)
 
+    def add_activity(self, garmin_id, day, activity_type, name="Activity", duration_min=60,
+                     distance_km=None, **summary):
+        """A synced activity, shaped like an ``activities`` row."""
+        self.activities[garmin_id] = {
+            "garmin_id": garmin_id, "activity_date": datetime.fromisoformat(f"{day}T07:00:00"),
+            "activity_type": activity_type, "name": name, "duration_min": duration_min,
+            "distance_km": distance_km, "summary": {"date": f"{day}T07:00:00", **summary},
+        }
+        return self.activities[garmin_id]
+
+    def get_activities_by_ids(self, garmin_ids):
+        return {i: dict(self.activities[i]) for i in garmin_ids if i in self.activities}
+
+    def get_activities_in_range(self, start_date, end_date):
+        def day(a):
+            return str((a.get("summary") or {}).get("date") or a["activity_date"].isoformat())[:10]
+        return sorted((dict(a) for a in self.activities.values() if start_date <= day(a) < end_date), key=day)
+
 
 PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
     "update_training_plan", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
     "get_workout_states", "upsert_workout_state", "get_activity_brief",
+    "get_activities_by_ids", "get_activities_in_range",
 ]
 
 
