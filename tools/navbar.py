@@ -52,11 +52,14 @@ _MORE_TOGGLE_ID = "gm-nav-more"
 _BODY_TAG_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 _HEAD_TAG_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _VIEWPORT_TAG_RE = re.compile(r"<meta\b(?=[^>]*\bname=[\"']viewport[\"'])[^>]*>", re.IGNORECASE)
-# Browser-tab favicon and iOS home-screen icon. Served from /icons/* without
-# the bearer token (see server.py) — iOS fetches the touch icon without it.
+# Browser-tab favicon and iOS home-screen icon. The tab icon is transparent;
+# favicon.svg switches its strokes to white on dark-mode tab bars, and
+# browsers without SVG favicons (Safari) fall back to favicon.ico. Served
+# without the bearer token (see server.py) — iOS fetches the touch icon
+# without it.
 ICON_LINKS = (
-  '<link rel="icon" href="/favicon.ico" sizes="any">'
-  '<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">'
+  '<link rel="icon" href="/favicon.ico" sizes="32x32">'
+  '<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">'
   '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">'
 )
 _NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
