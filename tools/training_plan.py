@@ -38,7 +38,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 from tools import plan_doc, plan_service
-from tools.navbar import ICON_LINKS, inject_icon_links, inject_no_zoom_meta
+from tools.navbar import ICON_LINKS, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import render_plan_pdf
 from tools.plan_doc import PlanError
 from tools.plan_service import PlanStorageUnavailable
@@ -115,7 +115,8 @@ def _url(path: str, token: str | None, **params) -> str:
     return f"{path}?{urlencode(query)}" if query else path
 
 
-def _page(title: str, body: str) -> str:
+def _page(title: str, body: str, token: str | None = None, active: str = "plan") -> str:
+    """A plain page (plan list, upload, messages) with the site nav."""
     return (
         "<!doctype html>"
         '<html lang="en"><head><meta charset="utf-8">'
@@ -127,6 +128,7 @@ def _page(title: str, body: str) -> str:
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
+        f"{render_nav_html(active, token)}"
         f"<main>{body}</main></body></html>"
     )
 
@@ -137,14 +139,16 @@ def _json_for_script(value) -> str:
     return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
 
 
-def render_viewer_html(row: dict) -> str:
-    """The viewer template with the plan and its server state filled in."""
+def render_viewer_html(row: dict, token: str | None = None) -> str:
+    """The viewer template with the plan and its server state filled in, and
+    the site nav (its Plan and Settings items switch the viewer's views)."""
     with open(TEMPLATE_PATH, encoding="utf-8") as f:
         page = f.read()
     page = page.replace("__PLAN_TITLE__", _e(plan_doc.plan_title(row["plan"])))
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(plan_service.view_payload(row)))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
-    return inject_icon_links(inject_no_zoom_meta(page))
+    athlete = (row["plan"].get("meta") or {}).get("athlete")
+    return inject_icon_links(inject_nav(page, "plan", token, title=athlete))
 
 
 def render_message_html(title: str, message: str, token: str | None) -> str:
@@ -154,7 +158,7 @@ def render_message_html(title: str, message: str, token: str | None) -> str:
         f'<div class="links"><a href="{_e(_url("/training-plan/plans", token))}">All plans</a>'
         f'<a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a></div>'
     )
-    return _page(title, body)
+    return _page(title, body, token)
 
 
 def render_no_plan_html(token: str | None = None) -> str:
@@ -167,7 +171,7 @@ def render_no_plan_html(token: str | None = None) -> str:
         f'<a class="btn" href="{_e(_url("/training-plan/plans", token))}">All plans</a>'
         "</div></div>"
     )
-    return _page("No plan active", body)
+    return _page("No plan active", body, token)
 
 
 def render_upload_form_html(token: str | None = None, error: str | None = None) -> str:
@@ -200,7 +204,7 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
         f'<div class="links"><a href="{_e(_url("/training-plan", token))}">View plan</a>'
         f'<a href="{_e(_url("/training-plan/plans", token))}">All plans</a></div>'
     )
-    return _page("Upload training plan", body)
+    return _page("Upload training plan", body, token)
 
 
 def render_confirm_replace_html(plan: dict, preview: dict, warnings: list[str], token: str | None) -> str:
@@ -245,7 +249,7 @@ def render_confirm_replace_html(plan: dict, preview: dict, warnings: list[str], 
         f'<a class="btn" href="{_e(_url("/training-plan/upload", token))}">Cancel</a></div>'
         "</form></div>"
     )
-    return _page("Replace existing plan?", body)
+    return _page("Replace existing plan?", body, token)
 
 
 def render_upload_done_html(row: dict, warnings: list[str], token: str | None) -> str:
@@ -258,7 +262,7 @@ def render_upload_done_html(row: dict, warnings: list[str], token: str | None) -
         + "</ul></div>"
         f'<div class="links"><a href="{_e(_url("/training-plan", token))}">View plan</a></div>'
     )
-    return _page("Plan uploaded", body)
+    return _page("Plan uploaded", body, token)
 
 
 def render_plans_html(plans: list[dict], token: str | None, error: str | None = None) -> str:
@@ -304,7 +308,7 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
         + f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
         f'<a href="{_e(_url("/training-plan", token))}">Active plan</a></div>'
     )
-    return _page("Training plans", body)
+    return _page("Training plans", body, token, active="plans")
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
@@ -334,7 +338,7 @@ async def serve_plan(request):
             return HTMLResponse(render_message_html("Plan not found", "No plan with that id.", token),
                                 status_code=404, headers=_NO_STORE)
         return HTMLResponse(render_no_plan_html(token), headers=_NO_STORE)
-    return HTMLResponse(render_viewer_html(row), headers=_NO_STORE)
+    return HTMLResponse(render_viewer_html(row, token), headers=_NO_STORE)
 
 
 async def serve_plans(request):
@@ -482,7 +486,11 @@ async def api_completion(request):
         workout_id = body.get("workout_id")
         if not isinstance(workout_id, str) or not workout_id:
             raise PlanError("workout_id is required.")
-        plan_service.set_completion(_plan_param(request), workout_id, bool(body.get("completed", True)))
+        completed = bool(body.get("completed", True))
+        plan_service.set_completion(_plan_param(request), workout_id, completed)
+        if completed:
+            # Ticked by hand: attach the Garmin activity that did it, if synced.
+            plan_service.link_completed_workouts(_plan_param(request), [workout_id])
         row = plan_service.require_plan(_plan_param(request))
     except (PlanStorageUnavailable, LookupError, PlanError) as e:
         return _api_error(e)

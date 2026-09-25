@@ -157,6 +157,50 @@ SAMPLE = {
 }
 
 
+# The active training plan as tools/plan_today.py shapes it — a session day
+# whose FTP test was matched to a Garmin ride.
+def _day(date_str, letter, state, color="#7fb87a", is_today=False):
+    return {"date": date_str, "letter": letter, "is_today": is_today, "state": state, "color": color}
+
+
+PLAN_CONTEXT = {
+    "id": "kurt-winter", "title": "Winter Base Block — FTP Focus", "athlete": "Kurt", "total_weeks": 24,
+    "week_number": 2, "phase": "Field Testing", "phase_color": "#7c8194", "in_plan": True,
+    "today": [{
+        "id": "w2-fri-bike", "date": "2026-07-17", "name": "FTP Field Test", "sport": "bike", "type": "test",
+        "durationMinutes": 40, "distanceKm": 20, "distanceMeters": None, "primaryZone": "Test",
+        "completed": True, "is_test": True,
+        "activity": {"id": 900, "name": "Ottawa - FTP Test (20 min warmup)", "type": "road_biking",
+                     "distance_km": 26.16, "duration_min": 52, "date": "2026-07-17"},
+    }],
+    "tomorrow": [{
+        "id": "w2-sat-bike", "date": "2026-07-18", "name": "Plantagenet Ride w/ Cam", "sport": "bike",
+        "type": "endurance", "durationMinutes": 285, "distanceKm": 115, "distanceMeters": None,
+        "primaryZone": "Zone 1-2", "completed": False, "is_test": False, "activity": None,
+    }],
+    "week": {"done_hours": 7.8, "plan_hours": 13.3, "days": [
+        _day("2026-07-13", "M", "done", "#5eb8c9"), _day("2026-07-14", "T", "done"),
+        _day("2026-07-15", "W", "done"), _day("2026-07-16", "T", "done"),
+        _day("2026-07-17", "F", "done", is_today=True), _day("2026-07-18", "S", "planned"),
+        _day("2026-07-19", "S", "planned"),
+    ]},
+    "progress": {"done": 9, "total": 184},
+    "ftp_test": {"workout_id": "w2-fri-bike", "date": "2026-07-17", "is_today": True, "activity": None,
+                 "best_20min": 261, "estimate": 248, "current": 250, "applied": False},
+    "thresholds": [
+        {"key": "ftp", "label": "FTP", "garmin": "275 W", "plan": "250 W", "status": "Provisional", "sub": "test today"},
+        {"key": "bikeLthr", "label": "Bike LTHR", "garmin": None, "plan": "164", "status": "Tested", "sub": "Set on Edge 1040"},
+        {"key": "css", "label": "Swim CSS", "garmin": None, "plan": "2:20", "status": "Unvalidated", "sub": "/100m"},
+    ],
+    "zones": {
+        "bike": [{"zone": "1", "name": "Recovery", "watts": "0–138", "hr": "0–133"},
+                 {"zone": "5c", "name": "Anaerobic", "watts": "300+", "hr": "174+"}],
+        "run": [{"zone": "1", "name": "Recovery", "hr": "0–138", "pace": "5:25–5:45"}],
+    },
+    "thresholds_now": {"ftp": 250, "bikeLthr": 164, "runLthr": 170, "thresholdPace": "4:15"},
+}
+
+
 def test_render_is_a_complete_document():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert html.startswith("<!doctype html>")
@@ -176,38 +220,43 @@ def test_render_includes_favicon_and_touch_icon():
     assert 'rel="apple-touch-icon" href="/icons/apple-touch-icon.png"' in html
 
 
-def test_render_omits_the_shared_navbar_now_that_more_menu_replaces_it():
+def test_render_uses_the_shared_site_nav():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    assert 'id="gm-nav"' not in html
-    assert 'href="/training-plan?token=t0k"' in html  # still reachable, via the More menu
+    assert html.count('id="gm-nav"') == 1
+    assert 'href="/training-plan?token=t0k" data-nav="plan"' in html
 
 
-def test_botnav_shows_today_trends_activity_and_more_only():
+def test_nav_pill_is_today_plan_trends_activity_and_more():
     html = dashboard.render_dashboard_html(SAMPLE)
-    botnav = html[html.index('<div class="botnav"'):html.index('class="more-menu-backdrop"')]
+    nav = html.index('<nav id="gm-nav"')
+    pill = html[nav:html.index('gm-nav__rail', nav)]
 
-    assert 'for="tab-today"' in botnav
-    assert 'for="tab-trends"' in botnav
-    assert 'for="tab-activity"' in botnav
-    assert 'for="more-menu"' in botnav
-    assert 'for="tab-you"' not in botnav
-    assert 'for="tab-gear"' not in botnav
+    assert 'for="tab-today"' in pill
+    assert 'data-nav="plan"' in pill
+    assert 'for="tab-trends"' in pill
+    assert 'for="tab-activity"' in pill
+    assert 'for="tab-you"' not in pill and 'for="tab-gear"' not in pill
+    assert 'data-nav="more"' in html
+    # The tab radios come before the nav, so its highlighting can follow them.
+    assert html.index('id="tab-today"') < html.index('<nav id="gm-nav"')
 
 
-def test_more_menu_lists_gear_fitness_weekly_summary_and_training_plan():
+def test_more_menu_lists_fitness_gear_reports_plans_pdf_and_settings():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    sheet = html[html.index('more-menu-sheet'):html.index('id="chart-tooltip"')]
+    sheet = html[html.index('class="gm-nav-more-sheet"'):html.index('id="chart-tooltip"')]
 
-    assert 'for="tab-gear"' in sheet and "Gear" in sheet
     assert 'for="tab-you"' in sheet and "Fitness" in sheet
+    assert 'for="tab-gear"' in sheet and "Gear" in sheet
     assert 'href="/weekly-summary?token=t0k"' in sheet
-    assert 'href="/training-plan?token=t0k"' in sheet
+    assert 'href="/training-plan/plans?token=t0k"' in sheet
+    assert 'href="/training-plan/pdf?token=t0k"' in sheet
+    assert 'href="/training-plan?view=settings&amp;token=t0k"' in sheet
 
 
-def test_more_menu_has_a_gap_between_the_tab_group_and_the_page_links():
-    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    assert 'class="more-menu-item more-menu-group-start"' in html
-    assert 'href="/weekly-summary?token=t0k"' in html.split('class="more-menu-item more-menu-group-start"')[1]
+def test_desktop_rail_is_titled_with_the_athlete_from_the_plan():
+    data = {**SAMPLE, "plan": {**PLAN_CONTEXT}}
+    html = dashboard.render_dashboard_html(data)
+    assert '<div class="gm-nav__title">Kurt</div>' in html
 
 
 def test_render_includes_all_five_tabs():
@@ -467,13 +516,11 @@ def test_render_humanizes_enum_strings():
     assert "BALANCED" not in html
 
 
-def test_render_hrv_status_uses_weekly_average():
+def test_readiness_card_mentions_hrv_status():
     html = dashboard.render_dashboard_html(SAMPLE)
-    hrv_card = html.split('<div class="kicker">HRV status</div>', 1)[1].split(
-        '<div class="card"', 1
-    )[0]
-    assert '>45<' in hrv_card
-    assert '>42<' not in hrv_card
+    today = re.search(r'<section class="panel tabpanel tp-today".*?</section>', html, re.S).group(0)
+    card = today.split(">Readiness<", 1)[1].split('class="t-card', 1)[0]
+    assert "HRV balanced" in card
 
 
 def test_render_last_sync_carries_utc_instant_for_client_side_conversion():
@@ -514,17 +561,15 @@ def test_render_shows_vo2max_and_acwr():
     assert "Optimal" in html
 
 
-def test_training_status_widget_shows_status_wording_and_lives_under_readiness():
+def test_training_status_is_the_first_in_focus_card_with_load_ratio():
     html = dashboard.render_dashboard_html(SAMPLE)
     today_section = re.search(r'<section class="panel tabpanel tp-today".*?</section>', html, re.S).group(0)
+    focus = today_section[today_section.index('class="focus"'):]
 
-    assert "Training status" in today_section
-    assert "Productive" in today_section
-    # readiness hero, then training status, then load ratio — in that order
-    readiness_i = today_section.index("Training readiness")
-    status_i = today_section.index("Training status")
-    ratio_i = today_section.index("Load ratio")
-    assert readiness_i < status_i < ratio_i
+    assert "Productive" in focus
+    # readiness first, then In Focus: Training status (with Load ratio), Recovery
+    assert today_section.index(">Readiness<") < today_section.index('class="focus"')
+    assert focus.index('data-title="Training status"') < focus.index("Load ratio") < focus.index('data-title="Recovery"')
 
 
 def test_training_status_widget_has_no_blurb_or_sport():
@@ -570,7 +615,8 @@ def test_training_status_widget_shows_icon_and_load_focus():
 
 def test_training_status_widget_shows_range_captions():
     html = dashboard.render_dashboard_html(SAMPLE)
-    card = html.split("Training status</div>", 1)[1].split("Load ratio", 1)[0]
+    trends = re.search(r'<section class="panel tabpanel tp-trends".*?</section>', html, re.S).group(0)
+    card = trends.split('class="card ts-card"', 1)[1]
 
     assert "Last 7d" in card
     assert "Last 4w" in card
@@ -580,13 +626,22 @@ def test_training_status_widget_shows_range_captions():
 
 def test_training_status_widget_renders_daily_segments_for_both_ranges():
     html = dashboard.render_dashboard_html(SAMPLE)
-    card = html.split("Training status</div>", 1)[1].split("Load ratio", 1)[0]
+    trends = re.search(r'<section class="panel tabpanel tp-trends".*?</section>', html, re.S).group(0)
+    card = trends.split('class="card ts-card"', 1)[1].split('class="range-body"', 1)[0]
 
     # 7 days for the 7d bar, 28 for the 28d bar — both present in the markup
     # (CSS toggles which is visible), each as a per-day tooltip segment.
     assert card.count('class="js-bar"') == 28 + 7
     assert "Maintaining" in card  # an early day's status, in a tooltip data-value
     assert "Strained" in card
+
+
+def test_in_focus_training_status_shows_the_last_seven_days():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    focus = html.split('data-title="Training status"', 1)[1].split('data-title="Recovery"', 1)[0]
+    strip = focus.split("Load ratio", 1)[0]
+    assert strip.count('class="js-bar"') == 7
+    assert ">Today<" in strip
 
 
 @pytest.mark.parametrize("raw, expected_label", [
@@ -679,12 +734,10 @@ def test_load_ratio_card_lives_on_today_panel_not_trends():
     assert "Acute : chronic load" not in html
 
 
-def test_render_shows_readiness_factors():
+def test_render_shows_readiness_card():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "Sleep" in html
-    assert "Recovery" in html
-    assert "Load balance" in html
-    assert "Stress history" in html
+    card = html.split(">Readiness<", 1)[1][:400]
+    assert "t-ring" in html and "t-sub" in card
 
 
 def test_render_shows_trend_charts():
@@ -725,9 +778,9 @@ def test_render_shows_personal_records_grouped_by_sport():
 
 def test_render_shows_thresholds_from_athlete_profile():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "170" in html   # LTHR
-    assert "265" in html   # FTP (W)
-    assert "3.64 W/kg" in html  # FTP, W/kg toggle target (265 W / 72.9 kg)
+    fitness = re.search(r'<section class="panel tabpanel tp-you".*?</section>', html, re.S).group(0)
+    assert ">170<" in fitness   # LTHR
+    assert ">265 W<" in fitness   # FTP
 
 
 def test_render_vo2max_gauges_show_rating_and_sport_labels():
@@ -738,12 +791,11 @@ def test_render_vo2max_gauges_show_rating_and_sport_labels():
     assert "Good" in html       # 48 ml/kg/min cycling -> Good band
 
 
-def test_render_ftp_card_offers_w_and_wkg_toggle():
+def test_fitness_without_a_plan_falls_back_to_garmin_hr_zones():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert 'id="ftp-w"' in html
-    assert 'id="ftp-wkg"' in html
-    assert "ftp-val-w" in html
-    assert "ftp-val-wkg" in html
+    fitness = re.search(r'<section class="panel tabpanel tp-you".*?</section>', html, re.S).group(0)
+    assert "Heart-rate zones" in fitness
+    assert "Plan zones" not in fitness
 
 
 def test_render_omits_ftp_toggle_without_weight():
@@ -1064,7 +1116,6 @@ def test_build_dashboard_data_from_db_derives_training_status_history_from_trend
 def test_render_compact_mobile_metric_layouts():
     html = dashboard.render_dashboard_html(SAMPLE)
 
-    assert 'grid-template-columns:repeat(4,minmax(0,1fr))' in html
     assert 'grid-template-columns:repeat(2,minmax(0,1fr))' in html
     assert 'grid-template-columns:repeat(3,minmax(0,1fr))' in html
     assert "Avg load/session" in html
@@ -1181,8 +1232,9 @@ def test_bar_charts_are_tappable_with_date_and_value():
 
 def test_render_shows_stress_breakdown_bar_chart():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "stress breakdown" in html.lower()
-    assert "Rest" in html and "Medium" in html and "High" in html
+    recovery = html.split('data-title="Recovery"', 1)[1]
+    assert "Stress today" in recovery
+    assert ">Rest<" in recovery and ">Med<" in recovery and ">High<" in recovery
 
 
 def test_build_dashboard_data_aggregates(monkeypatch):
@@ -1372,3 +1424,113 @@ def test_get_activity_week_data_falls_back_to_garmin_without_a_db(monkeypatch):
     data = dashboard.get_activity_week_data(-5)   # clamped to the current week
     assert data["activity_week"] == {"week_start": "2026-06-29", "offset": 0}
     assert data["activity_week_offset"] == 0
+
+
+# ── unified Today / Fitness (the training plan joined with Garmin) ──────────
+
+def _with_plan(**changes):
+    import copy
+    plan = copy.deepcopy(PLAN_CONTEXT)
+    plan.update(changes)
+    return {**SAMPLE, "plan": plan}
+
+
+def _section(html, cls):
+    return re.search(rf'<section class="panel tabpanel {cls}".*?</section>', html, re.S).group(0)
+
+
+def test_today_leads_with_readiness_session_tomorrow_and_this_week():
+    today = _section(dashboard.render_dashboard_html(_with_plan()), "tp-today")
+
+    order = [today.index(">Readiness<"), today.index("Today&rsquo;s session"),
+             today.index(">Tomorrow<"), today.index(">This week<"), today.index('class="focus"')]
+    assert order == sorted(order)
+    assert "Plantagenet Ride w/ Cam" in today and "4h 45m · 115 km · Zone 1-2" in today
+    assert "7.8 of 13.3 h" in today and "width:59%" in today
+
+
+def test_session_card_joins_the_planned_workout_with_its_garmin_activity():
+    today = _section(dashboard.render_dashboard_html(_with_plan()), "tp-today")
+    card = today.split("Today&rsquo;s session", 1)[1].split(">Tomorrow<", 1)[0]
+
+    assert "FTP Field Test" in card and ">Done" in card and "Planned 40 min · Test · 20 km" in card
+    assert "Ottawa - FTP Test (20 min warmup)" in card
+    assert "26.16 km · 52 min · from Garmin" in card
+    assert "openActivityModal(900)" in card
+    assert "data-ftp-open" in card and "Update FTP from test" in card
+
+
+def test_session_card_says_so_once_the_test_ftp_is_applied():
+    plan = _with_plan()
+    plan["plan"]["ftp_test"]["applied"] = True
+    plan["plan"]["ftp_test"]["current"] = 248
+    html = dashboard.render_dashboard_html(plan)
+    assert "Plan FTP set to 248 W from this test" in html
+    assert 'id="ftp-dialog"' not in html and "data-ftp-open>" not in html
+
+
+def test_rest_day_shows_rest_card_and_opens_in_focus_on_recovery():
+    today = _section(dashboard.render_dashboard_html(_with_plan(today=[])), "tp-today")
+    assert "Rest day" in today and "Nothing planned." in today
+    assert 'data-focus-start="1"' in today
+    assert 'class="focus-dot on" data-focus-dot="1"' in today
+
+
+def test_session_day_opens_in_focus_on_training_status():
+    today = _section(dashboard.render_dashboard_html(_with_plan()), "tp-today")
+    assert 'data-focus-start="0"' in today
+
+
+def test_today_without_a_plan_offers_an_upload():
+    today = _section(dashboard.render_dashboard_html({**SAMPLE, "plan": None}, token="t0k"), "tp-today")
+    assert "No active plan" in today and "/training-plan/upload?token=t0k" in today
+    assert "Today&rsquo;s session" not in today
+
+
+def test_topbar_carries_the_plan_week_and_phase():
+    html = dashboard.render_dashboard_html(_with_plan(), token="t0k")
+    pill = html.split('class="week-pill"', 1)[1].split("</a>", 1)[0]
+    assert "Wk 2 · Field Testing" in pill and 'href="/training-plan?token=t0k"' in pill
+
+
+def test_fitness_compares_garmin_and_plan_thresholds_with_tags():
+    fitness = _section(dashboard.render_dashboard_html(_with_plan()), "tp-you")
+    ftp_row = fitness.split(">FTP<", 1)[1].split('class="f-row"', 1)[0]
+
+    assert ">275 W<" in ftp_row and ">250 W<" in ftp_row and ">Provisional<" in ftp_row
+    assert "test today" in ftp_row
+    assert ">Tested<" in fitness and ">Unvalidated<" in fitness
+
+
+def test_fitness_shows_plan_zones_with_bike_first():
+    fitness = _section(dashboard.render_dashboard_html(_with_plan()), "tp-you")
+    assert "Plan zones" in fitness and "Heart-rate zones" not in fitness
+    assert 'id="fz-bike" checked' in fitness
+    assert "FTP 250 W · LTHR 164 bpm" in fitness
+    assert ">300+<" in fitness and ">174+<" in fitness
+    assert 'label for="fz-swim"' not in fitness   # no swim zones in this plan
+
+
+def test_fitness_offers_to_review_a_recent_ftp_test():
+    fitness = _section(dashboard.render_dashboard_html(_with_plan()), "tp-you")
+    assert "FTP test done today" in fitness
+    assert "Best 20-min 261 W &rarr; FTP &asymp; 248 W" in fitness
+
+
+def test_ftp_dialog_posts_to_the_plan_operations_api():
+    html = dashboard.render_dashboard_html(_with_plan(), token="t0k")
+    dialog = html.split('id="ftp-dialog"', 1)[1].split("</div>\n  </div>", 1)[0]
+    assert 'data-endpoint="/training-plan/api/operations?token=t0k"' in dialog
+    assert 'value="248"' in dialog and "261 W" in dialog and "250 W now" in dialog
+
+
+def test_personal_records_fold_into_one_row():
+    fitness = _section(dashboard.render_dashboard_html(SAMPLE), "tp-you")
+    assert '<details class="f-prs">' in fitness and "Personal records" in fitness
+
+
+def test_fitness_topbar_swaps_in_with_its_tab():
+    html = dashboard.render_dashboard_html(_with_plan())
+    assert 'class="topbar-fitness topbar-inner"' in html
+    assert "Garmin + Winter Base Block — FTP Focus" in html
+    assert "#tab-you:checked ~ .topbar .topbar-fitness { display:flex; }" in html

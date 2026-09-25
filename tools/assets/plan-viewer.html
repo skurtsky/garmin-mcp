@@ -110,32 +110,8 @@ a:hover { color: var(--color-accent); }
 .dialog-actions { display:flex; justify-content:flex-end; gap: var(--space-2); margin-top: var(--space-2); }
 
 /* — layout — */
-#app { min-height:100vh; display:flex; flex-direction:column; padding-bottom:104px; position:relative; }
+#app { min-height:100vh; display:flex; flex-direction:column; padding-bottom:24px; position:relative; }
 .scroller { flex:1; padding-bottom:24px; }
-
-/* — floating nav — */
-.nav-wrap { position:fixed; left:0; right:0; bottom:0; z-index:30; display:flex; justify-content:center;
-  padding:0 16px max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px)); pointer-events:none; }
-.nav-pill { pointer-events:auto; display:flex; gap:2px; padding:6px; border-radius:999px; width:min(420px,100%);
-  background: color-mix(in srgb, var(--color-surface) 92%, transparent); backdrop-filter: blur(16px);
-  box-shadow: var(--shadow-md); }
-.navbtn { flex:1; border:0; cursor:pointer; font-family: var(--font-body); background:transparent;
-  color: var(--color-neutral-500); border-radius:999px; padding:8px 0;
-  display:flex; flex-direction:column; align-items:center; gap:2px; }
-.navbtn.active { background: color-mix(in srgb, var(--color-accent) 20%, transparent); color: var(--color-accent-200); }
-.navbtn span { font-size:9px; letter-spacing:.06em; text-transform:uppercase; }
-
-.nav-backdrop { position:fixed; inset:0; z-index:25; background:rgba(0,0,0,.5); }
-.nav-sheet { position:fixed; left:16px; right:16px; bottom:calc(80px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px))); z-index:26;
-  max-width:420px; margin:0 auto; border-radius:20px; overflow:hidden;
-  background: var(--color-surface); box-shadow: var(--shadow-lg); }
-.nav-sheet-item { width:100%; display:flex; align-items:center; gap:12px; padding:16px 18px; border:0;
-  border-top:1px solid var(--color-neutral-800); background:transparent; color: var(--color-text);
-  font-family: var(--font-body); font-size:15px; text-align:left; cursor:pointer; text-decoration:none; }
-.nav-sheet-item:first-child { border-top:none; }
-.nav-sheet-item.disabled { color: var(--color-neutral-600); cursor:default; }
-.nav-sheet-item .soon-badge { margin-left:auto; font-size:10px; letter-spacing:.06em; text-transform:uppercase;
-  color: var(--color-neutral-600); background: rgba(255,255,255,.06); padding:3px 8px; border-radius:999px; }
 
 /* The one responsive decision that matters: seven columns on a desktop
    screen, a single readable stack on a phone. */
@@ -148,6 +124,33 @@ a:hover { color: var(--color-accent); }
   .week-grid { display:grid; grid-template-columns: repeat(7, 1fr); gap:10px; align-items:start; padding:0 18px 24px; }
   .content-wrap { max-width: 1440px; margin: 0 auto; }
 }
+/* — Plan header (phase and progress moved here from the old Home tab) — */
+.plan-head { display:flex; align-items:flex-end; gap:24px; padding:24px 24px 18px; }
+.plan-head-main { flex:1; min-width:0; }
+.plan-head-kicker { font-size:12px; color:var(--color-neutral-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.plan-head-week { font-size:24px; font-weight:500; letter-spacing:-0.015em; line-height:1.25; }
+.plan-head-progress { width:220px; display:flex; flex-direction:column; gap:6px; }
+.plan-head-row { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--color-neutral-400); }
+.phase-pick { position:relative; display:flex; align-items:center; gap:6px; }
+.phase-pick select { position:absolute; inset:0; opacity:0; cursor:pointer; width:100%; }
+.plan-bar { height:6px; border-radius:999px; background:var(--color-neutral-800); }
+.plan-bar > div { height:100%; border-radius:999px; background:var(--color-accent); }
+.plan-head-nav { display:flex; gap:6px; }
+.plan-head-nav .btn-icon { width:34px; height:34px; border-radius:8px; box-shadow:inset 0 0 0 1px var(--color-divider); }
+.plan-focus { margin:-6px 24px 16px; font-size:13px; color:var(--color-neutral-400); }
+@media (max-width: 899px) {
+  .plan-head { flex-wrap:wrap; align-items:center; gap:12px 16px; padding:20px 18px 14px; }
+  .plan-head-week { font-size:20px; }
+  .plan-head-progress { order:3; width:100%; }
+  .plan-focus { margin:-4px 18px 14px; }
+}
+.dl-short { display:none; }
+.plan-focus { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; cursor:pointer; }
+.plan-focus.open { display:block; }
+@media (min-width: 900px) { .dl-long { display:none; } .dl-short { display:inline; } }
+.day-head.today { border-bottom-color: var(--color-accent); }
+.wcard.today { box-shadow: 0 0 0 1px var(--color-neutral-700); }
+.wcard-garmin { display:flex; align-items:center; gap:4px; font-size:11px; margin-top:5px; }
 .day-head { display:flex; justify-content:space-between; align-items:baseline; padding:2px 2px 8px;
   border-bottom:1px solid var(--color-neutral-800); margin-bottom:8px; }
 .wcard { padding:12px; margin-bottom:8px; cursor:pointer; }
@@ -195,7 +198,8 @@ function api(path, body) {
 }
 function applyServer(data) {
   PLAN = data.plan;
-  SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {} });
+  SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {},
+    activities: data.activities || {} });
   syncStateFromPlan();
   state.revisions = null;
 }
@@ -229,7 +233,7 @@ const ICONS = {
   hourglass:'<path d="M200 75.3V40h8a8 8 0 0 0 0-16H48a8 8 0 0 0 0 16h8v35.3a44 44 0 0 0 17.6 35.2L102.7 128l-29.1 21.5A44 44 0 0 0 56 184.7V216h-8a8 8 0 0 0 0 16h160a8 8 0 0 0 0-16h-8v-31.3a44 44 0 0 0-17.6-35.2L153.3 128l29.1-21.5A44 44 0 0 0 200 75.3Z"/>',
   down:'<path d="M74.3 85.7a8 8 0 0 1 11.4-11.4L120 108.7V32a8 8 0 0 1 16 0v76.7l34.3-34.4a8 8 0 0 1 11.4 11.4l-48 48a8 8 0 0 1-11.4 0ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
   up:'<path d="M74.3 101.7 122.3 53.7a8 8 0 0 1 11.4 0l48 48a8 8 0 0 1-11.4 11.4L136 78.6V152a8 8 0 0 1-16 0V78.6l-34.3 34.5a8 8 0 0 1-11.4-11.4ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
-  house:'<path d="M128 26 222 104 222 224 34 224 34 104Z"/>',
+  link:'<path d="M165.66,90.34a8,8,0,0,1,0,11.32l-64,64a8,8,0,0,1-11.32-11.32l64-64A8,8,0,0,1,165.66,90.34ZM215.6,40.4a56,56,0,0,0-79.2,0L106.34,70.45a8,8,0,0,0,11.32,11.32l30.06-30a40,40,0,0,1,56.57,56.56l-30.07,30.06a8,8,0,0,0,11.31,11.32L215.6,119.6a56,56,0,0,0,0-79.2ZM138.34,174.22l-30.06,30.06a40,40,0,1,1-56.56-56.57l30.05-30.05a8,8,0,0,0-11.32-11.32L40.4,136.4a56,56,0,0,0,79.2,79.2l30.06-30.07a8,8,0,0,0-11.32-11.31Z"/>',
   list:'<path d="M40 76h176a8 8 0 0 0 0-16H40a8 8 0 0 0 0 16Zm176 32H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Zm0 48H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Z"/>',
   chartbar:'<path d="M40 136h32v80H40Zm72-48h32v128h-32Zm72-48h32v176h-32Z"/>',
   pencil:'<path d="M227.3 73.4 182.6 28.7a16 16 0 0 0-22.6 0L36.7 152A15.9 15.9 0 0 0 32 163.3V208a16 16 0 0 0 16 16h44.7a15.9 15.9 0 0 0 11.3-4.7L227.3 96a16 16 0 0 0 0-22.6ZM92.7 208H48v-44.7l88-88L180.7 120ZM192 108.7 147.3 64l24-24L216 84.7Z"/>',
@@ -262,6 +266,7 @@ function resolveSinglePace(str) {
   return fmtMMSS(secs.reduce((a,b) => a+b, 0) / secs.length);
 }
 function pct(base, p) { return Math.round(base * p / 100); }
+function todayStr() { const t = new Date(); return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0'); }
 function d(dateStr) { return new Date(dateStr + 'T00:00:00'); }
 function dayMonth(dateStr) { return d(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric' }); }
 function longDate(dateStr) { return d(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }); }
@@ -340,9 +345,10 @@ function sportStatus(sport) {
 }
 
 const state = {
-  tab: 'dashboard',
+  tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
   planWeekNumber: startWeek(),
   completed: {},
+  activities: {},
   unit: 'metric',
   zoneSport: PLAN.zones?.bike ? 'bike' : (PLAN.zones?.run ? 'run' : 'swim'),
   overrides: {},
@@ -350,13 +356,11 @@ const state = {
   modalId: null,
   editId: null,
   editDraft: null,
-  menuOpen: false,
   saving: false,
   revisions: null,
   historyOpen: false,
   modalMenu: false,
-  revisionsError: '',
-  pdfGenerating: false
+  revisionsError: ''
 };
 function defaultUnit() {
   const p = PLAN.preferences || {};
@@ -365,6 +369,7 @@ function defaultUnit() {
 function syncStateFromPlan() {
   ZONE_DEFAULTS = zoneDefaults();
   state.completed = Object.assign({}, SERVER.completed || {});
+  state.activities = Object.assign({}, SERVER.activities || {});
   state.unit = PLAN.unit || defaultUnit();
   state.overrides = Object.assign({}, ZONE_DEFAULTS, PLAN.overrides || {});
   state.zonesValidated = Object.assign({}, PLAN.zonesValidated || {});
@@ -410,94 +415,32 @@ function distanceLabel(w) {
 }
 
 /* ── views ── */
+/* The Garmin activity matched to a completed workout (garmin-mcp links them
+   on sync, or when a workout is ticked here). */
+function garminLine(w, color) {
+  const act = state.completed[w.id] && state.activities[w.id];
+  if (!act) return '';
+  return '<div class="wcard-garmin" style="color:' + color + ';">' + icon('link', 12) + 'Garmin'
+    + (act.durationMin ? ' · ' + esc(fmtDuration(act.durationMin)) : '') + '</div>';
+}
 function workoutCard(w, dateStr) {
   const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
   const done = !!state.completed[w.id];
+  const isToday = dateStr === todayStr();
+  const faded = done && !isToday;
   const dist = distanceLabel(w);
   const meta = [fmtDuration(w.durationMinutes), dist, w.primaryZone].filter(Boolean).map(esc).join(' · ');
-  return '<div class="card elev-sm wcard"' + (READ_ONLY ? '' : ' draggable="true" data-drag-id="' + esc(w.id) + '"') + ' data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (done ? 0.55 : 1) + ';">'
+  return '<div class="card elev-sm wcard' + (isToday ? ' today' : '') + '"' + (READ_ONLY ? '' : ' draggable="true" data-drag-id="' + esc(w.id) + '"') + ' data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (faded ? 0.55 : 1) + ';">'
     + '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
       + '<span class="tag" style="background:' + tint(color) + '; color:' + color + '; font-size:10px;">' + esc(w.sport) + '</span>'
       + (READ_ONLY
         ? '<span style="line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</span>'
         : '<button type="button" data-toggle="' + esc(w.id) + '" title="' + (done ? 'Mark incomplete' : 'Mark complete') + '" style="background:none; border:none; cursor:pointer; padding:0; line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</button>')
     + '</div>'
-    + '<div style="font-size:13.5px; font-weight:500; margin-top:6px; text-decoration:' + (done ? 'line-through' : 'none') + ';">' + esc(w.name) + '</div>'
+    + '<div style="font-size:13.5px; font-weight:500; margin-top:6px; text-decoration:' + (faded ? 'line-through' : 'none') + ';">' + esc(w.name) + '</div>'
     + '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:3px;">' + meta + '</div>'
+    + garminLine(w, color)
   + '</div>';
-}
-
-function dashboard() {
-  const curWeek = startWeek();
-  const wk = weekByNumber(curWeek) || (PLAN.weeks || [])[0];
-  const phase = phaseForWeek(curWeek);
-  const phaseColor = PHASE_COLORS[phase.name] || '#7c8194';
-  const today = new Date();
-  let h = '';
-
-  h += readOnlyBanner();
-  h += '<div style="padding:24px 18px 8px;">'
-    + '<h1 style="font-size:26px; margin:10px 0 4px; line-height:1.15;">' + esc(PLAN.meta.event) + '</h1>'
-    + '<div style="color:var(--color-neutral-300); font-size:14px;">' + esc(PLAN.meta.athlete || '') + (RACE ? ' · Race day ' + esc(longDate(RACE.date)) : ' · ' + esc(PLAN.meta.totalWeeks) + '-week block') + '</div>'
-  + '</div>';
-
-  const countdown = RACE
-    ? { kicker:'Race countdown', big: String(Math.max(0, Math.ceil((d(RACE.date) - today)/86400000))), small:'days to go' }
-    : { kicker:'Plan window', big: String(PLAN.meta.totalWeeks), small:'weeks total' };
-
-  h += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 18px;">'
-    + '<div class="card elev-sm" style="padding:16px;"><div class="card-kicker">' + countdown.kicker + '</div>'
-      + '<div style="font-family:var(--font-heading); font-size:32px; font-weight:500; margin-top:4px;">' + countdown.big + '</div>'
-      + '<div style="color:var(--color-neutral-400); font-size:13px;">' + countdown.small + '</div></div>'
-    + '<div class="card elev-sm" style="padding:16px;"><div class="card-kicker">Current phase</div>'
-      + '<div style="display:flex; align-items:center; gap:8px; margin-top:6px;">'
-        + '<span style="width:10px; height:10px; border-radius:50%; background:' + phaseColor + '; flex-shrink:0;"></span>'
-        + '<span style="font-family:var(--font-heading); font-size:18px; font-weight:500;">' + esc(phase.name) + '</span></div>'
-      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-top:4px;">Week ' + curWeek + ' of ' + esc(PLAN.meta.totalWeeks) + '</div></div>'
-  + '</div>';
-
-  const nonRest = allWorkouts().filter(x => x.wo.sport !== 'rest');
-  const completedCount = nonRest.filter(x => state.completed[x.wo.id]).length;
-  const progressPct = nonRest.length ? Math.round(completedCount / nonRest.length * 100) : 0;
-  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
-    + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px;">'
-      + '<div class="card-title">Plan progress</div>'
-      + '<span style="font-family:var(--font-heading); font-size:15px; color:var(--color-neutral-300);">' + completedCount + '/' + nonRest.length + '</span>'
-    + '</div>'
-    + '<div style="height:8px; border-radius:var(--radius-sm); background:var(--color-neutral-800); overflow:hidden; margin-top:8px;">'
-      + '<div style="height:100%; border-radius:var(--radius-sm); background:var(--color-accent); width:' + progressPct + '%;"></div></div>'
-    + '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:6px;">' + progressPct + '% of workouts complete</div>'
-  + '</div>';
-
-  if (wk && wk.summary) {
-    h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
-      + '<div class="card-title" style="margin-bottom:2px;">Week ' + wk.weekNumber + ' target</div>'
-      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">' + esc(wk.focus || phase.focus || '') + '</div>';
-    Object.keys(wk.summary.bySport || {}).forEach(sport => {
-      const r = wk.summary.bySport[sport];
-      h += '<div style="display:flex; align-items:center; gap:10px; padding:6px 0; border-top:1px solid var(--color-neutral-800);">'
-        + '<span style="width:10px; height:10px; border-radius:3px; background:' + (SPORT_COLORS[sport] || SPORT_COLORS.rest) + '; flex-shrink:0;"></span>'
-        + '<span style="flex:1; font-size:14px; text-transform:capitalize;">' + esc(sport) + '</span>'
-        + '<span style="font-size:13px; color:var(--color-neutral-300);">' + esc(r.sessions) + ' sessions</span>'
-        + '<span style="font-size:13px; color:var(--color-neutral-300); width:64px; text-align:right;">' + esc(r.hours) + 'h</span></div>';
-    });
-    h += '</div>';
-  }
-
-  const next = allWorkouts().filter(x => !state.completed[x.wo.id] && x.wo.sport !== 'rest').sort((a,b) => a.date < b.date ? -1 : 1)[0];
-  if (next) {
-    const color = SPORT_COLORS[next.wo.sport] || SPORT_COLORS.rest;
-    h += '<div class="card elev-md" style="margin:12px 18px; padding:16px; border-left:3px solid ' + color + '; cursor:pointer;" data-open="' + esc(next.wo.id) + '">'
-      + '<div class="card-kicker">Next key workout</div>'
-      + '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-top:6px;"><div>'
-        + '<div style="font-family:var(--font-heading); font-size:16px; font-weight:500;">' + esc(next.wo.name) + '</div>'
-        + '<div style="color:var(--color-neutral-400); font-size:13px; margin-top:2px;">' + esc(dayMonth(next.date)) + ' · ' + esc(fmtDuration(next.wo.durationMinutes)) + (next.wo.primaryZone ? ' · ' + esc(next.wo.primaryZone) : '') + '</div></div>'
-        + '<span class="tag" style="background:' + tint(color) + '; color:' + color + ';">' + esc(next.wo.sport) + '</span></div>'
-    + '</div>';
-  }
-
-  h += zonesSection();
-  return h;
 }
 
 function readOnlyBanner() {
@@ -506,11 +449,6 @@ function readOnlyBanner() {
     + '<span class="tag tag-outline">Archived</span>'
     + '<span style="flex:1; font-size:13px; color:var(--color-neutral-300);">Read-only view of a past plan.</span>'
     + '<a href="' + esc(appLink('/training-plan/plans')) + '" style="font-size:13px;">All plans</a></div>';
-}
-
-function zoneRow(color, cells) {
-  return '<tr><td><span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + color + '; margin-right:6px;"></span>'
-    + cells.map(esc).join('</td><td>') + '</td></tr>';
 }
 
 function statusTag(sport) {
@@ -522,63 +460,11 @@ function rangeStr(lo, hi, fmt, suffix) {
   return (vals[0] === vals[1] ? vals[0] : vals[0] + '-' + vals[1]) + (suffix || '');
 }
 
-function zonesSection() {
-  const ov = state.overrides;
-  const z = PLAN.zones || {};
-  let h = '<div style="padding:16px 18px 4px; display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">'
-    + '<div class="card-title">Zones</div><div class="seg">'
-    + ['swim','bike','run'].filter(s => z[s]).map(s =>
-        '<label class="seg-opt"><input type="radio" name="zone-sport" data-zone="' + s + '"' + (state.zoneSport === s ? ' checked' : '') + '>' + s[0].toUpperCase() + s.slice(1) + '</label>').join('')
-    + '</div></div>';
-
-  if (state.zoneSport === 'bike' && z.bike) {
-    const rows = BIKE_POWER_PCT_TABLE.map((zz, i) => {
-      const hz = HR_PCT_TABLE[i];
-      return zoneRow(ZONE_COLORS[zz.zone] || '#7c8194', [
-        zz.zone, zz.name,
-        ov.ftp ? rangeStr(pct(ov.ftp, zz.low), pct(ov.ftp, zz.high), String, 'W') : '—',
-        ov.bikeLthr ? rangeStr(pct(ov.bikeLthr, hz.low), pct(ov.bikeLthr, hz.high), String) : '—'
-      ]);
-    }).join('');
-    h += '<div style="margin:0 18px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--color-neutral-400); font-size:13px;">'
-      + '<span>FTP ' + esc(ov.ftp) + 'W' + (ov.bikeLthr ? ' · Cycling LTHR ' + esc(ov.bikeLthr) + 'bpm' : '') + '</span>' + statusTag('bike') + '</div>'
-      + tableCard(['Zone','Name','Watts','HR'], rows);
-  }
-  if (state.zoneSport === 'run' && z.run) {
-    const thresholdSec = parseMMSS(ov.thresholdPace);
-    const rows = HR_PCT_TABLE.map((zz, i) => {
-      const pz = RUN_PACE_OFFSET_TABLE[i];
-      return zoneRow(ZONE_COLORS[zz.zone] || '#7c8194', [
-        zz.zone, zz.name,
-        ov.runLthr ? rangeStr(pct(ov.runLthr, zz.low), pct(ov.runLthr, zz.high), String) : '—',
-        thresholdSec != null ? rangeStr(thresholdSec + pz.low, thresholdSec + pz.high, fmtMMSS, '/km') : '—'
-      ]);
-    }).join('');
-    h += '<div style="margin:0 18px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--color-neutral-400); font-size:13px;">'
-      + '<span>Threshold pace ' + esc(ov.thresholdPace) + '/km' + (ov.runLthr ? ' · Run LTHR ' + esc(ov.runLthr) + 'bpm' : '') + '</span>' + statusTag('run') + '</div>'
-      + tableCard(['Zone','Name','HR','Pace'], rows);
-  }
-  if (state.zoneSport === 'swim' && z.swim) {
-    const rows = SWIM_PACE_OFFSET_TABLE.map(zz => zoneRow(ZONE_COLORS[zz.zone] || '#7c8194', [
-      zz.zone, zz.name,
-      ov.cssSeconds != null ? rangeStr(ov.cssSeconds + zz.low, ov.cssSeconds + zz.high, fmtMMSS, '/100m') : '—'
-    ])).join('');
-    h += '<div style="margin:0 18px 8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; color:var(--color-neutral-400); font-size:13px;">'
-      + '<span>CSS ' + esc(ov.cssLabel) + '</span>' + statusTag('swim') + '</div>'
-      + tableCard(['Zone','Name','Pace /100m'], rows);
-  }
-  return h;
-}
-function tableCard(heads, rows) {
-  return '<div class="card elev-sm" style="margin:0 18px 20px; padding:0; overflow:hidden;">'
-    + '<table class="table"><thead><tr><th>' + heads.join('</th><th>') + '</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
-}
-
 /* Zone tokens embedded in a workout's humanReadable text — e.g.
    "{{run-pace:5a}}" or "{{bike-watts:2}}" — written by the plan author
    instead of a hand-typed pace/watt number (see
    reference/humanreadable-format.md). Resolved here using the exact same
-   tables and overrides as zonesSection() above, so a workout's numbers and
+   tables and overrides as the dashboard's Fitness page (tools/plan_doc.py zone_rows), so a workout's numbers and
    the Dashboard's zone table always agree and both move together when the
    athlete edits a threshold on Settings. */
 const TOKEN_RE = /\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?)\s*\}\}/gi;
@@ -621,35 +507,36 @@ function planTab() {
   const first = (PLAN.weeks || [])[0]?.weekNumber || 1;
   const last = PLAN.meta.totalWeeks || ((PLAN.weeks || []).slice(-1)[0]?.weekNumber || 1);
 
-  let h = readOnlyBanner() + '<div style="padding:20px 18px 10px; display:flex; align-items:center; justify-content:space-between;">'
-    + '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + '>' + icon('left') + '</button>'
-    + '<div style="text-align:center;"><div style="font-family:var(--font-heading); font-size:17px; font-weight:500;">Week ' + n
-      + ' <span style="color:var(--color-neutral-500); font-weight:400;">of ' + esc(last) + '</span></div>'
-      + '<div style="color:var(--color-neutral-400); font-size:12px;">' + (wk ? esc(wk.startDate) + ' – ' + esc(wk.endDate) : esc(phase.name) + ' phase') + '</div></div>'
-    + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last ? ' disabled' : '') + '>' + icon('right') + '</button></div>';
+  const nonRest = allWorkouts().filter(x => x.wo.sport !== 'rest');
+  const doneCount = nonRest.filter(x => state.completed[x.wo.id]).length;
+  const pctDone = nonRest.length ? Math.round(doneCount / nonRest.length * 100) : 0;
+  const range = wk ? dayMonth(wk.startDate) + ' – ' + (d(wk.startDate).getMonth() === d(wk.endDate).getMonth() ? d(wk.endDate).getDate() : dayMonth(wk.endDate)) : '';
+  const race = RACE ? ' · Race day ' + longDate(RACE.date) : '';
 
-  h += '<div style="padding:0 18px 12px; display:flex; gap:8px; align-items:center;">'
-    + '<span style="width:8px; height:8px; border-radius:50%; background:' + phaseColor + '; flex-shrink:0;"></span>'
-    + '<span style="font-size:13px; color:var(--color-neutral-300); flex:1;">' + esc(phase.name) + '</span>'
-    + '<select class="input" id="phase-select" style="width:auto; padding:6px 10px; font-size:13px;">'
-      + (PLAN.phases || []).map(p => '<option value="' + esc(p.name) + '"' + (p.name === phase.name ? ' selected' : '') + '>' + esc(p.name) + ' (wk ' + p.startWeek + '–' + p.endWeek + ')</option>').join('')
-    + '</select></div>';
+  let h = readOnlyBanner() + '<div class="plan-head">'
+    + '<div class="plan-head-main">'
+      + '<div class="plan-head-kicker">' + esc(PLAN.meta.event) + esc(race) + '</div>'
+      + '<div class="plan-head-week">Week ' + n + ' <span style="color:var(--color-neutral-600); font-weight:400;">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>'
+    + '</div>'
+    + '<div class="plan-head-progress">'
+      + '<div class="plan-head-row">'
+        + '<label class="phase-pick"><span style="width:7px; height:7px; border-radius:50%; background:' + phaseColor + ';"></span>' + esc(phase.name)
+          + '<select id="phase-select" aria-label="Jump to phase">'
+          + (PLAN.phases || []).map(p => '<option value="' + esc(p.name) + '"' + (p.name === phase.name ? ' selected' : '') + '>' + esc(p.name) + ' (wk ' + p.startWeek + '–' + p.endWeek + ')</option>').join('')
+          + '</select></label>'
+        + '<span title="' + pctDone + '% of workouts complete">' + doneCount + '/' + nonRest.length + '</span></div>'
+      + '<div class="plan-bar"><div style="width:' + Math.max(pctDone, doneCount ? 2 : 0) + '%;"></div></div>'
+    + '</div>'
+    + '<div class="plan-head-nav">'
+      + '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + ' aria-label="Previous week">' + icon('left') + '</button>'
+      + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last ? ' disabled' : '') + ' aria-label="Next week">' + icon('right') + '</button>'
+    + '</div></div>';
 
-  h += '<div class="card elev-sm" style="margin:0 18px 14px; padding:14px 16px;">'
-    + '<div style="display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:8px;">'
-      + '<div class="card-title">' + (wk ? esc(wk.targetHours) + 'h target' : esc(phase.weeklyHoursRange?.low) + '–' + esc(phase.weeklyHoursRange?.high) + 'h target') + '</div>'
-      + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2">Recovery week</span>' : '') + '</div>'
-    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">' + esc(wk ? wk.focus : phase.focus) + '</div>';
-  if (wk && wk.summary) {
-    h += '<div style="display:flex; flex-wrap:wrap; gap:10px;">' + Object.keys(wk.summary.bySport || {}).map(sport => {
-      const r = wk.summary.bySport[sport];
-      return '<div style="display:flex; align-items:center; gap:6px; font-size:13px; background:var(--color-neutral-800); padding:6px 10px; border-radius:var(--radius-md);">'
-        + '<span style="width:8px; height:8px; border-radius:3px; background:' + (SPORT_COLORS[sport] || SPORT_COLORS.rest) + ';"></span>'
-        + '<span style="text-transform:capitalize;">' + esc(sport) + '</span>'
-        + '<span style="color:var(--color-neutral-400);">' + esc(r.sessions) + '× · ' + esc(r.hours) + 'h' + (r.km ? ' · ' + esc(fmtKm(r.km)) : '') + '</span></div>';
-    }).join('') + '</div>';
+  const focus = wk ? wk.focus : phase.focus;
+  if (focus || (wk && wk.isRecoveryWeek)) {
+    h += '<div class="plan-focus" data-act="toggle-focus" title="Show the whole note">' + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2" style="margin-right:8px;">Recovery week</span>' : '')
+      + esc(focus || '') + (wk && wk.targetHours ? ' <span style="color:var(--color-neutral-600);">· ' + esc(wk.targetHours) + 'h target</span>' : '') + '</div>';
   }
-  h += '</div>';
 
   if (!wk) {
     h += '<div style="margin:0 18px; padding:32px 20px; text-align:center; border:1px dashed var(--color-neutral-700); border-radius:var(--radius-lg); color:var(--color-neutral-400);">'
@@ -664,9 +551,11 @@ function planTab() {
 
   h += '<div class="week-grid">' + (wk.days || []).map(day => {
     const workouts = (byDate[day.date] || []).filter(w => w.sport !== 'rest');
+    const isToday = day.date === todayStr();
     return '<div class="day-col" data-day-date="' + esc(day.date) + '">'
-      + '<div class="day-head"><span style="font-family:var(--font-heading); font-size:14px; font-weight:500;">' + esc(day.dayOfWeek) + '</span>'
-      + '<span style="display:flex; align-items:center; gap:6px;"><span style="font-size:12px; color:var(--color-neutral-500);">' + esc(dayMonth(day.date)) + '</span>'
+      + '<div class="day-head' + (isToday ? ' today' : '') + '"><span style="font-family:var(--font-heading); font-size:14px; font-weight:500;' + (isToday ? ' color:var(--color-accent-300);' : '') + '">'
+        + '<span class="dl-long">' + esc(day.dayOfWeek) + '</span><span class="dl-short">' + esc(String(day.dayOfWeek || '').slice(0, 3)) + '</span>' + (isToday ? ' · Today' : '') + '</span>'
+      + '<span style="display:flex; align-items:center; gap:6px;"><span style="font-size:12px; color:' + (isToday ? 'var(--color-accent-400)' : 'var(--color-neutral-500)') + ';"><span class="dl-long">' + esc(dayMonth(day.date)) + '</span><span class="dl-short">' + d(day.date).getDate() + '</span></span>'
       + (READ_ONLY ? '' : '<button type="button" class="add-btn" data-act="add-workout" data-date="' + esc(day.date) + '" title="Add a workout on ' + esc(dayMonth(day.date)) + '" aria-label="Add workout">' + icon('plus', 14) + '</button>')
       + '</span></div>'
       + (workouts.length ? workouts.map(w => workoutCard(w, day.date)).join('') : '<div class="rest-slot" data-day-date="' + esc(day.date) + '">Rest day</div>')
@@ -690,7 +579,7 @@ function settingsTab() {
 
   h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
     + '<div class="card-title" style="margin-bottom:2px;">Zones &amp; thresholds</div>'
-    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the zone tables on Dashboard, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the plan zones on Fitness, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
   const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
     + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;"' + dis + '>'
       + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
@@ -704,6 +593,8 @@ function settingsTab() {
     + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
   h += '</div>';
 
+  h += settingsLinkCard('Plan PDF', 'A printable wall chart of the whole plan, with the current zones.',
+    appLink('/training-plan/pdf'), 'down', 'Download');
   h += settingsLinkCard('All plans', 'Switch the active plan, or open an archived plan read-only.',
     appLink('/training-plan/plans'), 'list', 'View plans');
   h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach. A new plan id becomes the active plan; the same id replaces this plan after a confirmation.',
@@ -798,6 +689,10 @@ function modal() {
         + (w.difficulty ? '<span class="tag" style="background:' + tint(DIFFICULTY_COLORS[w.difficulty] || '#7c8194') + '; color:' + (DIFFICULTY_COLORS[w.difficulty] || 'var(--color-neutral-300)') + ';">' + esc(w.difficulty) + '</span>' : '')
         + (w.primaryZone ? '<span class="tag" style="background:' + (zc ? tint(zc) : 'var(--color-neutral-800)') + '; color:' + (zc || 'var(--color-neutral-300)') + ';">' + esc(w.primaryZone) + '</span>' : '')
       + '</div>'
+      + (done && state.activities[w.id] ? '<div style="display:flex; align-items:center; gap:6px; font-size:13px; margin-bottom:10px; color:' + color + ';">' + icon('link', 14)
+          + '<span>Done with <b style="font-weight:500;">' + esc(state.activities[w.id].name || 'Garmin activity') + '</b>'
+          + [state.activities[w.id].distanceKm ? fmtKm(state.activities[w.id].distanceKm) : '', state.activities[w.id].durationMin ? fmtDuration(state.activities[w.id].durationMin) : ''].filter(Boolean).map(x => ' · ' + esc(x)).join('')
+          + '</span></div>' : '')
       + '<div style="font-size:13px; color:var(--color-neutral-300); margin-bottom:12px;">' + esc(w.description) + '</div>'
       + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
     + '</div>'
@@ -887,51 +782,10 @@ function draftToFields(d) {
   return d.mode === 'duplicate' ? Object.assign({}, d.extra, fields) : fields;
 }
 
-function tabbar() {
-  const navBtn = (id, name, label) => '<button type="button" class="navbtn' + (state.tab === id && !state.menuOpen ? ' active' : '') + '" data-tab="' + id + '">'
-    + icon(name, 19) + '<span>' + label + '</span></button>';
-  const moreBtn = '<button type="button" class="navbtn' + (state.menuOpen ? ' active' : '') + '" data-act="togglemenu">'
-    + icon('list', 19) + '<span>More</span></button>';
-
-  const sheetItem = (label, name, opts) => {
-    opts = opts || {};
-    const cls = 'nav-sheet-item' + (opts.disabled ? ' disabled' : '');
-    if (opts.href) {
-      return '<a href="' + esc(opts.href) + '" class="' + cls + '">' + icon(name, 20)
-        + '<span style="flex:1;">' + label + '</span></a>';
-    }
-    if (opts.act) {
-      return '<button type="button" class="' + cls + '" data-act="' + opts.act + '"' + (opts.disabled ? ' disabled' : '') + '>' + icon(name, 20)
-        + '<span style="flex:1;">' + label + '</span></button>';
-    }
-    const attr = opts.disabled ? '' : ' data-tab="' + opts.tab + '"';
-    return '<button type="button" class="' + cls + '"' + attr + '>' + icon(name, 20)
-      + '<span style="flex:1;">' + label + '</span>'
-      + (opts.disabled ? '<span class="soon-badge">Soon</span>' : '') + '</button>';
-  };
-
-  const sheet = state.menuOpen
-    ? '<div class="nav-backdrop" data-act="closemenu"></div>'
-      + '<div class="nav-sheet">'
-        + sheetItem('Dashboard', 'gauge', { href: appLink('/dashboard') })
-        + sheetItem('Weekly Summary', 'chartbar', { href: appLink('/weekly-summary') })
-        + sheetItem(state.pdfGenerating ? 'Generating…' : 'Generate Plan PDF', 'down', { act:'generate-pdf', disabled: state.pdfGenerating })
-        + sheetItem('Settings', 'gear', { tab: 'settings' })
-      + '</div>'
-    : '';
-
-  return sheet
-    + '<div class="nav-wrap"><div class="nav-pill">'
-      + navBtn('dashboard', 'house', 'Home')
-      + navBtn('plan', 'calendar', 'Plan')
-      + moreBtn
-    + '</div></div>';
-}
-
 function render() {
-  const body = state.tab === 'dashboard' ? dashboard() : state.tab === 'plan' ? planTab() : settingsTab();
+  const body = state.tab === 'settings' ? settingsTab() : planTab();
   document.getElementById('app').innerHTML =
-    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + tabbar() + modal() + editModal()
+    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + modal() + editModal()
     + (state.saving ? '<div class="saving-pill">Saving…</div>' : '');
 }
 
@@ -968,8 +822,6 @@ document.getElementById('app').addEventListener('click', e => {
   const open = e.target.closest('[data-open]');
   if (open) { state.modalId = open.getAttribute('data-open'); state.modalMenu = false; return render(); }
 
-  const tab = e.target.closest('[data-tab]');
-  if (tab) { state.tab = tab.getAttribute('data-tab'); state.menuOpen = false; return render(); }
 
   const zone = e.target.closest('[data-zone]');
   if (zone) { state.zoneSport = zone.getAttribute('data-zone'); return render(); }
@@ -990,14 +842,13 @@ document.getElementById('app').addEventListener('click', e => {
     if (!act || a === 'backdrop') return render();
   }
   if (!act) return;
-  if (a === 'togglemenu') { state.menuOpen = !state.menuOpen; return render(); }
-  if (a === 'closemenu') { state.menuOpen = false; return render(); }
   if (a === 'backdrop' && e.target !== act) return;
   if (a === 'prev') return stepWeek(-1);
   if (a === 'next') return stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
+  if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
-  if (READ_ONLY && a !== 'generate-pdf') return;
+  if (READ_ONLY) return;
   if (a === 'validate') {
     const sport = act.getAttribute('data-sport');
     const cur = state.zonesValidated[sport];
@@ -1011,21 +862,6 @@ document.getElementById('app').addEventListener('click', e => {
       .then(applyServer)
       .catch(err => alert('Could not restore: ' + err.message))
       .finally(() => { state.saving = false; render(); });
-    return;
-  }
-  if (a === 'generate-pdf') {
-    if (state.pdfGenerating) return;
-    state.pdfGenerating = true;
-    render();
-    fetch(appLink('/training-plan/pdf'))
-      .then(res => { if (!res.ok) throw new Error('Server returned ' + res.status); return res.blob(); })
-      .then(blob => {
-        const url = URL.createObjectURL(blob), link = document.createElement('a');
-        link.href = url; link.download = (PLAN.meta.id || 'training-plan') + '.pdf';
-        document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
-      })
-      .catch(() => alert('Could not generate the PDF. Try again in a moment.'))
-      .finally(() => { state.pdfGenerating = false; render(); });
     return;
   }
   if (a === 'add-workout') {
@@ -1155,7 +991,7 @@ function inSideScroller(el) {
 let swipe = null;
 document.addEventListener('touchstart', e => {
   swipe = null;
-  if (e.touches.length !== 1 || state.tab !== 'plan' || state.modalId || state.editId || state.menuOpen) return;
+  if (e.touches.length !== 1 || state.tab !== 'plan' || state.modalId || state.editId) return;
   const t = e.touches[0];
   if (t.clientX < 24 || t.clientX > window.innerWidth - 24) return;   // leave the screen edges to iOS
   if (!e.target.closest || !e.target.closest('.scroller') || e.target.closest('input, select, textarea')) return;
@@ -1176,14 +1012,42 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
   else if (e.key === 'Escape' && state.modalMenu) { state.modalMenu = false; render(); }
   else if (e.key === 'Escape' && state.modalId) { state.modalId = null; render(); }
-  if (e.key === 'Escape' && state.menuOpen) { state.menuOpen = false; render(); }
   if (state.tab === 'plan' && !state.modalId && !state.editId) {
     if (e.key === 'ArrowLeft') stepWeek(-1);
     if (e.key === 'ArrowRight') stepWeek(1);
   }
 });
 
+/* The shared site nav (tools/navbar.py, injected by the server): Plan and
+   Settings are this page, so they switch views in place — and highlight. */
+function setView(view) {
+  state.tab = view;
+  try {
+    const url = new URL(location.href);
+    if (view === 'settings') url.searchParams.set('view', 'settings'); else url.searchParams.delete('view');
+    history.replaceState(history.state, '', url.toString());
+  } catch (e) { /* history unavailable — the view just isn't kept */ }
+  const more = document.getElementById('gm-nav-more');
+  if (more) more.checked = false;
+  document.querySelectorAll('#gm-nav [data-nav]').forEach(el => {
+    const key = el.getAttribute('data-nav');
+    el.classList.toggle('gm-nav__link--active', key === view);
+    if (key === view) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+    if (key === 'more') el.classList.toggle('gm-nav__more-btn--active', view === 'settings');
+  });
+  render();
+  window.scrollTo(0, 0);
+}
+document.addEventListener('click', e => {
+  const link = e.target.closest && e.target.closest('[data-nav="plan"], [data-nav="settings"]');
+  if (!link || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  if (!link.closest('#gm-nav') && !link.closest('.gm-nav-more-sheet')) return;
+  e.preventDefault();
+  setView(link.getAttribute('data-nav'));
+});
+
 render();
+if (state.tab === 'settings') setView('settings');
 </script>
 <style>.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }
 .add-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; cursor:pointer;
@@ -1210,8 +1074,8 @@ select.input { appearance:auto; }
 .slide-from-right { animation: pv-from-right .22s ease-out; }
 /* Tap feedback: a quick press so a tap visibly registered. */
 html { -webkit-tap-highlight-color: transparent; }
-.btn, .navbtn, .nav-sheet-item, .seg-opt, .wcard { transition: transform .12s ease, opacity .12s ease; }
-.btn:not(:disabled):active, .navbtn:active, .nav-sheet-item:not(.disabled):active, .seg-opt:active { transform: scale(.94); opacity:.75; }
+.btn, .seg-opt, .wcard { transition: transform .12s ease, opacity .12s ease; }
+.btn:not(:disabled):active, .seg-opt:active { transform: scale(.94); opacity:.75; }
 .wcard:active { transform: scale(.985); }
 @media (prefers-reduced-motion: reduce) { .slide-from-left, .slide-from-right { animation: none; } }</style>
 </body>

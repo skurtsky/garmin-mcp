@@ -393,6 +393,37 @@ def get_activity_detail_from_db(garmin_id: int) -> dict | None:
             return cur.fetchone()
 
 
+_ACTIVITY_BRIEF_COLUMNS = """garmin_id, activity_date, activity_type, name,
+                              distance_km, duration_min, summary"""
+
+
+def get_activities_in_range(start_date: str, end_date: str) -> list[dict]:
+    """Synced activities from start_date up to (not including) end_date,
+    oldest first — for matching them to a training plan's workouts."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""SELECT {_ACTIVITY_BRIEF_COLUMNS} FROM activities
+                    WHERE activity_date >= %s AND activity_date < %s
+                    ORDER BY activity_date""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
+def get_activities_by_ids(garmin_ids: list[int]) -> dict[int, dict]:
+    """{garmin_id: row} for the synced activities among ``garmin_ids``."""
+    if not garmin_ids:
+        return {}
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"SELECT {_ACTIVITY_BRIEF_COLUMNS} FROM activities WHERE garmin_id = ANY(%s)",
+                (list(garmin_ids),),
+            )
+            return {row["garmin_id"]: row for row in cur.fetchall()}
+
+
 def get_activity_with_detail(garmin_id: int) -> dict | None:
     """The activity-detail page's full payload: the `activities` row's own
     columns (name, date, distance, duration, avg HR, training load, sport
@@ -679,7 +710,9 @@ def upsert_daily_metric(date_str: str, **kwargs):
             )
 
 
-def upsert_activity(garmin_id: int, **kwargs):
+def upsert_activity(garmin_id: int, **kwargs) -> bool:
+    """Insert or refresh a synced activity. True when it's new — the first
+    time this activity has been synced (xmax is 0 only on a fresh insert)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -691,7 +724,8 @@ def upsert_activity(garmin_id: int, **kwargs):
                    ON CONFLICT (garmin_id) DO UPDATE SET
                        name = EXCLUDED.name,
                        summary = EXCLUDED.summary,
-                       synced_at = now()""",
+                       synced_at = now()
+                   RETURNING (xmax = 0) AS inserted""",
                 {
                     "id": garmin_id,
                     "date": kwargs.get("activity_date"),
@@ -704,6 +738,8 @@ def upsert_activity(garmin_id: int, **kwargs):
                     "summary": Jsonb(kwargs.get("summary")),
                 },
             )
+            row = cur.fetchone()
+            return bool(row and row[0])
 
 
 def get_activity_ids_needing_detail(limit: int = 10) -> list[int]:

@@ -473,6 +473,136 @@ def effective_thresholds(plan: dict) -> dict:
     return {k: v for k, v in out.items() if v not in (None, "", {})}
 
 
+# ── ZONES ─────────────────────────────────────────────────────────────────────
+# The viewer's zone tables (tools/assets/plan-viewer.html — Friel 7-zone
+# system, reference/zones.md), so the dashboard's Fitness page and the plan's
+# own workout targets always agree: (zone, name, low %, high %).
+HR_PCT_TABLE = (
+    ("1", "Recovery", 0, 81), ("2", "Aerobic", 81, 89), ("3", "Tempo", 90, 93),
+    ("4", "Sub-threshold", 94, 99), ("5a", "Threshold", 100, 102),
+    ("5b", "VO2max", 103, 106), ("5c", "Anaerobic", 106, 120),
+)
+BIKE_POWER_PCT_TABLE = (
+    ("1", "Recovery", 0, 55), ("2", "Aerobic", 56, 75), ("3", "Tempo", 76, 90),
+    ("4", "Sub-threshold", 91, 99), ("5a", "Threshold", 100, 105),
+    ("5b", "VO2max", 106, 120), ("5c", "Anaerobic", 120, 150),
+)
+# Seconds per km from threshold pace (positive = slower).
+RUN_PACE_OFFSET_TABLE = (
+    ("1", "Recovery", 70, 90), ("2", "Aerobic", 50, 70), ("3", "Tempo", 15, 25),
+    ("4", "Sub-threshold", 5, 15), ("5a", "Threshold", -2, 2),
+    ("5b", "VO2max", -20, -15), ("5c", "Anaerobic", -35, -25),
+)
+# Seconds per 100m from CSS.
+SWIM_PACE_OFFSET_TABLE = (
+    ("1", "Recovery", 15, 20), ("2", "Aerobic", 8, 12), ("3", "Tempo", 3, 6),
+    ("4", "Threshold", 0, 0), ("5", "VO2max", -5, -3),
+)
+
+
+def _pct(base: int, p: int) -> int:
+    return int(base * p / 100 + 0.5)   # half up, like the viewer's Math.round
+
+
+def fmt_mmss(seconds: float) -> str:
+    s = int(seconds + 0.5)
+    return f"{s // 60}:{s % 60:02d}"
+
+
+def single_pace_seconds(value) -> int | None:
+    """A pace written as one value ("4:10/km") or a tested range
+    ("4:06-4:20/km"), as seconds — a range averages, like the viewer."""
+    secs = [int(m) * 60 + int(s) for m, s in _MMSS_RE.findall(str(value or ""))]
+    return round(sum(secs) / len(secs)) if secs else None
+
+
+def _range(lo, hi, fmt=str) -> str:
+    lo, hi = sorted((lo, hi))
+    a, b = fmt(lo), fmt(hi)
+    return a if a == b else f"{a}–{b}"
+
+
+def zone_rows(plan: dict, sport: str) -> list[dict]:
+    """One sport's zones computed from the current thresholds (overrides over
+    the plan's own values), the way the viewer computes them.
+
+    bike: {zone, name, watts, hr}; run: {zone, name, hr, pace}; swim:
+    {zone, name, pace}. A value is None when its threshold isn't set; the top
+    zone has no ceiling ("302+").
+    """
+    t = effective_thresholds(plan)
+    rows = []
+    if sport == "bike":
+        ftp, lthr = t.get("ftp"), t.get("bikeLthr")
+        for (zone, name, lo, hi), (_, _, hlo, hhi) in zip(BIKE_POWER_PCT_TABLE, HR_PCT_TABLE):
+            rows.append({"zone": zone, "name": name,
+                         "watts": _range(_pct(ftp, lo), _pct(ftp, hi)) if ftp else None,
+                         "hr": _range(_pct(lthr, hlo), _pct(lthr, hhi)) if lthr else None})
+        if ftp:
+            rows[-1]["watts"] = f"{_pct(ftp, BIKE_POWER_PCT_TABLE[-1][2])}+"
+        if lthr:
+            rows[-1]["hr"] = f"{_pct(lthr, HR_PCT_TABLE[-1][2])}+"
+    elif sport == "run":
+        lthr = t.get("runLthr")
+        pace = single_pace_seconds(t.get("thresholdPace"))
+        for (zone, name, lo, hi), (_, _, plo, phi) in zip(HR_PCT_TABLE, RUN_PACE_OFFSET_TABLE):
+            rows.append({"zone": zone, "name": name,
+                         "hr": _range(_pct(lthr, lo), _pct(lthr, hi)) if lthr else None,
+                         "pace": _range(pace + plo, pace + phi, fmt_mmss) if pace is not None else None})
+        if lthr:
+            rows[-1]["hr"] = f"{_pct(lthr, HR_PCT_TABLE[-1][2])}+"
+    elif sport == "swim":
+        css = single_pace_seconds(t.get("css"))
+        for zone, name, lo, hi in SWIM_PACE_OFFSET_TABLE:
+            rows.append({"zone": zone, "name": name,
+                         "pace": _range(css + lo, css + hi, fmt_mmss) if css is not None else None})
+    return rows
+
+
+# Each threshold's sport (for zone validation) and the coach's source note.
+_THRESHOLD_SOURCES = {
+    "ftp": ("bike", ("bike", "power", "ftpSource")),
+    "bikeLthr": ("bike", ("bike", "hr", "lthrSource")),
+    "runLthr": ("run", ("run", "hr", "lthrSource")),
+    "thresholdPace": ("run", ("run", "pace", "paceSource")),
+    "css": ("swim", ("swim", "cssSource")),
+}
+_SOURCE_RE = re.compile(r"^\s*(TESTED|VALIDATED|PROVISIONAL|ESTIMATED)\b[\s—–:.-]*(.*)$", re.IGNORECASE | re.DOTALL)
+
+
+def threshold_status(plan: dict, key: str) -> tuple[str, str]:
+    """(status, note) for one threshold; status is "Tested", "Provisional"
+    or "Unvalidated".
+
+    Validating a sport's zones (Settings, or after a field test) makes its
+    thresholds Tested. Otherwise the coach's source note decides — it starts
+    "TESTED — …" or "PROVISIONAL — …" (swim: ``cssStatus``) — and a threshold
+    with neither is Unvalidated. ``note`` is the source note minus that word.
+    """
+    sport, path = _THRESHOLD_SOURCES[key]
+    node = plan.get("zones") or {}
+    for part in path:
+        node = node.get(part) if isinstance(node, dict) else None
+    note = str(node or "").strip()
+    m = _SOURCE_RE.match(note)
+    word = m.group(1).upper() if m else ""
+    if m:
+        note = m.group(2).strip()
+    if key == "css" and not word:
+        word = str(((plan.get("zones") or {}).get("swim") or {}).get("cssStatus") or "").upper()
+    if ((plan.get("zonesValidated") or {}).get(sport) or {}).get("validated") or word.startswith(("TESTED", "VALIDATED")):
+        return "Tested", note
+    if word.startswith(("PROVISIONAL", "ESTIMATED")):
+        return "Provisional", note
+    return "Unvalidated", note
+
+
+def is_test_workout(workout: dict) -> bool:
+    """A field test (FTP, CSS, LT…) — the coach gives them type "test"."""
+    return (str(workout.get("type") or "").lower() == "test"
+            or re.search(r"\btest\b", str(workout.get("name") or ""), re.IGNORECASE) is not None)
+
+
 def current_week_number(plan: dict, today: date | None = None) -> int | None:
     today = today or date.today()
     week = week_for_date(plan, today)
