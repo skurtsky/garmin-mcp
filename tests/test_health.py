@@ -41,6 +41,33 @@ def test_get_sleep_awake_pct_matches_awake_time(monkeypatch):
     assert result["awake_pct"] == pytest.approx(100 / 6, abs=0.1)
     assert result["deep_pct"] + result["light_pct"] + result["rem_pct"] + result["awake_pct"] == pytest.approx(100, abs=0.2)
 
+def test_get_daily_health_falls_back_to_user_summary_for_heart_rate(monkeypatch):
+    """The dailyHeartRate feed can omit min/max HR for a day while the daily
+    user summary still has them — get_daily_health must not return None."""
+    class FakeClient:
+        def get_heart_rates(self, date):
+            return {"restingHeartRate": 48, "maxHeartRate": None,
+                    "lastSevenDaysAvgRestingHeartRate": 49}
+
+        def get_user_summary(self, date):
+            return {"restingHeartRate": 50, "minHeartRate": 44, "maxHeartRate": 171}
+
+        def get_all_day_stress(self, date):
+            return {}
+
+        def get_body_battery(self, date):
+            return []
+
+        def get_respiration_data(self, date):
+            return {}
+
+    monkeypatch.setattr(health, "get_client", lambda: FakeClient())
+    hr = health.get_daily_health("2026-04-16")["heart_rate"]
+
+    assert hr == {"resting_hr": 48, "max_hr": 171, "min_hr": 44,
+                  "seven_day_avg_resting_hr": 49}
+
+
 def test_get_sleep_returns_dict(test_date):
     result = get_sleep(test_date)
     assert isinstance(result, dict)

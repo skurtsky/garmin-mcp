@@ -234,11 +234,18 @@ def get_daily_health(date: str) -> dict:
     def secs_to_min(secs):
         return round(secs / 60, 1) if secs is not None else None
 
+    # The dailyHeartRate feed can come back without min/max (seen for older
+    # dates) while the daily user summary still carries them, so fall back to
+    # the summary per field — same approach as the stress levels below.
+    def hr_field(key):
+        value = hr_raw.get(key)
+        return value if value is not None else summary_raw.get(key)
+
     heart_rate = {
-        'resting_hr':              hr_raw.get('restingHeartRate'),
-        'max_hr':                  hr_raw.get('maxHeartRate'),
-        'min_hr':                  hr_raw.get('minHeartRate'),
-        'seven_day_avg_resting_hr': hr_raw.get('lastSevenDaysAvgRestingHeartRate'),
+        'resting_hr':              hr_field('restingHeartRate'),
+        'max_hr':                  hr_field('maxHeartRate'),
+        'min_hr':                  hr_field('minHeartRate'),
+        'seven_day_avg_resting_hr': hr_field('lastSevenDaysAvgRestingHeartRate'),
     }
 
     # The per-zone stress durations live on the daily user summary, not on the
