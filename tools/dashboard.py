@@ -1013,6 +1013,11 @@ _STYLE = """
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0,0,0,0.55);
 }
 * { box-sizing: border-box; }
+/* The sticky header's blurred backdrop extends up under the notch / Dynamic
+   Island (black-translucent status bar), with its content pushed below it. */
+@media (max-width: 899px) {
+  .topbar { padding-top: env(safe-area-inset-top, 0px); }
+}
 body { margin:0; background:var(--color-bg); color:var(--color-text); font-family:var(--font-body);
        font-size:15px; line-height:1.5; }
 h1,h2,h3,h4 { font-family:var(--font-heading); font-weight:500; margin:0; }
@@ -1093,7 +1098,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #more-menu:checked ~ .more-menu-backdrop { display:block; position:fixed; inset:0; z-index:39;
   background:rgba(10,11,16,.6); }
 #more-menu:checked ~ .more-menu-sheet { display:flex; }
-.more-menu-sheet { position:fixed; left:16px; right:16px; bottom:calc(84px + env(safe-area-inset-bottom, 0px));
+.more-menu-sheet { position:fixed; left:16px; right:16px; bottom:calc(68px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px)));
   z-index:40; flex-direction:column; max-width:420px; margin:0 auto;
   padding:6px; background:color-mix(in srgb, var(--color-surface) 92%, transparent);
   backdrop-filter:blur(16px); border-radius:20px; box-shadow:var(--shadow-md); }
@@ -3098,7 +3103,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
     radial-gradient(120% 60% at 12% -10%, color-mix(in srgb, var(--color-accent) 13%, transparent), transparent 60%),
     var(--color-bg);color:var(--color-text);font-family:var(--font-body);padding-bottom:104px">
   {_SVG_DEFS}
-  <div style="position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
+  <div class="topbar" style="position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
       background:color-mix(in srgb, var(--color-bg) 78%, transparent);border-bottom:1px solid var(--color-divider)">
     <div style="max-width:1120px;margin:0 auto;padding:11px 16px;display:flex;align-items:center;gap:12px">
       <div style="width:26px;height:26px;border-radius:50%;border:1px solid var(--color-accent);
@@ -3120,7 +3125,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
 
   <div class="tabpanels" style="max-width:1120px;margin:0 auto;padding:16px">{panels}</div>
 
-  <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px 16px;pointer-events:none">
+  <div class="botnav" style="position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;padding:0 16px max(16px,calc(env(safe-area-inset-bottom,0px) - 12px));pointer-events:none">
     <div style="pointer-events:auto;display:flex;gap:2px;padding:6px;border-radius:999px;width:min(420px,100%);
         background:color-mix(in srgb, var(--color-surface) 92%, transparent);backdrop-filter:blur(16px);box-shadow:var(--shadow-md)">
       <label for="tab-today"><i class="ph">&#xe2c2;</i><span>Today</span></label>
