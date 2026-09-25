@@ -369,41 +369,80 @@ def get_trends(period: str = '1m', metrics: Optional[list] = None) -> dict:
         period:  One of 7d, 14d, 1m, 42d, 3m, 6m, 1y (default 1m).
         metrics: Optional list of metric names to include (defaults to all).
     """
+    requested = validate_trends_request(period, metrics)
+
+    dates = trend_window(period)
+    values = fetch_live_series(get_client(), dates, requested)
+    return assemble_trends(period, dates, requested, values)
+
+
+def trend_window(period: str) -> list:
+    """ISO dates, oldest first, of the trailing `period` ending today."""
+    days = _PERIOD_DAYS[period]
+    start = date.today() - timedelta(days=days - 1)
+    return [(start + timedelta(days=i)).isoformat() for i in range(days)]
+
+
+def output_series_keys(requested: list) -> list:
+    """The output series a request produces, in the order get_trends emits
+    them ('body_battery' expands into its _wake / _drain pair)."""
+    keys = [m for m in _PER_DAY_FETCHERS if m in requested]
+    if 'body_battery' in requested:
+        keys += ['body_battery_wake', 'body_battery_drain']
+    if 'steps' in requested:
+        keys.append('steps')
+    return keys
+
+
+def fetch_live_series(client, dates: list, requested: list) -> dict:
+    """Fetch the requested metrics from Garmin for `dates` (ISO strings, oldest
+    first — need not be contiguous). Returns {series_key: {date: value}}.
+
+    Ranged metrics (body battery, steps) are fetched over the span from the
+    first to the last date and trimmed back to `dates`, so a caller filling
+    just a few gaps still makes only a handful of chunked calls.
+    """
+    values: dict = {}
+    if not dates:
+        return {key: {} for key in output_series_keys(requested)}
+
+    # Per-day scalar metrics — fetched concurrently (see _fetch_per_day_metrics).
+    per_day_active = [m for m in _PER_DAY_FETCHERS if m in requested]
+    values.update(_fetch_per_day_metrics(client, dates, per_day_active))
+
+    # Ranged metrics — a handful of chunked calls instead of one per day.
+    wanted = set(dates)
+    span_start = date.fromisoformat(min(dates))
+    span_end = date.fromisoformat(max(dates))
+    if 'body_battery' in requested:
+        wake, drain = _fetch_body_battery(client, span_start, span_end)
+        values['body_battery_wake'] = {d: v for d, v in wake.items() if d in wanted}
+        values['body_battery_drain'] = {d: v for d, v in drain.items() if d in wanted}
+    if 'steps' in requested:
+        steps = _fetch_steps(client, span_start, span_end)
+        values['steps'] = {d: v for d, v in steps.items() if d in wanted}
+    return values
+
+
+def assemble_trends(period: str, dates: list, requested: list, values: dict) -> dict:
+    """Build get_trends' response from {series_key: {date: value}} maps."""
+    return {
+        'period':     period,
+        'start_date': dates[0],
+        'end_date':   dates[-1],
+        'days':       len(dates),
+        'metrics':    {
+            key: _build_series(key, dates, values.get(key, {}))
+            for key in output_series_keys(requested)
+        },
+    }
+
+
+def validate_trends_request(period: str, metrics: Optional[list]) -> list:
+    """Raise ValueError for an unknown period; return the resolved metrics."""
     if period not in _PERIOD_DAYS:
         raise ValueError(
             f"Unknown period '{period}'. Valid periods: "
             f"{', '.join(_PERIOD_DAYS)}"
         )
-    requested = _resolve_metrics(metrics)
-
-    days = _PERIOD_DAYS[period]
-    end = date.today()
-    start = end - timedelta(days=days - 1)
-    dates = [(start + timedelta(days=i)).isoformat() for i in range(days)]
-
-    client = get_client()
-
-    # Per-day scalar metrics — fetched concurrently (see _fetch_per_day_metrics).
-    per_day_active = [m for m in _PER_DAY_FETCHERS if m in requested]
-    per_day_values = _fetch_per_day_metrics(client, dates, per_day_active)
-
-    out_metrics: dict = {}
-    for key in per_day_active:
-        out_metrics[key] = _build_series(key, dates, per_day_values[key])
-
-    # Ranged metrics — a handful of chunked calls instead of one per day.
-    if 'body_battery' in requested:
-        wake, drain = _fetch_body_battery(client, start, end)
-        out_metrics['body_battery_wake'] = _build_series('body_battery_wake', dates, wake)
-        out_metrics['body_battery_drain'] = _build_series('body_battery_drain', dates, drain)
-
-    if 'steps' in requested:
-        out_metrics['steps'] = _build_series('steps', dates, _fetch_steps(client, start, end))
-
-    return {
-        'period':     period,
-        'start_date': start.isoformat(),
-        'end_date':   end.isoformat(),
-        'days':       days,
-        'metrics':    out_metrics,
-    }
+    return _resolve_metrics(metrics)
