@@ -308,7 +308,7 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
         + f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
         f'<a href="{_e(_url("/training-plan", token))}">Active plan</a></div>'
     )
-    return _page("Training plans", body, token, active="plans")
+    return _page("Training plans", body, token, active="settings")
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────

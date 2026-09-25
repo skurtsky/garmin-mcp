@@ -17,8 +17,8 @@ def test_nav_links_all_hosted_pages():
     assert 'href="/dashboard?token=t0k"' in nav
     assert 'href="/training-plan?token=t0k"' in nav
     assert 'href="/weekly-summary?token=t0k"' in nav
-    assert 'href="/training-plan/plans?token=t0k"' in nav
     assert 'href="/training-plan?view=settings&amp;token=t0k"' in nav
+    assert "/training-plan/plans" not in nav   # the plan list is reached from Settings
 
 
 def test_nav_pill_is_today_plan_trends_activity_more():
@@ -35,7 +35,7 @@ def test_nav_more_sheet_holds_everything_else():
     sheet = nav[nav.index("gm-nav-more-sheet\""):]
     labels = [part.split("<")[0] for part in sheet.split("<span>")[1:]]
 
-    assert labels == ["Fitness", "Gear", "Weekly Summary", "Plans", "Plan PDF", "Settings"]
+    assert labels == ["Fitness", "Gear", "Weekly Summary", "Plan PDF", "Settings"]
     assert 'href="/training-plan/pdf?token=t0k" data-nav="plan-pdf" download' in sheet
 
 
@@ -49,8 +49,8 @@ def test_nav_becomes_a_side_rail_on_desktop():
     assert '<div class="gm-nav__title">Kurt</div>' in nav
     markup = _markup(nav)
     rail = [part.split("<")[0] for part in markup.split('class="gm-nav__label">')[1:]]
-    assert rail[:10] == ["Today", "Plan", "Trends", "Activity", "Fitness", "Gear",
-                         "Weekly Summary", "Plans", "Settings", "More"]
+    assert rail[:9] == ["Today", "Plan", "Trends", "Activity", "Fitness", "Gear",
+                        "Weekly Summary", "Settings", "More"]
 
 
 def test_dashboard_tabs_are_labels_that_follow_their_radio():

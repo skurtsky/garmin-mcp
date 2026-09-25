@@ -50,8 +50,6 @@ REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 # fetched window actually show a toggle button.
 TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "").strip() or "6m"
 
-# Fallback daily step goal when the athlete has no active Garmin step goal.
-DEFAULT_STEP_GOAL = int(os.environ.get("DASHBOARD_STEP_GOAL", "10000"))
 
 _TREND_METRICS = ["rhr", "hrv", "sleep_score", "stress", "steps", "training_load"]
 
@@ -345,7 +343,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "training_err": None,
             "training_status": today_metrics.get("training_status_data"),
             "training_status_err": None,
-            "training_status_daily_history": _daily_training_status_history(trend_rows, now.date()),
+            "training_status_daily_history": _daily_training_status_history(trend_rows, now.date(), 90),
             "training_status_daily_history_err": None,
             "activities": activities,
             "activities_err": None,
@@ -904,7 +902,8 @@ def _daily_training_status_history(rows: list[dict], today: date, days: int = 28
     """Daily training-status snapshots for the trailing `days` days ending on
     `today` (oldest first), sliced from the trend rows already fetched for
     the Trends tab's wide date window — no second DB query. Powers the Today
-    tab's training-status history bar (issue 92)."""
+    tab's training-status history bar (issue 92) and the Trends tab's, which
+    follows that tab's range (up to 90 days)."""
     by_date: dict[date, str] = {}
     for r in rows:
         status = (r.get("training_status_data") or {}).get("status")
@@ -926,9 +925,9 @@ def _daily_training_status_history(rows: list[dict], today: date, days: int = 28
 
 def _training_status_day_segments(days_slice: list[dict], gap: bool) -> str:
     """One `.js-bar` colour segment per day. With `gap`, each segment is a
-    small rounded, gapped block (7d view); without, segments sit flush
+    small rounded, gapped block (short ranges); without, segments sit flush
     against each other inside a rounded, clipped strip so same-coloured runs
-    blend seamlessly (28d view)."""
+    blend seamlessly (longer ranges)."""
     segments = []
     for day in days_slice:
         seg_label, seg_color = _training_status_info(day.get("status"))
@@ -941,9 +940,14 @@ def _training_status_day_segments(days_slice: list[dict], gap: bool) -> str:
     return "".join(segments)
 
 
-def _training_status_card(data: dict) -> str:
+_RANGE_LABELS = {30: "1 month", 90: "3 months"}
+
+
+def _training_status_card(data: dict, days: int) -> str:
+    """The current training status over a strip of the last ``days`` days —
+    one per Trends range, so it follows the range picked at the top."""
     ts = data.get("training_status") or {}
-    history = data.get("training_status_daily_history") or []
+    history = (data.get("training_status_daily_history") or [])[-days:]
     if not ts and not history and data.get("training_status_err"):
         return f'<div class="card err">Training status unavailable — {_e(data.get("training_status_err"))}</div>'
 
@@ -951,55 +955,29 @@ def _training_status_card(data: dict) -> str:
     label, color = _training_status_info(status_raw)
     icon = _training_status_icon(status_raw)
     load_focus = _label(ts.get("load_balance")) if ts.get("load_balance") else None
-
-    bar_7 = _training_status_day_segments(history[-7:], gap=True)
-    bar_28 = _training_status_day_segments(history, gap=False)
-    no_history = '<div class="muted" style="font-size:12px">No recent history.</div>'
-
-    since_7 = _mon_day(history[-7]["date"]) if len(history) >= 7 else (_mon_day(history[0]["date"]) if history else None)
-    since_28 = _mon_day(history[0]["date"]) if history else None
-
-    range_radios = (
-        '<input class="hide" type="radio" name="ts-range" id="ts-range-7">'
-        '<input class="hide" type="radio" name="ts-range" id="ts-range-28" checked>'
-    )
-    range_toggle = ('<div class="ts-toggle"><label for="ts-range-7">7d</label>'
-                     '<label for="ts-range-28">28d</label></div>')
+    gap = days <= 14
+    bar = _training_status_day_segments(history, gap=gap)
+    since = _mon_day(history[0]["date"]) if history else None
+    bar_style = "gap:3px" if gap else "border-radius:5px;overflow:hidden"
 
     return f"""
-    <div class="card ts-card" style="padding:16px;gap:14px">
-      {range_radios}
+    <div class="card ts-card" style="padding:16px;gap:14px;grid-column:1/-1">
       <div style="display:flex;align-items:center;gap:6px;color:var(--color-neutral-500)">
         {_stroke_icon(icon, 14)}<div class="kicker">Training status</div>
       </div>
-      <div class="ts-status-row" style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">
-        <div style="display:flex;align-items:center;gap:12px">
-          <div style="width:40px;height:40px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;
-              background:color-mix(in srgb, {color} 18%, transparent);color:{color}">{_stroke_icon(icon, 20)}</div>
-          <div>
-            <div style="font-family:var(--font-heading);font-size:24px;color:{color};line-height:1.2">{_e(label)}</div>
-            {f'<div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">Load Focus &middot; {load_focus}</div>' if load_focus else ""}
-          </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <div style="width:40px;height:40px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;
+            background:color-mix(in srgb, {color} 18%, transparent);color:{color}">{_stroke_icon(icon, 20)}</div>
+        <div>
+          <div style="font-family:var(--font-heading);font-size:24px;color:{color};line-height:1.2">{_e(label)}</div>
+          {f'<div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">Load Focus &middot; {load_focus}</div>' if load_focus else ""}
         </div>
-        {range_toggle}
       </div>
-      <div class="ts-bar-7" style="gap:3px">{bar_7 or no_history}</div>
-      <div class="ts-bar-28" style="border-radius:5px;overflow:hidden">{bar_28 or no_history}</div>
-      <div class="ts-cap-7" style="justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
-        <span>Last 7d</span><span>{f"Since {since_7}" if since_7 else ""}</span>
-      </div>
-      <div class="ts-cap-28" style="justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
-        <span>Last 4w</span><span>{f"Since {since_28}" if since_28 else ""}</span>
+      <div style="display:flex;{bar_style}">{bar or '<div class="muted" style="font-size:12px">No recent history.</div>'}</div>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
+        <span>Last {_RANGE_LABELS.get(days, f"{days}d")}</span><span>{f"Since {since}" if since else ""}</span>
       </div>
     </div>"""
-
-
-def _step_goal(data: dict) -> int:
-    for g in (data.get("active_goals") or []):
-        name = f"{g.get('goal_category') or ''} {g.get('goal_type_name') or ''}".lower()
-        if "step" in name and g.get("target_value"):
-            return int(g["target_value"])
-    return DEFAULT_STEP_GOAL
 
 
 def _acwr_gauge_pct(acwr):
@@ -1116,6 +1094,9 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .t-btn { display:flex; justify-content:center; align-items:center; gap:6px; padding:8px; border-radius:8px; border:0;
   background:transparent; box-shadow:inset 0 0 0 1px var(--color-accent); color:var(--color-accent); font:inherit;
   font-size:13px; font-weight:500; cursor:pointer; text-decoration:none; }
+.t-link { color:inherit; text-decoration:none; cursor:pointer; transition:transform .12s ease, box-shadow .12s ease; }
+.t-link:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
+.t-link:active { transform:scale(.985); }
 .t-btn:hover { background:color-mix(in srgb, var(--color-accent) 12%, transparent); }
 .focus-track { margin:0 -16px; padding:2px 16px; display:flex; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory;
   scroll-padding:0 16px; scrollbar-width:none; overscroll-behavior-x:contain; }
@@ -1167,26 +1148,6 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   background:transparent; color:var(--color-text); cursor:pointer; }
 .ftp-btn-primary { border-color:var(--color-accent); color:var(--color-accent); }
 .ftp-btn:disabled { opacity:.5; cursor:default; }
-
-/* ── training-status history bar's 7d/28d toggle (Today tab, issue 92) ──
-   The range radios are direct children of .ts-card, siblings of the bar/
-   caption rows and of the .ts-status-row that holds .ts-toggle — so a plain
-   general-sibling selector (chained with a descendant selector for the
-   toggle's own label) reaches all of them without needing a .ts-card
-   ancestor prefix. ── */
-.ts-toggle { display:flex; gap:2px; padding:2px; border-radius:999px; border:1px solid var(--color-divider); }
-.ts-toggle label { border:0; cursor:pointer; font:inherit; font-size:9px; padding:3px 7px;
-                    border-radius:999px; color:var(--color-neutral-500); }
-.ts-bar-7, .ts-bar-28, .ts-cap-7, .ts-cap-28 { display:none; }
-#ts-range-7:checked ~ .ts-bar-7,
-#ts-range-7:checked ~ .ts-cap-7,
-#ts-range-28:checked ~ .ts-bar-28,
-#ts-range-28:checked ~ .ts-cap-28 { display:flex; }
-#ts-range-7:checked ~ .ts-status-row .ts-toggle label[for=ts-range-7],
-#ts-range-28:checked ~ .ts-status-row .ts-toggle label[for=ts-range-28] {
-  background: color-mix(in srgb, var(--color-accent) 20%, transparent);
-  color: var(--color-accent-200);
-}
 
 /* ── gear tracker forms (issue 53's tab) ── */
 .gear-form { display:flex; flex-wrap:wrap; gap:8px; align-items:flex-end; margin-top:10px;
@@ -1510,7 +1471,8 @@ def _rest_day_card() -> str:
     </div>"""
 
 
-def _tomorrow_card(workouts: list[dict]) -> str:
+def _tomorrow_card(workouts: list[dict], token: str | None = None) -> str:
+    """Tomorrow's first session; tapping it opens that workout in the plan."""
     if workouts:
         w = workouts[0]
         color = _plan_color(w["sport"])
@@ -1522,10 +1484,16 @@ def _tomorrow_card(workouts: list[dict]) -> str:
     else:
         body = '<div style="font-size:14px;font-weight:500">Rest day</div>'
         tag = ""
+    inner = f'<div style="flex:1;min-width:0"><div class="t-kick">Tomorrow</div>{body}</div>{tag}'
+    if workouts and workouts[0].get("id"):
+        query = {"workout": workouts[0]["id"], **({"token": token} if token else {})}
+        href = f"/training-plan?{urlencode(query)}"
+        return f"""
+    <a class="t-card t-link" href="{_e(href)}" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
+      {inner}{_ph("caret-right", 16, "var(--color-neutral-600)")}
+    </a>"""
     return f"""
-    <div class="t-card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
-      <div style="flex:1;min-width:0"><div class="t-kick">Tomorrow</div>{body}</div>{tag}
-    </div>"""
+    <div class="t-card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">{inner}</div>"""
 
 
 def _week_card(week: dict) -> str:
@@ -1681,6 +1649,7 @@ def _focus_recovery(data: dict) -> str:
           <div style="display:flex;height:18px;gap:2px;border-radius:4px;overflow:hidden">{bars or '<div class="muted" style="font-size:12px">No sleep data.</div>'}</div>
           <div style="display:flex;gap:10px;font-size:10px;color:var(--color-neutral-500)">{legend}</div>
         </div>
+        <div style="margin-top:auto;display:flex;flex-direction:column;gap:12px">
         <div style="height:1px;background:var(--color-neutral-800)"></div>
         <div style="display:grid;grid-template-columns:104px minmax(0,1fr);gap:16px;align-items:start">
           <div style="display:flex;flex-direction:column;gap:8px"><div class="t-kick">Body battery</div>
@@ -1693,6 +1662,7 @@ def _focus_recovery(data: dict) -> str:
             </div></div>
           <div style="display:flex;flex-direction:column;gap:8px"><div class="t-kick">Stress today</div>
             <div style="height:56px;display:flex;align-items:flex-end;gap:8px">{stress_bars}</div></div>
+        </div>
         </div>"""
     return _focus_card("Recovery", body, gap=12)
 
@@ -1724,7 +1694,7 @@ def _panel_today(data: dict, token: str | None = None) -> str:
         else:
             rest_day = True
             cards.append(_rest_day_card())
-        cards += [_tomorrow_card(plan.get("tomorrow") or []), _week_card(plan.get("week") or {})]
+        cards += [_tomorrow_card(plan.get("tomorrow") or [], token), _week_card(plan.get("week") or {})]
     elif not plan:
         cards.append(_no_plan_card(token))
     # A rest day opens In Focus on Recovery; a session day on Training status.
@@ -1782,9 +1752,9 @@ def _panel_trends(data: dict) -> str:
     metrics = trends.get("metrics") or {}
     available_days = trends.get("days") or 30
     ranges = [r for r in (7, 14, 30, 42, 90) if r <= available_days] or [available_days]
-    default_range = max(ranges)
-
-    _RANGE_LABELS = {30: "1 month", 90: "3 months"}
+    # 7 days unless the viewer picked another range before (_TRENDS_JS
+    # remembers it on this device).
+    default_range = 7 if 7 in ranges else min(ranges)
     range_pills = "".join(
         f'<label for="range-{r}">{_RANGE_LABELS.get(r, f"{r}d")}</label>' for r in ranges
     )
@@ -1803,34 +1773,8 @@ def _panel_trends(data: dict) -> str:
         )
         range_sets += (
             f'<div class="range-set rs-{r}" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">'
-            f"{cards}</div>"
+            f"{_training_status_card(data, r)}{cards}</div>"
         )
-
-    step_series = metrics.get("steps") or {}
-    step_daily = (step_series.get("daily") or [])[-14:]
-    step_goal = _step_goal(data)
-    step_vals = [p.get("value") or 0 for p in step_daily]
-    smax = max(step_vals) if step_vals else 1
-    step_bars = "".join(
-        f'<div class="js-bar" data-date="{_e(_short_date(p.get("date")))}" data-value="{_e(p.get("value"))} steps" '
-        f'style="flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end">'
-        f'<div style="width:100%;border-radius:3px;'
-        f'height:{max(4, (p.get("value") or 0) / (smax or 1) * 100):.1f}%;'
-        f'background:{"#4fae72" if (p.get("value") or 0) >= step_goal else "var(--color-neutral-700)"}"></div></div>'
-        for p in step_daily
-    )
-    steps_card = ""
-    if step_daily:
-        steps_card = f"""
-        <div class="card" style="padding:14px;gap:12px">
-          <div style="display:flex;justify-content:space-between;align-items:baseline">
-            <div class="kicker">Daily steps</div><div style="font-size:11px;color:var(--color-neutral-500)">goal {step_goal:,}</div>
-          </div>
-          <div style="display:flex;align-items:flex-end;gap:3px;height:110px">{step_bars}</div>
-          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600)">
-            <span>{_e(_short_date(step_daily[0].get("date")))}</span><span>{_e(_short_date(step_daily[-1].get("date")))}</span>
-          </div>
-        </div>"""
 
     return f"""
     <section class="panel tabpanel tp-trends" style="flex-direction:column;gap:16px">
@@ -1839,9 +1783,7 @@ def _panel_trends(data: dict) -> str:
         <div style="font-family:var(--font-heading);font-size:20px">Trends</div>
         <div class="pillbar">{range_pills}</div>
       </div>
-      {_training_status_card(data)}
       <div class="range-body">{range_sets}</div>
-      {steps_card}
     </section>"""
 
 
@@ -3043,6 +2985,7 @@ _ACTIVITY_MODAL_JS = """
   var body = document.getElementById('activity-modal-body');
   var leafletMap = null;
   var leafletLoading = null;
+  var returnOnClose = false;   // opened from the plan: closing goes back there
 
   function token() { return document.body.getAttribute('data-token') || ''; }
 
@@ -3104,7 +3047,25 @@ _ACTIVITY_MODAL_JS = """
     modal.classList.remove('open');
     document.body.style.overflow = '';
     destroyMap();
+    if (returnOnClose) { returnOnClose = false; history.back(); }
   };
+
+  // ?activity=<id> opens that activity straight away — the plan's workout
+  // dialog links here (with &from=plan, so closing it returns to the plan).
+  // The parameters are dropped from the URL so a reload doesn't reopen it.
+  (function openFromUrl() {
+    var q = new URLSearchParams(location.search);
+    var id = q.get('activity');
+    if (!id || !/^[0-9]+$/.test(id)) return;
+    try {
+      var url = new URL(location.href);
+      url.searchParams.delete('activity');
+      url.searchParams.delete('from');
+      history.replaceState(history.state, '', url.toString());
+    } catch (e) { /* history unavailable */ }
+    returnOnClose = q.get('from') === 'plan' && history.length > 1;
+    window.openActivityModal(id);
+  })();
 
   backdrop.addEventListener('click', window.closeActivityModal);
   var closeBtn = modal.querySelector('.activity-modal-close');
@@ -3421,6 +3382,19 @@ _TODAY_JS = """
     }
     place();
     document.addEventListener('change', function (e) { if (e.target && e.target.id === 'tab-today') place(); });
+  });
+
+  // ── Trends: remember the range picked last (per device) ──
+  var RANGE_KEY = 'dash-trend-range';
+  try {
+    var saved = localStorage.getItem(RANGE_KEY);
+    var radio = saved && document.getElementById('range-' + saved);
+    if (radio) radio.checked = true;
+  } catch (e) { /* storage unavailable — the default (7d) stands */ }
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t || t.name !== 'range' || !t.checked) return;
+    try { localStorage.setItem(RANGE_KEY, t.id.replace('range-', '')); } catch (err) { /* not kept */ }
   });
 
   // ── FTP from a test: confirm, then write it back to the plan ──

@@ -34,6 +34,8 @@ function dashboardKey(url) {
   if (u.origin !== self.location.origin || u.pathname !== "/dashboard" || u.searchParams.has("error")) return null;
   u.searchParams.delete("tab");
   u.searchParams.delete("filter");
+  u.searchParams.delete("activity");
+  u.searchParams.delete("from");
   u.searchParams.sort();
   u.hash = "";
   return u.toString();
