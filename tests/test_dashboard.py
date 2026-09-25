@@ -1252,3 +1252,123 @@ def test_build_dashboard_data_captures_section_errors(monkeypatch):
     assert data["sleep"] == {"sleep_score": 80}   # unaffected section still populated
     # The whole thing still renders without raising.
     assert dashboard.render_dashboard_html(data).startswith("<!doctype html>")
+
+
+# ── mobile: streamed first paint, in-place week navigation, kept state ──────
+
+def test_full_render_has_no_loading_skeleton_but_ends_with_the_complete_marker():
+    """The skeleton is only for the streamed response; the service worker
+    only caches a page that ends with the marker (sw.js)."""
+    html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
+    assert 'id="dash-boot"' not in html
+    assert html.endswith(dashboard.DASHBOARD_COMPLETE_MARKER + "</body></html>")
+
+
+def test_render_no_longer_reloads_the_page_on_a_timer():
+    """Refreshing happens on coming back to a stale page (_APP_JS), not on a
+    blind timer that could kick you back to the Today tab."""
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "setTimeout(tick" not in html
+    assert f'"staleAfterMs": {dashboard.REFRESH_SECONDS * 1000}' in html
+
+
+def test_render_opens_on_the_requested_activity_filter():
+    html = dashboard.render_dashboard_html(SAMPLE, initial_tab="activity", activity_filter="bike")
+    assert 'id="activity-filter-bike" checked' in html
+    assert 'id="activity-filter-all" checked' not in html
+
+
+def test_render_ignores_an_unknown_activity_filter():
+    html = dashboard.render_dashboard_html(SAMPLE, activity_filter="<script>")
+    assert 'id="activity-filter-all" checked' in html
+    assert "<script>\"" not in html
+
+
+def test_activity_panel_marks_its_week_and_nav_links_for_in_place_navigation():
+    data = {**SAMPLE, "activity_week": SAMPLE["week"], "activity_week_offset": 2}
+    panel = dashboard.render_activity_panel(data, token="t0k")
+    assert panel.lstrip().startswith('<section class="panel tabpanel tp-activity" data-week="2"')
+    assert 'data-week="3" aria-label="Previous week"' in panel
+    assert 'data-week="1" aria-label="Next week"' in panel
+    assert 'data-week="0"' in panel          # the "This week" jump
+
+
+def test_activity_panel_error_still_carries_its_week():
+    panel = dashboard.render_activity_panel({"activity_week": None, "activity_week_err": "boom",
+                                             "activity_week_offset": 4})
+    assert 'data-week="4"' in panel and "boom" in panel
+
+
+def _collect(agen):
+    import asyncio
+
+    async def run():
+        return [chunk async for chunk in agen]
+    return asyncio.run(run())
+
+
+def test_stream_dashboard_sends_the_skeleton_before_fetching_data(monkeypatch):
+    fetched = []
+
+    def fake_data(week_offset):
+        fetched.append(week_offset)
+        return SAMPLE
+
+    monkeypatch.setattr(dashboard, "get_dashboard_data", fake_data)
+    chunks = _collect(dashboard.stream_dashboard(2, "t0k", "activity", None, "run"))
+    assert len(chunks) == 2
+    assert chunks[0].startswith("<!doctype html>") and 'id="dash-boot"' in chunks[0]
+    assert "<section class=\"panel tabpanel" not in chunks[0]
+    assert chunks[1].startswith("<style>#dash-boot{display:none}</style>")
+    assert 'id="activity-filter-run" checked' in chunks[1]
+    assert chunks[1].endswith(dashboard.DASHBOARD_COMPLETE_MARKER + "</body></html>")
+    assert fetched == [2]
+
+
+def test_stream_dashboard_shows_a_failure_in_the_page_and_is_never_cacheable(monkeypatch):
+    def boom(week_offset):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(dashboard, "get_dashboard_data", boom)
+    chunks = _collect(dashboard.stream_dashboard())
+    assert "Dashboard error: db down" in chunks[-1]
+    assert dashboard.DASHBOARD_COMPLETE_MARKER not in "".join(chunks)
+
+
+def test_get_activity_week_data_reads_the_db_and_caches_past_weeks(monkeypatch):
+    import db
+    from tools import activities as activities_mod
+
+    calls = []
+    monkeypatch.setattr(db, "is_configured", lambda: True)
+
+    def from_db(week_offset=0):
+        calls.append(week_offset)
+        return {"week_start": "2026-07-06", "total_activities": 2, "activities": []}
+
+    def boom(*a, **k):
+        raise AssertionError("DB path must never call Garmin live")
+
+    monkeypatch.setattr(activities_mod, "get_weekly_summary_from_db", from_db)
+    monkeypatch.setattr(activities_mod, "get_weekly_summary", boom)
+
+    data = dashboard.get_activity_week_data(3)
+    assert data == {"activity_week": from_db(), "activity_week_err": None, "activity_week_offset": 3}
+    calls.clear()
+    dashboard.get_activity_week_data(3)      # a closed week: served from cache
+    assert calls == []
+    dashboard.get_activity_week_data(0)      # the current week: always fresh
+    dashboard.get_activity_week_data(0)
+    assert calls == [0, 0]
+
+
+def test_get_activity_week_data_falls_back_to_garmin_without_a_db(monkeypatch):
+    import db
+    from tools import activities as activities_mod
+
+    monkeypatch.setattr(db, "is_configured", lambda: False)
+    monkeypatch.setattr(activities_mod, "get_weekly_summary",
+                        lambda week_offset=0: {"week_start": "2026-06-29", "offset": week_offset})
+    data = dashboard.get_activity_week_data(-5)   # clamped to the current week
+    assert data["activity_week"] == {"week_start": "2026-06-29", "offset": 0}
+    assert data["activity_week_offset"] == 0

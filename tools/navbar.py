@@ -104,6 +104,11 @@ _NAV_STYLE = """
 #gm-nav .gm-nav__link:hover, #gm-nav .gm-nav__more-btn:hover {
   color: #e9e9ed; background: rgba(233, 233, 237, .07);
 }
+/* Tap feedback — a quick press so a tap visibly registered. The empty
+   ontouchstart on the nav is what turns :active on in iOS Safari. */
+#gm-nav .gm-nav__link, #gm-nav .gm-nav__more-btn { -webkit-tap-highlight-color: transparent;
+  transition: transform .12s ease, opacity .12s ease; }
+#gm-nav .gm-nav__link:active, #gm-nav .gm-nav__more-btn:active { transform: scale(.94); opacity: .75; }
 #gm-nav .gm-nav__link--active,
 #gm-nav-more:checked ~ #gm-nav .gm-nav__more-btn {
   background: color-mix(in srgb, #9184d9 20%, transparent); color: #d2cefd;
@@ -193,7 +198,7 @@ def render_nav_html(active: str | None = None, token: str | None = None) -> str:
     return (
         f"<style>{_NAV_STYLE}</style>"
         f'<input type="checkbox" id="{_MORE_TOGGLE_ID}" class="gm-nav-more-toggle">'
-        f'<nav id="{NAV_ID}" aria-label="Site"><div class="gm-nav__pill">'
+        f'<nav id="{NAV_ID}" aria-label="Site" ontouchstart=""><div class="gm-nav__pill">'
         f'{"".join(links)}'
         f'<label for="{_MORE_TOGGLE_ID}" class="gm-nav__more-btn">'
         f'<span class="gm-nav__icon">{_icon("more")}</span><span class="gm-nav__label">More</span></label>'

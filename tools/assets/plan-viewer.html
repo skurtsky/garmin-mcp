@@ -936,6 +936,17 @@ function render() {
 }
 
 /* ── events ── */
+/* Move the Plan tab one week back (-1) or forward (+1), sliding the new week
+   in from the side it comes from. A no-op at the plan's first / last week. */
+function stepWeek(delta) {
+  const n = Math.min(PLAN.meta.totalWeeks, Math.max(1, state.planWeekNumber + delta));
+  if (n === state.planWeekNumber) return;
+  state.planWeekNumber = n;
+  render();
+  const wrap = document.querySelector('#app .content-wrap');
+  if (wrap) wrap.classList.add(delta > 0 ? 'slide-from-right' : 'slide-from-left');
+}
+
 function toggleCompleted(id) {
   const next = !state.completed[id];
   state.completed[id] = next;                       // optimistic
@@ -982,8 +993,8 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'togglemenu') { state.menuOpen = !state.menuOpen; return render(); }
   if (a === 'closemenu') { state.menuOpen = false; return render(); }
   if (a === 'backdrop' && e.target !== act) return;
-  if (a === 'prev') { state.planWeekNumber = Math.max(1, state.planWeekNumber - 1); return render(); }
-  if (a === 'next') { state.planWeekNumber = Math.min(PLAN.meta.totalWeeks, state.planWeekNumber + 1); return render(); }
+  if (a === 'prev') return stepWeek(-1);
+  if (a === 'next') return stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
   if (READ_ONLY && a !== 'generate-pdf') return;
@@ -1130,14 +1141,45 @@ document.getElementById('app').addEventListener('drop', e => {
   saveOps([{ op: 'move_workout', workout_id: id, date: newDate }]);
 });
 
+/* Swipe left / right on the Plan tab to change week. Only a clearly
+   sideways, reasonably quick swipe counts, so scrolling the week (or a
+   long-press to drag a workout) never flips it. (Having a touch listener
+   also turns on iOS Safari's :active tap feedback.) */
+function inSideScroller(el) {
+  for (; el && el !== document.body; el = el.parentElement) {
+    const ox = getComputedStyle(el).overflowX;
+    if ((ox === 'auto' || ox === 'scroll') && el.scrollWidth > el.clientWidth) return true;
+  }
+  return false;
+}
+let swipe = null;
+document.addEventListener('touchstart', e => {
+  swipe = null;
+  if (e.touches.length !== 1 || state.tab !== 'plan' || state.modalId || state.editId || state.menuOpen) return;
+  const t = e.touches[0];
+  if (t.clientX < 24 || t.clientX > window.innerWidth - 24) return;   // leave the screen edges to iOS
+  if (!e.target.closest || !e.target.closest('.scroller') || e.target.closest('input, select, textarea')) return;
+  if (inSideScroller(e.target)) return;
+  swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+}, { passive: true });
+document.addEventListener('touchcancel', () => { swipe = null; }, { passive: true });
+document.addEventListener('touchend', e => {
+  if (!swipe) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, took = Date.now() - swipe.at;
+  swipe = null;
+  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2 || took > 700) return;
+  stepWeek(dx < 0 ? 1 : -1);                        // swipe left → next week
+}, { passive: true });
+
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
   else if (e.key === 'Escape' && state.modalMenu) { state.modalMenu = false; render(); }
   else if (e.key === 'Escape' && state.modalId) { state.modalId = null; render(); }
   if (e.key === 'Escape' && state.menuOpen) { state.menuOpen = false; render(); }
   if (state.tab === 'plan' && !state.modalId && !state.editId) {
-    if (e.key === 'ArrowLeft') { state.planWeekNumber = Math.max(1, state.planWeekNumber - 1); render(); }
-    if (e.key === 'ArrowRight') { state.planWeekNumber = Math.min(PLAN.meta.totalWeeks, state.planWeekNumber + 1); render(); }
+    if (e.key === 'ArrowLeft') stepWeek(-1);
+    if (e.key === 'ArrowRight') stepWeek(1);
   }
 });
 
@@ -1161,6 +1203,16 @@ render();
 .rev-row:first-child { border-top:none; }
 .saving-pill { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;
   font-size:12px; background: var(--color-surface); box-shadow: var(--shadow-md); color: var(--color-accent-200); }
-select.input { appearance:auto; }</style>
+select.input { appearance:auto; }
+@keyframes pv-from-left { from { opacity:0; transform:translateX(-28px); } to { opacity:1; transform:none; } }
+@keyframes pv-from-right { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
+.slide-from-left { animation: pv-from-left .22s ease-out; }
+.slide-from-right { animation: pv-from-right .22s ease-out; }
+/* Tap feedback: a quick press so a tap visibly registered. */
+html { -webkit-tap-highlight-color: transparent; }
+.btn, .navbtn, .nav-sheet-item, .seg-opt, .wcard { transition: transform .12s ease, opacity .12s ease; }
+.btn:not(:disabled):active, .navbtn:active, .nav-sheet-item:not(.disabled):active, .seg-opt:active { transform: scale(.94); opacity:.75; }
+.wcard:active { transform: scale(.985); }
+@media (prefers-reduced-motion: reduce) { .slide-from-left, .slide-from-right { animation: none; } }</style>
 </body>
 </html>
