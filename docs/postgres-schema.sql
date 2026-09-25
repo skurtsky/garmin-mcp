@@ -160,3 +160,47 @@ INSERT INTO sync_state (data_type) VALUES
     ('active_goals'),
     ('gear')
 ON CONFLICT DO NOTHING;
+
+-- Training plans (Claude Coach), one JSON document per plan keyed by meta.id.
+-- At most one plan is active; uploading a new one archives the previous.
+CREATE TABLE IF NOT EXISTS training_plans (
+    id           TEXT PRIMARY KEY,
+    status       TEXT NOT NULL DEFAULT 'active'
+                 CHECK (status IN ('active', 'archived')),
+    plan         JSONB NOT NULL,
+    version      INTEGER NOT NULL DEFAULT 1,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    archived_at  TIMESTAMPTZ
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_training_plans_one_active
+    ON training_plans ((true)) WHERE status = 'active';
+
+-- A full snapshot of the plan after every change (upload, web edit, MCP
+-- amendment, restore), so any version can be restored.
+CREATE TABLE IF NOT EXISTS training_plan_revisions (
+    plan_id     TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+    version     INTEGER NOT NULL,
+    plan        JSONB NOT NULL,
+    source      TEXT NOT NULL,
+    summary     TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (plan_id, version)
+);
+
+-- Per-workout state kept outside the plan JSON so replacing or restoring the
+-- plan content never loses it: completion, the matching Garmin activity, and
+-- the Garmin Connect workout the coach scheduled for it.
+CREATE TABLE IF NOT EXISTS training_plan_workout_state (
+    plan_id                TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+    workout_id             TEXT NOT NULL,
+    completed              BOOLEAN NOT NULL DEFAULT FALSE,
+    completed_at           TIMESTAMPTZ,
+    activity_id            BIGINT,
+    notes                  TEXT,
+    garmin_workout_id      BIGINT,
+    garmin_scheduled_date  DATE,
+    updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (plan_id, workout_id)
+);

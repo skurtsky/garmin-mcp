@@ -66,6 +66,14 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `earned_badges` | Earned challenge/achievement badges with points, category, and date earned |
 | `adhoc_challenges` | Ad-hoc / community challenges with date range, personal ranking, and player count |
 
+### Training Plan
+
+`get_training_plan`, `list_training_plans`, `amend_training_plan`,
+`complete_plan_workout`, `link_plan_workout_to_garmin`,
+`get_training_plan_revisions` and `restore_training_plan_revision` read and
+edit the Claude Coach plan stored in PostgreSQL — see
+[Training Plan](#training-plan).
+
 ### Reports
 
 | Tool | Description |
@@ -186,41 +194,66 @@ Optional environment variables:
 | `DASHBOARD_TREND_PERIOD` | `14d` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window. `get_trends` fetches its per-day metrics concurrently, but there's no batch endpoint for most of them, so wider windows still add latency; `1m` (30d) restores the full toggle at the cost of a slower load |
 | `DASHBOARD_STEP_GOAL` | `10000` | Fallback daily step goal used when there's no active Garmin step goal |
 
-## Training Plan Viewer
+## Training Plan
 
-The compiled Claude Coach training plan (a self-contained HTML app with its JSON
-embedded in a `<script type="application/json" id="plan-data">` tag) can be
-hosted from the same container, behind the same `?token=` auth:
-
-| Route | Method | Description |
-|---|---|---|
-| `/training-plan` | `GET` | Serves the active plan HTML (with the site nav injected), or a "No plan active" page |
-| `/training-plan/upload` | `GET` | Minimal two-file upload form (HTML + JSON) |
-| `/training-plan/upload` | `POST` | Stores the upload, replacing any existing plan, then redirects to `/training-plan` |
-| `/training-plan/reset` | `POST` | Deletes the stored plan files |
+Claude Coach training plans live in PostgreSQL (the same `DATABASE_URL` the
+dashboard uses — the tables are created on startup), so the plan, completion
+ticks, edits and zones are the same on every device. The coach skill produces
+a plan **JSON**; upload it once and the server renders it inside the plan
+viewer (`tools/assets/plan-viewer.html`) on every request.
 
 ```
 http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 ```
 
-The two files are stored as `plan.html` and `plan.json` in a `training-plan/`
-folder inside the same mounted Azure File Share used for the Garmin tokens
-(`~/.garminconnect`), so a plan survives container restarts and redeploys. Only
-one plan is active at a time and an upload replaces the previous one. Uploads
-are validated before being written (the HTML must be non-empty UTF-8 markup and
-the JSON must parse), so a bad upload leaves the live plan untouched.
+- **One active plan per id.** A plan is keyed by its `meta.id`. Uploading a new
+  id makes it active and archives the previous plan; archived plans stay
+  viewable read-only from `/training-plan/plans` and can be made active again.
+- **Re-uploading the same id** shows a confirmation first: how many completed
+  workouts keep their tick, any completed workouts missing from the new file,
+  and any web/MCP edits since the last upload that the file would overwrite.
+  The unit choice carries over; zone overrides reset to the file's zones.
+- **Edits in the viewer** — tick a workout, drag it to another day, edit it,
+  delete it, or add one with a day's **+** button — save to the server
+  immediately. Zone thresholds and validation flags on Settings are stored with
+  the plan, so the PDF and the coach see them too.
+- **Weekly totals** (sessions, hours, km per sport) are recomputed from the
+  workouts on every upload and edit, never taken from the file.
+- **History.** Every change (upload, edit, MCP amendment, restore) is saved as
+  a revision; Settings → History lists them and restores any one (as a new
+  revision, so a restore can be undone). Completion ticks are stored separately
+  and never roll back.
 
-Completion and edit state is kept in the browser's localStorage by the plan app
-itself — per-device, no server-side state and no cross-device sync. The stored
-HTML is served as uploaded, with only the shared site nav bar injected into its
-`<body>`.
+| Route | Method | Description |
+|---|---|---|
+| `/training-plan` | `GET` | The viewer for the active plan (`?plan=<id>` for an archived one, read-only), or a "No plan active" page |
+| `/training-plan/plans` | `GET` | Every stored plan, with view / download / activate / archive / delete |
+| `/training-plan/plans/{id}/{activate\|archive\|delete}` | `POST` | Plan lifecycle (only archived plans can be deleted) |
+| `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; same-id uploads confirm first) |
+| `/training-plan/export.json` | `GET` | The plan JSON as currently edited |
+| `/training-plan/pdf` | `GET` | Printable wall-chart PDF of the stored plan |
+| `/training-plan/api/plan` | `GET` | Plan + version, status, completion (used by the viewer) |
+| `/training-plan/api/operations` | `POST` | `{"operations": [...]}` — the same edit operations as `amend_training_plan` |
+| `/training-plan/api/completion` | `POST` | `{"workout_id", "completed"}` |
+| `/training-plan/api/revisions` | `GET` | Revision history |
+| `/training-plan/api/revisions/{version}/restore` | `POST` | Restore a revision |
+
+### Training plan MCP tools
+
+| Tool | Description |
+|---|---|
+| `get_training_plan` | Plan meta, current thresholds, phases, a one-line summary per week, and workout detail for the current + next week (or a given week / date range), with completion and Garmin-link state |
+| `list_training_plans` | Every stored plan and its status |
+| `amend_training_plan` | Atomic edits with a reason: add / update / move / remove workouts, edit a week, set zones or units |
+| `complete_plan_workout` | Mark a planned workout complete by id, or from a Garmin activity (matched by date and sport) |
+| `link_plan_workout_to_garmin` | Record the Garmin Connect workout scheduled for a planned workout, so it isn't scheduled twice |
+| `get_training_plan_revisions` / `restore_training_plan_revision` | History and undo |
 
 Optional environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `TRAINING_PLAN_DIR` | `~/.garminconnect/training-plan` | Where the plan files are stored |
-| `TRAINING_PLAN_MAX_BYTES` | `20971520` | Per-file upload size cap (20 MB) |
+| `TRAINING_PLAN_MAX_BYTES` | `20971520` | Upload size cap (20 MB) |
 
 ## Weekly Training Reports
 
@@ -408,7 +441,11 @@ garmin-mcp/
 │   ├── navbar.py          # shared site nav bar injected into every hosted page
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
-│   ├── training_plan.py   # storage + routes for the hosted plan viewer (/training-plan)
+│   ├── plan_doc.py        # training-plan document rules: validation, weekly totals, edit operations
+│   ├── plan_service.py    # training-plan storage (PostgreSQL) + completion / Garmin links
+│   ├── plan_tools.py      # training-plan MCP tools
+│   ├── training_plan.py   # /training-plan routes: viewer, upload, plans list, JSON API
+│   ├── assets/plan-viewer.html  # the plan viewer app the server fills with a stored plan
 │   ├── trends.py          # get_performance_predictions, get_performance_trends, get_trends
 │   ├── weekly_summaries.py # storage + routes for the weekly reports (/weekly-summary)
 │   └── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights
@@ -424,7 +461,10 @@ garmin-mcp/
 │   ├── test_navbar.py
 │   ├── test_performance.py
 │   ├── test_profile.py
+│   ├── test_plan_doc.py
+│   ├── test_plan_tools.py
 │   ├── test_training_plan.py
+│   ├── test_training_plan_db.py  # real PostgreSQL; set TEST_DATABASE_URL
 │   ├── test_trends.py
 │   ├── test_weekly_summaries.py
 │   └── test_workout.py

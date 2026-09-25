@@ -81,6 +81,50 @@ def get_conn():
             raise
 
 
+# Training plans (Claude Coach). Each plan is stored as its whole JSON
+# document, keyed by meta.id; at most one is active, the rest are archived.
+# Every change writes a full snapshot to training_plan_revisions so any edit
+# can be undone. Completion and Garmin links live in their own table, keyed by
+# workout id, so replacing or restoring the plan content never loses them.
+TRAINING_PLAN_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS training_plans (
+        id           TEXT PRIMARY KEY,
+        status       TEXT NOT NULL DEFAULT 'active'
+                     CHECK (status IN ('active', 'archived')),
+        plan         JSONB NOT NULL,
+        version      INTEGER NOT NULL DEFAULT 1,
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        archived_at  TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_training_plans_one_active
+        ON training_plans ((true)) WHERE status = 'active';
+
+    CREATE TABLE IF NOT EXISTS training_plan_revisions (
+        plan_id     TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+        version     INTEGER NOT NULL,
+        plan        JSONB NOT NULL,
+        source      TEXT NOT NULL,
+        summary     TEXT,
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (plan_id, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS training_plan_workout_state (
+        plan_id                TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+        workout_id             TEXT NOT NULL,
+        completed              BOOLEAN NOT NULL DEFAULT FALSE,
+        completed_at           TIMESTAMPTZ,
+        activity_id            BIGINT,
+        notes                  TEXT,
+        garmin_workout_id      BIGINT,
+        garmin_scheduled_date  DATE,
+        updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (plan_id, workout_id)
+    );
+"""
+
+
 def ensure_schema():
     """Create tables if they don't exist. Safe to call on every startup."""
     if not is_configured():
@@ -223,6 +267,7 @@ def ensure_schema():
                     ('gear')
                 ON CONFLICT DO NOTHING;
             """)
+            cur.execute(TRAINING_PLAN_SCHEMA)
     logger.info("Database schema verified")
 
 
@@ -801,3 +846,220 @@ def update_sync_state(data_type: str, last_date: str, status: str = "ok",
                    WHERE data_type = %s""",
                 (last_date, status, error, data_type),
             )
+
+
+# ── TRAINING PLANS ────────────────────────────────────────────────────────────
+
+_PLAN_COLUMNS = "id, status, plan, version, created_at, updated_at, archived_at"
+
+
+def get_training_plan(plan_id: str | None = None) -> dict | None:
+    """One plan row (with its JSON), or the active plan when no id is given."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            if plan_id is None:
+                cur.execute(f"SELECT {_PLAN_COLUMNS} FROM training_plans WHERE status = 'active'")
+            else:
+                cur.execute(f"SELECT {_PLAN_COLUMNS} FROM training_plans WHERE id = %s", (plan_id,))
+            return cur.fetchone()
+
+
+def list_training_plans() -> list[dict]:
+    """Every plan without its JSON body: active first, then newest."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT id, status, version, created_at, updated_at, archived_at,
+                          plan->'meta'->>'event' AS event,
+                          plan->'meta'->>'athlete' AS athlete,
+                          plan->'meta'->>'planStartDate' AS start_date,
+                          plan->'meta'->>'planEndDate' AS end_date
+                   FROM training_plans
+                   ORDER BY status = 'active' DESC, updated_at DESC"""
+            )
+            return cur.fetchall()
+
+
+def _archive_other_active(cur, plan_id: str) -> None:
+    cur.execute(
+        """UPDATE training_plans SET status = 'archived', archived_at = now()
+           WHERE status = 'active' AND id <> %s""",
+        (plan_id,),
+    )
+
+
+def save_uploaded_training_plan(plan_id: str, plan: dict, summary: str) -> dict:
+    """Insert a new plan, or replace an existing one's content, and make it
+    the active plan (archiving whichever was active). Writes a revision."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            _archive_other_active(cur, plan_id)
+            cur.execute(
+                f"""INSERT INTO training_plans (id, status, plan, version)
+                    VALUES (%s, 'active', %s, 1)
+                    ON CONFLICT (id) DO UPDATE SET
+                        plan = EXCLUDED.plan,
+                        status = 'active',
+                        archived_at = NULL,
+                        version = training_plans.version + 1,
+                        updated_at = now()
+                    RETURNING {_PLAN_COLUMNS}""",
+                (plan_id, Jsonb(plan)),
+            )
+            row = cur.fetchone()
+            _insert_revision(cur, row, "upload", summary)
+            return row
+
+
+def _insert_revision(cur, row: dict, source: str, summary: str) -> None:
+    cur.execute(
+        """INSERT INTO training_plan_revisions (plan_id, version, plan, source, summary)
+           VALUES (%s, %s, %s, %s, %s)""",
+        (row["id"], row["version"], Jsonb(row["plan"]), source, summary),
+    )
+
+
+def update_training_plan(plan_id: str, mutate, source: str) -> dict:
+    """Read-modify-write one plan under a row lock.
+
+    ``mutate(plan) -> (new_plan, summary)`` gets the stored JSON and may raise
+    to abort (nothing is written). Bumps the version and writes a revision.
+    Raises LookupError when the plan doesn't exist.
+    """
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT plan FROM training_plans WHERE id = %s FOR UPDATE", (plan_id,))
+            current = cur.fetchone()
+            if current is None:
+                raise LookupError(plan_id)
+            new_plan, summary = mutate(current["plan"])
+            cur.execute(
+                f"""UPDATE training_plans
+                    SET plan = %s, version = version + 1, updated_at = now()
+                    WHERE id = %s
+                    RETURNING {_PLAN_COLUMNS}""",
+                (Jsonb(new_plan), plan_id),
+            )
+            row = cur.fetchone()
+            _insert_revision(cur, row, source, summary)
+            return row
+
+
+def set_training_plan_status(plan_id: str, status: str) -> bool:
+    """Activate (archiving the current active plan) or archive a plan."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM training_plans WHERE id = %s FOR UPDATE", (plan_id,))
+            if cur.fetchone() is None:
+                return False
+            if status == "active":
+                _archive_other_active(cur, plan_id)
+                cur.execute(
+                    """UPDATE training_plans SET status = 'active', archived_at = NULL
+                       WHERE id = %s""",
+                    (plan_id,),
+                )
+            else:
+                cur.execute(
+                    """UPDATE training_plans
+                       SET status = 'archived', archived_at = coalesce(archived_at, now())
+                       WHERE id = %s""",
+                    (plan_id,),
+                )
+            return cur.rowcount > 0
+
+
+def delete_training_plan(plan_id: str) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM training_plans WHERE id = %s", (plan_id,))
+            return cur.rowcount > 0
+
+
+def list_training_plan_revisions(plan_id: str, limit: int = 100) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT version, source, summary, created_at
+                   FROM training_plan_revisions
+                   WHERE plan_id = %s
+                   ORDER BY version DESC
+                   LIMIT %s""",
+                (plan_id, limit),
+            )
+            return cur.fetchall()
+
+
+def last_upload_version(plan_id: str) -> int | None:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT max(version) FROM training_plan_revisions
+                   WHERE plan_id = %s AND source = 'upload'""",
+                (plan_id,),
+            )
+            return cur.fetchone()[0]
+
+
+def get_training_plan_revision(plan_id: str, version: int) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT version, plan, source, summary, created_at
+                   FROM training_plan_revisions
+                   WHERE plan_id = %s AND version = %s""",
+                (plan_id, version),
+            )
+            return cur.fetchone()
+
+
+def get_workout_states(plan_id: str) -> dict[str, dict]:
+    """{workout_id: state row} for every workout with tracked state."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT workout_id, completed, completed_at, activity_id, notes,
+                          garmin_workout_id, garmin_scheduled_date, updated_at
+                   FROM training_plan_workout_state WHERE plan_id = %s""",
+                (plan_id,),
+            )
+            return {row["workout_id"]: row for row in cur.fetchall()}
+
+
+_STATE_FIELDS = ("completed", "completed_at", "activity_id", "notes",
+                 "garmin_workout_id", "garmin_scheduled_date")
+
+
+def upsert_workout_state(plan_id: str, workout_id: str, **fields) -> dict:
+    """Set some of a workout's state fields, leaving the others untouched."""
+    unknown = set(fields) - set(_STATE_FIELDS)
+    if unknown:
+        raise ValueError(f"Unknown workout state fields: {sorted(unknown)}")
+    columns = list(fields)
+    values = [fields[c] for c in columns]
+    insert_cols = ", ".join(["plan_id", "workout_id", *columns])
+    placeholders = ", ".join(["%s"] * (2 + len(columns)))
+    updates = ", ".join([*(f"{c} = EXCLUDED.{c}" for c in columns), "updated_at = now()"])
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""INSERT INTO training_plan_workout_state ({insert_cols})
+                    VALUES ({placeholders})
+                    ON CONFLICT (plan_id, workout_id) DO UPDATE SET {updates}
+                    RETURNING workout_id, completed, completed_at, activity_id, notes,
+                              garmin_workout_id, garmin_scheduled_date, updated_at""",
+                (plan_id, workout_id, *values),
+            )
+            return cur.fetchone()
+
+
+def get_activity_brief(garmin_id: int) -> dict | None:
+    """Date, type and name of a synced activity (for matching it to a plan)."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT garmin_id, activity_date, activity_type, name
+                   FROM activities WHERE garmin_id = %s""",
+                (garmin_id,),
+            )
+            return cur.fetchone()

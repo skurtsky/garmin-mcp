@@ -160,11 +160,17 @@ a:hover { color: var(--color-accent); }
 </head>
 <body>
 <div id="app"></div>
-<input id="import-file" type="file" accept="application/json" style="display:none">
 <script id="plan-data" type="application/json">__PLAN_JSON__</script>
+<script id="plan-server" type="application/json">__PLAN_SERVER_JSON__</script>
 <script>
 "use strict";
-const PLAN = JSON.parse(document.getElementById('plan-data').textContent);
+let PLAN = JSON.parse(document.getElementById('plan-data').textContent);
+/* Served by garmin-mcp from PostgreSQL: the plan's id/status/version, whether
+   it's read-only (archived), and which workouts are complete. Everything the
+   viewer changes is sent back to the server, so every device sees the same
+   plan, ticks, edits and zones. */
+let SERVER = JSON.parse(document.getElementById('plan-server').textContent);
+const READ_ONLY = !!SERVER.readOnly;
 
 /* Links to sibling routes on whatever app is currently serving this page
    (e.g. /dashboard, /weekly-summary). Using a root-relative path means the
@@ -175,20 +181,28 @@ const PLAN = JSON.parse(document.getElementById('plan-data').textContent);
 const APP_QUERY = (typeof window !== 'undefined' && window.location && window.location.search) || '';
 function appLink(path) { return path + APP_QUERY; }
 
-/* The full plan plus everything only this browser knows about it (ticks,
-   threshold overrides, validated status, workout edits). Used both for the
-   local backup export and as the payload sent to the server when asking it
-   to rebuild the PDF, so the PDF reflects live zone edits, not just whatever
-   the server has on file. */
-function buildExportData() {
-  return Object.assign({}, PLAN, {
-    planId: PLAN.meta.id,
-    completed: state.completed,
-    unit: state.unit,
-    overrides: state.overrides,
-    zonesValidated: state.zonesValidated,
-    workoutEdits: state.workoutEdits
-  });
+/* Server calls. Paths are the viewer's JSON API under /training-plan/api/;
+   APP_QUERY carries the ?token= auth and any ?plan= selection. Every write
+   answers with the updated plan, which replaces the local copy. */
+function api(path, body) {
+  const opts = body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) };
+  return fetch(appLink('/training-plan/api/' + path), opts).then(res => res.json().catch(() => ({})).then(data => {
+    if (!res.ok) throw new Error(data.error || ('Server returned ' + res.status));
+    return data;
+  }));
+}
+function applyServer(data) {
+  PLAN = data.plan;
+  SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {} });
+  syncStateFromPlan();
+  state.revisions = null;
+}
+function saveOps(operations, onDone) {
+  state.saving = true; render();
+  return api('operations', { operations })
+    .then(data => { applyServer(data); if (onDone) onDone(); })
+    .catch(err => alert('Could not save: ' + err.message))
+    .finally(() => { state.saving = false; render(); });
 }
 
 const SPORT_COLORS = { swim:'#5eb8c9', bike:'#7fb87a', run:'#d99a5e', strength:'#9184d9', brick:'#c97fa0', race:'#d9b35a', rest:'#7c8194' };
@@ -215,7 +229,9 @@ const ICONS = {
   up:'<path d="M74.3 101.7 122.3 53.7a8 8 0 0 1 11.4 0l48 48a8 8 0 0 1-11.4 11.4L136 78.6V152a8 8 0 0 1-16 0V78.6l-34.3 34.5a8 8 0 0 1-11.4-11.4ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
   house:'<path d="M128 26 222 104 222 224 34 224 34 104Z"/>',
   list:'<path d="M40 76h176a8 8 0 0 0 0-16H40a8 8 0 0 0 0 16Zm176 32H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Zm0 48H40a8 8 0 0 0 0 16h176a8 8 0 0 0 0-16Z"/>',
-  chartbar:'<path d="M40 136h32v80H40Zm72-48h32v128h-32Zm72-48h32v176h-32Z"/>'
+  chartbar:'<path d="M40 136h32v80H40Zm72-48h32v128h-32Zm72-48h32v176h-32Z"/>',
+  plus:'<path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/>',
+  history:'<path d="M136 80v43.5l36.1 21.7a8 8 0 0 1-8.2 13.7l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Zm-8-48a95.4 95.4 0 0 0-67.9 28.1C54 66.3 48.3 72.4 43 78.5V64a8 8 0 0 0-16 0v40a8 8 0 0 0 8 8h40a8 8 0 0 0 0-16H52.1c5.7-6.8 11.4-13.2 19.3-21.2a80 80 0 1 1 1.7 114.8 8 8 0 1 0-11 11.6A96 96 0 1 0 128 32Z"/>'
 };
 function icon(name, size) {
   return '<svg viewBox="0 0 256 256" width="' + (size||18) + '" height="' + (size||18) + '" fill="currentColor" aria-hidden="true">' + ICONS[name] + '</svg>';
@@ -245,22 +261,24 @@ function d(dateStr) { return new Date(dateStr + 'T00:00:00'); }
 function dayMonth(dateStr) { return d(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric' }); }
 function longDate(dateStr) { return d(dateStr).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }); }
 
-const KEY = k => 'coach:' + (PLAN.meta.id || 'plan') + ':' + k;
-function load(k, fallback) { try { const v = localStorage.getItem(KEY(k)); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; } }
-function save(k, v) { try { localStorage.setItem(KEY(k), JSON.stringify(v)); } catch (e) {} }
 
 /* Race-dependent behaviour: a plan without a race still has phases, weeks and
    zones, so everything race-anchored degrades instead of erroring. */
 const RACE = (PLAN.raceStrategy && PLAN.raceStrategy.event && PLAN.raceStrategy.event.date) ? PLAN.raceStrategy.event : null;
 
-const ZONE_DEFAULTS = {
-  ftp: PLAN.zones?.bike?.power?.ftp ?? null,
-  bikeLthr: PLAN.zones?.bike?.hr?.lthr ?? null,
-  runLthr: PLAN.zones?.run?.hr?.lthr ?? null,
-  thresholdPace: resolveSinglePace(PLAN.zones?.run?.pace?.thresholdPace ?? ''),
-  cssLabel: PLAN.zones?.swim?.css ?? '',
-  cssSeconds: PLAN.zones?.swim?.cssSeconds ?? null
-};
+/* The plan's own thresholds; PLAN.overrides (set on Settings or by the
+   coach, stored with the plan on the server) take priority over these. */
+let ZONE_DEFAULTS = zoneDefaults();
+function zoneDefaults() {
+  return {
+    ftp: PLAN.zones?.bike?.power?.ftp ?? null,
+    bikeLthr: PLAN.zones?.bike?.hr?.lthr ?? null,
+    runLthr: PLAN.zones?.run?.hr?.lthr ?? null,
+    thresholdPace: resolveSinglePace(PLAN.zones?.run?.pace?.thresholdPace ?? ''),
+    cssLabel: PLAN.zones?.swim?.css ?? '',
+    cssSeconds: PLAN.zones?.swim?.cssSeconds ?? null
+  };
+}
 
 /* Standard zone tables (reference/zones.md — Friel 7-zone system). Zones are
    computed live from each sport's threshold value instead of reading the
@@ -319,19 +337,32 @@ function sportStatus(sport) {
 const state = {
   tab: 'dashboard',
   planWeekNumber: startWeek(),
-  completed: load('completed', {}),
-  unit: load('unit', 'metric'),
+  completed: {},
+  unit: 'metric',
   zoneSport: PLAN.zones?.bike ? 'bike' : (PLAN.zones?.run ? 'run' : 'swim'),
-  overrides: Object.assign({}, ZONE_DEFAULTS, load('overrides', {}) || {}),
-  zonesValidated: load('zonesValidated', {}),
-  workoutEdits: load('workoutEdits', {}),
+  overrides: {},
+  zonesValidated: {},
   modalId: null,
   editId: null,
   editDraft: null,
   menuOpen: false,
-  importMessage: '',
+  saving: false,
+  revisions: null,
+  revisionsError: '',
   pdfGenerating: false
 };
+function defaultUnit() {
+  const p = PLAN.preferences || {};
+  return (p.run === 'miles' || p.bike === 'miles') ? 'imperial' : 'metric';
+}
+function syncStateFromPlan() {
+  ZONE_DEFAULTS = zoneDefaults();
+  state.completed = Object.assign({}, SERVER.completed || {});
+  state.unit = PLAN.unit || defaultUnit();
+  state.overrides = Object.assign({}, ZONE_DEFAULTS, PLAN.overrides || {});
+  state.zonesValidated = Object.assign({}, PLAN.zonesValidated || {});
+}
+syncStateFromPlan();
 
 function startWeek() {
   const today = new Date();
@@ -345,16 +376,7 @@ function phaseForWeek(n) { return (PLAN.phases || []).find(p => n >= p.startWeek
 function allWorkouts() {
   const out = [];
   (PLAN.weeks || []).forEach(w => (w.days || []).forEach(day => (day.workouts || []).forEach(wo => {
-    const edit = state.workoutEdits[wo.id];
-    if (edit && edit.deleted) return;
-    const date = (edit && edit.date) || day.date;
-    const merged = edit
-      ? Object.assign({}, wo, {
-          name: edit.name != null && edit.name !== '' ? edit.name : wo.name,
-          humanReadable: edit.humanReadable != null ? edit.humanReadable : wo.humanReadable
-        })
-      : wo;
-    out.push({ wo: merged, date, week: w.weekNumber });
+    out.push({ wo, date: day.date, week: w.weekNumber });
   })));
   return out;
 }
@@ -386,10 +408,12 @@ function workoutCard(w, dateStr) {
   const done = !!state.completed[w.id];
   const dist = distanceLabel(w);
   const meta = [fmtDuration(w.durationMinutes), dist, w.primaryZone].filter(Boolean).map(esc).join(' · ');
-  return '<div class="card elev-sm wcard" draggable="true" data-drag-id="' + esc(w.id) + '" data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (done ? 0.55 : 1) + ';">'
+  return '<div class="card elev-sm wcard"' + (READ_ONLY ? '' : ' draggable="true" data-drag-id="' + esc(w.id) + '"') + ' data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (done ? 0.55 : 1) + ';">'
     + '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
       + '<span class="tag" style="background:' + tint(color) + '; color:' + color + '; font-size:10px;">' + esc(w.sport) + '</span>'
-      + '<button type="button" data-toggle="' + esc(w.id) + '" title="Mark complete" style="background:none; border:none; cursor:pointer; padding:0; line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</button>'
+      + (READ_ONLY
+        ? '<span style="line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</span>'
+        : '<button type="button" data-toggle="' + esc(w.id) + '" title="' + (done ? 'Mark incomplete' : 'Mark complete') + '" style="background:none; border:none; cursor:pointer; padding:0; line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</button>')
     + '</div>'
     + '<div style="font-size:13.5px; font-weight:500; margin-top:6px; text-decoration:' + (done ? 'line-through' : 'none') + ';">' + esc(w.name) + '</div>'
     + '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:3px;">' + meta + '</div>'
@@ -404,6 +428,7 @@ function dashboard() {
   const today = new Date();
   let h = '';
 
+  h += readOnlyBanner();
   h += '<div style="padding:24px 18px 8px;">'
     + '<h1 style="font-size:26px; margin:10px 0 4px; line-height:1.15;">' + esc(PLAN.meta.event) + '</h1>'
     + '<div style="color:var(--color-neutral-300); font-size:14px;">' + esc(PLAN.meta.athlete || '') + (RACE ? ' · Race day ' + esc(longDate(RACE.date)) : ' · ' + esc(PLAN.meta.totalWeeks) + '-week block') + '</div>'
@@ -466,6 +491,14 @@ function dashboard() {
 
   h += zonesSection();
   return h;
+}
+
+function readOnlyBanner() {
+  if (!READ_ONLY) return '';
+  return '<div class="card" style="margin:16px 18px 0; padding:12px 14px; flex-direction:row; align-items:center; gap:10px; box-shadow: inset 0 0 0 1px var(--color-accent-700);">'
+    + '<span class="tag tag-outline">Archived</span>'
+    + '<span style="flex:1; font-size:13px; color:var(--color-neutral-300);">Read-only view of a past plan.</span>'
+    + '<a href="' + esc(appLink('/training-plan/plans')) + '" style="font-size:13px;">All plans</a></div>';
 }
 
 function zoneRow(color, cells) {
@@ -581,7 +614,7 @@ function planTab() {
   const first = (PLAN.weeks || [])[0]?.weekNumber || 1;
   const last = PLAN.meta.totalWeeks || ((PLAN.weeks || []).slice(-1)[0]?.weekNumber || 1);
 
-  let h = '<div style="padding:20px 18px 10px; display:flex; align-items:center; justify-content:space-between;">'
+  let h = readOnlyBanner() + '<div style="padding:20px 18px 10px; display:flex; align-items:center; justify-content:space-between;">'
     + '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + '>' + icon('left') + '</button>'
     + '<div style="text-align:center;"><div style="font-family:var(--font-heading); font-size:17px; font-weight:500;">Week ' + n
       + ' <span style="color:var(--color-neutral-500); font-weight:400;">of ' + esc(last) + '</span></div>'
@@ -626,7 +659,9 @@ function planTab() {
     const workouts = (byDate[day.date] || []).filter(w => w.sport !== 'rest');
     return '<div class="day-col" data-day-date="' + esc(day.date) + '">'
       + '<div class="day-head"><span style="font-family:var(--font-heading); font-size:14px; font-weight:500;">' + esc(day.dayOfWeek) + '</span>'
-      + '<span style="font-size:12px; color:var(--color-neutral-500);">' + esc(dayMonth(day.date)) + '</span></div>'
+      + '<span style="display:flex; align-items:center; gap:6px;"><span style="font-size:12px; color:var(--color-neutral-500);">' + esc(dayMonth(day.date)) + '</span>'
+      + (READ_ONLY ? '' : '<button type="button" class="add-btn" data-act="add-workout" data-date="' + esc(day.date) + '" title="Add a workout on ' + esc(dayMonth(day.date)) + '" aria-label="Add workout">' + icon('plus', 14) + '</button>')
+      + '</span></div>'
       + (workouts.length ? workouts.map(w => workoutCard(w, day.date)).join('') : '<div class="rest-slot" data-day-date="' + esc(day.date) + '">Rest day</div>')
     + '</div>';
   }).join('') + '</div>';
@@ -638,36 +673,31 @@ function settingsTab() {
   const z = PLAN.zones || {};
   let h = '<div style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>';
 
+  const dis = READ_ONLY ? ' disabled' : '';
+  h += readOnlyBanner();
   h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:10px;">Units</div>'
     + '<div class="seg">'
-    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="metric"' + (state.unit === 'metric' ? ' checked' : '') + '>Metric (km/m)</label>'
-    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="imperial"' + (state.unit === 'imperial' ? ' checked' : '') + '>Imperial (mi/yd)</label>'
+    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="metric"' + (state.unit === 'metric' ? ' checked' : '') + dis + '>Metric (km/m)</label>'
+    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="imperial"' + (state.unit === 'imperial' ? ' checked' : '') + dis + '>Imperial (mi/yd)</label>'
     + '</div></div>';
 
   h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
     + '<div class="card-title" style="margin-bottom:2px;">Zones &amp; thresholds</div>'
     + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the zone tables on Dashboard, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
   const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
-    + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;">'
+    + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;"' + dis + '>'
       + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
   if (z.bike) h += '<div class="sub-label">Bike</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
-    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" data-ov="ftp" value="' + esc(ov.ftp) + '"></div>'
-    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"></div></div>' + validateRow('bike');
+    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
+    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
   if (z.run) h += '<div class="sub-label">Run</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
-    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" data-ov="runLthr" value="' + esc(ov.runLthr) + '"></div>'
-    + '<div class="field"><label>Threshold pace (min:sec/km)</label><input class="input" type="text" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"></div></div>' + validateRow('run');
+    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
+    + '<div class="field"><label>Threshold pace (min:sec/km)</label><input class="input" type="text" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
   if (z.swim) h += '<div class="sub-label">Swim</div><div class="field" style="margin-bottom:10px;"><label>CSS (/100m)</label>'
-    + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"></div>' + validateRow('swim');
+    + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
   h += '</div>';
 
-  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
-    + '<div class="card-title" style="margin-bottom:4px;">Backup &amp; restore</div>'
-    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">Completion progress and preferences are stored on this device only.</div>'
-    + '<div style="display:flex; gap:10px; flex-wrap:wrap;">'
-      + '<button type="button" class="btn btn-secondary" data-act="export">' + icon('down',16) + ' Export backup</button>'
-      + '<button type="button" class="btn btn-secondary" data-act="import">' + icon('up',16) + ' Import backup</button></div>'
-    + (state.importMessage ? '<div style="margin-top:10px; font-size:12px; color:var(--color-accent-300);">' + esc(state.importMessage) + '</div>' : '')
-  + '</div>';
+  h += historySection();
 
   h += '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">'
     + '<div class="card-title" style="margin-bottom:4px;">About this plan</div>'
@@ -675,8 +705,42 @@ function settingsTab() {
       + ' on ' + esc(new Date(PLAN.meta.createdAt).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })) + '.'
       + (PLAN.meta.pilot ? '<br>' + esc(PLAN.meta.pilot) : '') + '</div>'
     + '<div class="hr" style="margin:12px 0;"></div>'
-    + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + '</div></div>';
+    + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
   return h;
+}
+
+/* Every change to the plan (upload, edit here, coach via MCP, restore) is a
+   revision on the server. Restoring one writes a new revision, so a restore
+   can itself be undone. Completion ticks are separate and never roll back. */
+const SOURCE_LABELS = { upload:'Upload', web:'Edited here', mcp:'Coach (MCP)' };
+function historySection() {
+  if (state.revisions === null && !state.revisionsError) loadRevisions();
+  let rows;
+  if (state.revisionsError) rows = '<div style="font-size:13px; color:var(--color-neutral-400);">' + esc(state.revisionsError) + '</div>';
+  else if (!state.revisions) rows = '<div style="font-size:13px; color:var(--color-neutral-400);">Loading…</div>';
+  else rows = state.revisions.map(r => {
+    const current = r.version === SERVER.version;
+    const when = new Date(r.created_at).toLocaleString(undefined, { month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit' });
+    return '<div class="rev-row">'
+      + '<div style="flex:1; min-width:0;"><div style="font-size:13px;">' + esc(r.summary || 'Change') + '</div>'
+      + '<div style="font-size:12px; color:var(--color-neutral-500);">v' + esc(r.version) + ' · ' + esc(when) + ' · ' + esc(SOURCE_LABELS[r.source] || r.source) + '</div></div>'
+      + (current ? '<span class="tag tag-accent-2">Current</span>'
+        : (READ_ONLY ? '' : '<button type="button" class="btn btn-secondary" data-act="restore" data-version="' + esc(r.version) + '" style="font-size:12px; padding:5px 10px;">Restore</button>'))
+    + '</div>';
+  }).join('');
+  return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px;">'
+      + '<div class="card-title">History</div>'
+      + '<a class="btn btn-secondary" href="' + esc(appLink('/training-plan/export.json')) + '" style="font-size:12px; padding:5px 10px;">' + icon('down',14) + ' Download JSON</a></div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">Every change to the plan, newest first. Restoring brings back that version\'s workouts and zones; completion ticks are never rolled back.</div>'
+    + '<div class="rev-list">' + rows + '</div></div>';
+}
+function loadRevisions() {
+  state.revisions = undefined;
+  api('revisions')
+    .then(list => { state.revisions = list; })
+    .catch(err => { state.revisionsError = 'Could not load history: ' + err.message; })
+    .finally(() => { if (state.tab === 'settings') render(); });
 }
 
 function modal() {
@@ -708,29 +772,66 @@ function modal() {
       + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
     + '</div>'
     + '<div class="dialog-actions">'
-      + '<button type="button" class="btn btn-secondary" data-act="delete-workout" data-id="' + esc(w.id) + '">Delete</button>'
-      + '<button type="button" class="btn btn-secondary" data-act="open-edit" data-id="' + esc(w.id) + '">Edit</button>'
+      + (READ_ONLY ? '' : '<button type="button" class="btn btn-secondary" data-act="delete-workout" data-id="' + esc(w.id) + '">Delete</button>'
+        + '<button type="button" class="btn btn-secondary" data-act="open-edit" data-id="' + esc(w.id) + '">Edit</button>')
       + '<button type="button" class="btn btn-secondary" data-act="close">Close</button>'
-      + '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button></div>'
+      + (READ_ONLY ? '' : '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button>') + '</div>'
   + '</div></div>';
 }
 
+/* One dialog for editing a workout and for adding one from a day's "+"
+   button. Distance is metres for swims and kilometres otherwise, matching
+   how the coach writes them (distanceMeters / distanceKm). */
+const EDIT_SPORTS = ['run','bike','swim','strength','brick','other'];
+function distanceUnit(sport) { return sport === 'swim' ? 'm' : 'km'; }
+function workoutDistance(w, sport) {
+  if (sport === 'swim') return w.distanceMeters != null ? w.distanceMeters : (w.distanceKm != null ? Math.round(w.distanceKm * 1000) : '');
+  if (w.distanceKm != null) return w.distanceKm;
+  return w.distanceMeters != null ? +(w.distanceMeters / 1000).toFixed(2) : '';
+}
+function draftFor(w, date, mode) {
+  const sport = w.sport || 'run';
+  const dist = workoutDistance(w, sport);
+  return { mode, date, name: w.name || '', sport, type: w.type || '', durationMinutes: w.durationMinutes ?? '',
+    distance: dist, distanceOrig: dist, sportOrig: sport, primaryZone: w.primaryZone || '',
+    description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '' };
+}
 function editModal() {
   if (!state.editId || !state.editDraft) return '';
-  const draft = state.editDraft;
+  const d = state.editDraft;
+  const field = (label, key, attrs) => '<div class="field"><label>' + label + '</label><input class="input" data-edit-field="' + key + '" value="' + esc(d[key]) + '" ' + (attrs || 'type="text"') + '></div>';
+  const area = (label, key, rows, attrs) => '<div class="field"><label>' + label + '</label><textarea class="input" rows="' + rows + '" data-edit-field="' + key + '" ' + (attrs || '') + '>' + esc(d[key]) + '</textarea></div>';
+  const sportSel = '<div class="field"><label>Sport</label><select class="input" data-edit-field="sport">'
+    + EDIT_SPORTS.map(s => '<option value="' + s + '"' + (d.sport === s ? ' selected' : '') + '>' + s[0].toUpperCase() + s.slice(1) + '</option>').join('') + '</select></div>';
+  const grid = (a, b) => '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">' + a + b + '</div>';
   return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
     + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
-      + '<span>Edit workout</span>'
+      + '<span>' + (d.mode === 'add' ? 'Add workout' : 'Edit workout') + '</span>'
       + '<button type="button" class="btn btn-icon" data-act="cancel-edit">' + icon('x') + '</button></div>'
     + '<div class="dialog-body" style="display:flex; flex-direction:column; gap:10px;">'
-      + '<div class="field"><label>Name</label><input class="input" type="text" data-edit-field="name" value="' + esc(draft.name) + '"></div>'
-      + '<div class="field"><label>Date</label><input class="input" type="date" data-edit-field="date" value="' + esc(draft.date) + '"></div>'
-      + '<div class="field"><label>Details</label><textarea class="input" rows="6" data-edit-field="humanReadable">' + esc(draft.humanReadable) + '</textarea></div>'
+      + field('Name', 'name', 'type="text" maxlength="80" required')
+      + grid(sportSel, field('Type', 'type', 'type="text" placeholder="e.g. endurance, threshold"'))
+      + grid(field('Date', 'date', 'type="date"'), field('Duration (min)', 'durationMinutes', 'type="number" min="0" step="1"'))
+      + grid(field('Distance (' + distanceUnit(d.sport) + ')', 'distance', 'type="number" min="0" step="any"'), field('Primary zone', 'primaryZone', 'type="text" placeholder="e.g. Zone 2"'))
+      + area('Description', 'description', 2, 'maxlength="120"')
+      + area('Key targets', 'keyTargets', 2, 'maxlength="120"')
+      + area('Details', 'humanReadable', 7)
     + '</div>'
     + '<div class="dialog-actions">'
       + '<button type="button" class="btn btn-secondary" data-act="cancel-edit">Cancel</button>'
-      + '<button type="button" class="btn btn-primary" data-act="save-edit">Save</button></div>'
+      + '<button type="button" class="btn btn-primary" data-act="save-edit"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? 'Saving…' : (d.mode === 'add' ? 'Add' : 'Save')) + '</button></div>'
   + '</div></div>';
+}
+function draftToFields(d) {
+  const num = v => (v === '' || v == null) ? null : Number(v);
+  const fields = { name: d.name.trim(), sport: d.sport, type: d.type.trim(), durationMinutes: num(d.durationMinutes),
+    primaryZone: d.primaryZone.trim(), description: d.description.trim(), keyTargets: d.keyTargets.trim(), humanReadable: d.humanReadable };
+  if (d.mode === 'add' || String(d.distance) !== String(d.distanceOrig) || d.sport !== d.sportOrig) {
+    const dist = num(d.distance);
+    if (d.sport === 'swim') { fields.distanceMeters = dist; fields.distanceKm = null; }
+    else { fields.distanceKm = dist; fields.distanceMeters = null; }
+  }
+  return fields;
 }
 
 function tabbar() {
@@ -762,7 +863,9 @@ function tabbar() {
         + sheetItem('Dashboard', 'gauge', { href: appLink('/dashboard') })
         + sheetItem('Weekly Summary', 'chartbar', { href: appLink('/weekly-summary') })
         + sheetItem(state.pdfGenerating ? 'Generating…' : 'Generate Plan PDF', 'down', { act:'generate-pdf', disabled: state.pdfGenerating })
-        + sheetItem('Settings', 'gear', { tab: 'settings' })
+        + sheetItem('All plans', 'list', { href: appLink('/training-plan/plans') })
+        + sheetItem('Upload plan', 'up', { href: appLink('/training-plan/upload') })
+        + sheetItem('Settings & history', 'gear', { tab: 'settings' })
       + '</div>'
     : '';
 
@@ -777,19 +880,28 @@ function tabbar() {
 function render() {
   const body = state.tab === 'dashboard' ? dashboard() : state.tab === 'plan' ? planTab() : settingsTab();
   document.getElementById('app').innerHTML =
-    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + tabbar() + modal() + editModal();
+    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + tabbar() + modal() + editModal()
+    + (state.saving ? '<div class="saving-pill">Saving…</div>' : '');
 }
 
 /* ── events ── */
+function toggleCompleted(id) {
+  const next = !state.completed[id];
+  state.completed[id] = next;                       // optimistic
+  render();
+  api('completion', { workout_id: id, completed: next })
+    .then(data => { SERVER.completed = data.completed || {}; state.completed = Object.assign({}, SERVER.completed); })
+    .catch(err => { state.completed[id] = !next; alert('Could not save: ' + err.message); })
+    .finally(render);
+}
+
 document.getElementById('app').addEventListener('click', e => {
   const toggle = e.target.closest('[data-toggle]');
   if (toggle) {
     e.stopPropagation();
-    const id = toggle.getAttribute('data-toggle');
-    state.completed[id] = !state.completed[id];
-    save('completed', state.completed);
+    if (READ_ONLY) return;
     if (toggle.closest('.dialog')) state.modalId = null;
-    return render();
+    return toggleCompleted(toggle.getAttribute('data-toggle'));
   }
   const open = e.target.closest('[data-open]');
   if (open) { state.modalId = open.getAttribute('data-open'); return render(); }
@@ -801,7 +913,13 @@ document.getElementById('app').addEventListener('click', e => {
   if (zone) { state.zoneSport = zone.getAttribute('data-zone'); return render(); }
 
   const unit = e.target.closest('[data-unit]');
-  if (unit) { state.unit = unit.getAttribute('data-unit'); save('unit', state.unit); return render(); }
+  if (unit) {
+    if (READ_ONLY) return;
+    const value = unit.getAttribute('data-unit');
+    if (value === state.unit) return;
+    state.unit = value;
+    return saveOps([{ op: 'set_unit', unit: value }]);
+  }
 
   const act = e.target.closest('[data-act]');
   if (!act) return;
@@ -812,29 +930,27 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'prev') { state.planWeekNumber = Math.max(1, state.planWeekNumber - 1); return render(); }
   if (a === 'next') { state.planWeekNumber = Math.min(PLAN.meta.totalWeeks, state.planWeekNumber + 1); return render(); }
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.editId = null; state.editDraft = null; return render(); }
+  if (READ_ONLY && a !== 'generate-pdf') return;
   if (a === 'validate') {
     const sport = act.getAttribute('data-sport');
     const cur = state.zonesValidated[sport];
-    state.zonesValidated[sport] = { validated: !(cur && cur.validated), at: new Date().toISOString().slice(0,10) };
-    save('zonesValidated', state.zonesValidated);
-    return render();
+    return saveOps([{ op: 'set_zone_validation', sport, validated: !(cur && cur.validated), at: new Date().toISOString().slice(0,10) }]);
   }
-  if (a === 'export') {
-    const blob = new Blob([JSON.stringify(buildExportData(), null, 2)], { type:'application/json' });
-    const url = URL.createObjectURL(blob), link = document.createElement('a');
-    link.href = url; link.download = (PLAN.meta.id || 'training-plan') + '-export.json';
-    document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(url);
+  if (a === 'restore') {
+    const version = act.getAttribute('data-version');
+    if (!confirm('Restore version ' + version + '? The current plan stays in history, so this can be undone.')) return;
+    state.saving = true; render();
+    api('revisions/' + encodeURIComponent(version) + '/restore', {})
+      .then(applyServer)
+      .catch(err => alert('Could not restore: ' + err.message))
+      .finally(() => { state.saving = false; render(); });
     return;
   }
   if (a === 'generate-pdf') {
     if (state.pdfGenerating) return;
     state.pdfGenerating = true;
     render();
-    fetch(appLink('/training-plan/pdf'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(buildExportData())
-    })
+    fetch(appLink('/training-plan/pdf'))
       .then(res => { if (!res.ok) throw new Error('Server returned ' + res.status); return res.blob(); })
       .then(blob => {
         const url = URL.createObjectURL(blob), link = document.createElement('a');
@@ -845,34 +961,49 @@ document.getElementById('app').addEventListener('click', e => {
       .finally(() => { state.pdfGenerating = false; render(); });
     return;
   }
-  if (a === 'import') { document.getElementById('import-file').click(); return; }
+  if (a === 'add-workout') {
+    state.editId = '__new__';
+    state.editDraft = draftFor({ sport: 'run' }, act.getAttribute('data-date'), 'add');
+    state.modalId = null;
+    return render();
+  }
   if (a === 'open-edit') {
     const id = act.getAttribute('data-id');
     const hit = workoutById(id);
     if (!hit) return;
     state.editId = id;
-    state.editDraft = { name: hit.wo.name || '', date: hit.date, humanReadable: hit.wo.humanReadable || '' };
+    state.editDraft = draftFor(hit.wo, hit.date, 'edit');
     state.modalId = null;
     return render();
   }
   if (a === 'cancel-edit') { state.editId = null; state.editDraft = null; return render(); }
   if (a === 'save-edit') {
-    if (state.editId && state.editDraft) {
-      state.workoutEdits[state.editId] = Object.assign({}, state.workoutEdits[state.editId], state.editDraft);
-      save('workoutEdits', state.workoutEdits);
-    }
-    state.editId = null; state.editDraft = null;
-    return render();
+    const d = state.editDraft;
+    if (!state.editId || !d || state.saving) return;
+    if (!d.name.trim()) { alert('Give the workout a name.'); return; }
+    if (!d.date) { alert('Pick a date.'); return; }
+    const fields = draftToFields(d);
+    const op = d.mode === 'add'
+      ? { op: 'add_workout', date: d.date, workout: fields }
+      : { op: 'update_workout', workout_id: state.editId, fields: Object.assign(fields, { date: d.date }) };
+    return saveOps([op], () => { state.editId = null; state.editDraft = null; });
   }
   if (a === 'delete-workout') {
     const id = act.getAttribute('data-id');
-    if (id && confirm('Delete this workout? This only affects your copy of the plan.')) {
-      state.workoutEdits[id] = Object.assign({}, state.workoutEdits[id], { deleted: true });
-      save('workoutEdits', state.workoutEdits);
+    if (id && confirm('Delete this workout from the plan? It can be restored from Settings → History.')) {
       state.modalId = null;
+      return saveOps([{ op: 'remove_workout', workout_id: id }]);
     }
     return render();
   }
+});
+
+/* Edit-dialog fields update the draft as you type without re-rendering (a
+   re-render would steal focus); only the sport picker re-renders, since it
+   changes the distance unit. */
+document.getElementById('app').addEventListener('input', e => {
+  const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
+  if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
 });
 
 document.getElementById('app').addEventListener('change', e => {
@@ -881,48 +1012,19 @@ document.getElementById('app').addEventListener('change', e => {
     if (p) { state.planWeekNumber = p.startWeek; render(); }
     return;
   }
-  const ovKey = e.target.getAttribute && e.target.getAttribute('data-ov');
-  if (ovKey) {
-    const v = e.target.value;
-    if (ovKey === 'cssLabel') {
-      const secs = parseMMSS(v);
-      state.overrides.cssLabel = v;
-      if (secs != null) state.overrides.cssSeconds = secs;
-    } else if (ovKey === 'thresholdPace') {
-      state.overrides.thresholdPace = v;
-    } else {
-      state.overrides[ovKey] = parseInt(v, 10) || ZONE_DEFAULTS[ovKey];
-    }
-    save('overrides', state.overrides);
-    render();
-  }
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) {
     state.editDraft[editField] = e.target.value;
-    render();
+    if (editField === 'sport') render();
+    return;
   }
-});
-
-document.getElementById('import-file').addEventListener('change', e => {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const data = JSON.parse(reader.result);
-      state.completed = Object.assign({}, state.completed, data.completed || {});
-      if (data.unit) state.unit = data.unit;
-      if (data.overrides) state.overrides = Object.assign({}, state.overrides, data.overrides);
-      if (data.zonesValidated) state.zonesValidated = Object.assign({}, state.zonesValidated, data.zonesValidated);
-      if (data.workoutEdits) state.workoutEdits = Object.assign({}, state.workoutEdits, data.workoutEdits);
-      save('completed', state.completed); save('unit', state.unit); save('overrides', state.overrides);
-      save('zonesValidated', state.zonesValidated); save('workoutEdits', state.workoutEdits);
-      state.importMessage = 'Backup imported successfully.';
-    } catch (err) { state.importMessage = 'Could not read that file.'; }
-    render();
-  };
-  reader.readAsText(file);
-  e.target.value = '';
+  const ovKey = e.target.getAttribute && e.target.getAttribute('data-ov');
+  if (ovKey && !READ_ONLY) {
+    const v = e.target.value.trim();
+    const op = { op: 'set_zones' };
+    op[ovKey] = v === '' ? null : v;
+    saveOps([op]);
+  }
 });
 
 document.getElementById('app').addEventListener('dragstart', e => {
@@ -956,10 +1058,10 @@ document.getElementById('app').addEventListener('drop', e => {
   document.querySelectorAll('.day-col.drag-over').forEach(el => el.classList.remove('drag-over'));
   const id = e.dataTransfer.getData('text/plain');
   const newDate = col.getAttribute('data-day-date');
-  if (!id || !newDate) return;
-  state.workoutEdits[id] = Object.assign({}, state.workoutEdits[id], { date: newDate });
-  save('workoutEdits', state.workoutEdits);
-  render();
+  if (!id || !newDate || READ_ONLY) return;
+  const hit = workoutById(id);
+  if (!hit || hit.date === newDate) return;
+  saveOps([{ op: 'move_workout', workout_id: id, date: newDate }]);
 });
 
 document.addEventListener('keydown', e => {
@@ -974,6 +1076,15 @@ document.addEventListener('keydown', e => {
 
 render();
 </script>
-<style>.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }</style>
+<style>.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }
+.add-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; cursor:pointer;
+  border:1px solid var(--color-neutral-700); border-radius:6px; background:transparent; color:var(--color-neutral-400); }
+.add-btn:hover { color: var(--color-accent); border-color: var(--color-accent); }
+.rev-list { display:flex; flex-direction:column; max-height:320px; overflow-y:auto; }
+.rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
+.rev-row:first-child { border-top:none; }
+.saving-pill { position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;
+  font-size:12px; background: var(--color-surface); box-shadow: var(--shadow-md); color: var(--color-accent-200); }
+select.input { appearance:auto; }</style>
 </body>
 </html>

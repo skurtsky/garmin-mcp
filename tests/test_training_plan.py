@@ -1,258 +1,339 @@
 # tests/test_training_plan.py
-"""Tests for the hosted training-plan viewer (tools/training_plan.py).
+"""Tests for the /training-plan routes (tools/training_plan.py).
 
-Fully offline: storage is redirected to a tmp directory via TRAINING_PLAN_DIR
-and the routes are exercised with Starlette's TestClient, so no Garmin session
-and no Azure File Share are involved.
+Fully offline: the plan functions in db.py are replaced by an in-memory fake
+(tests/plan_fakes.py) and the routes are exercised with Starlette's
+TestClient, so no PostgreSQL and no Garmin session are involved.
 """
 import json
+import re
 
 import pytest
 from starlette.responses import Response
 from starlette.testclient import TestClient
 
+import db
+from tests.plan_fakes import fake_db, sample_plan  # noqa: F401 — fixture
 from tools import training_plan
 
-
-PLAN_HTML = (
-    "<!doctype html><html><head><title>Plan</title></head><body>"
-        '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>'
-    "<div id=app></div></body></html>"
-)
-
-
-@pytest.fixture(autouse=True)
-def plan_dir(tmp_path, monkeypatch):
-    """Redirect plan storage at the tmp dir for every test in this module."""
-    target = tmp_path / "training-plan"
-    monkeypatch.setenv("TRAINING_PLAN_DIR", str(target))
-    return target
+TOKEN = {"token": "t0k"}
 
 
 @pytest.fixture
-def client():
+def client(fake_db):
     return TestClient(training_plan.create_app())
 
 
-def _upload_files(html_text=PLAN_HTML):
-    return {
-        training_plan.HTML_FIELD: ("plan.html", html_text, "text/html"),
-    }
+def _upload(client, plan, **kwargs):
+    body = plan if isinstance(plan, (bytes, str)) else json.dumps(plan)
+    return client.post("/training-plan/upload", params=TOKEN,
+                       files={training_plan.FILE_FIELD: ("plan.json", body, "application/json")}, **kwargs)
 
 
-# ── STORAGE ───────────────────────────────────────────────────────────────────
-
-def test_no_plan_by_default():
-    assert training_plan.plan_exists() is False
-    assert training_plan.read_plan_html() is None
-    assert training_plan.plan_info() is None
+def _embedded(html_text, element_id):
+    match = re.search(rf'<script id="{element_id}" type="application/json">(.*?)</script>', html_text, re.S)
+    return json.loads(match.group(1))
 
 
-def test_save_plan_extracts_embedded_json(plan_dir):
-    training_plan.save_plan(PLAN_HTML.encode())
+# ── VIEWER ────────────────────────────────────────────────────────────────────
 
-    assert training_plan.plan_exists() is True
-    assert (plan_dir / "plan.html").read_text() == PLAN_HTML
-    assert json.loads((plan_dir / "plan.json").read_text()) == {
-        "meta": {"event": "Marathon build", "athlete": "Alex"}, "weeks": 12
-    }
-    # The embedded plan-data script survives the round trip untouched.
-    assert training_plan.read_plan_html() == PLAN_HTML
-
-
-def test_save_plan_replaces_previous_plan():
-    training_plan.save_plan(PLAN_HTML.encode())
-    newer = PLAN_HTML.replace('"weeks":12', '"weeks":8')
-    training_plan.save_plan(newer.encode())
-
-    assert training_plan.read_plan_html() == newer
-    with open(training_plan.plan_json_path()) as f:
-        assert json.load(f)["weeks"] == 8
-
-
-def test_save_plan_leaves_no_temp_files(plan_dir):
-    training_plan.save_plan(PLAN_HTML.encode())
-    assert sorted(p.name for p in plan_dir.iterdir()) == ["plan.html", "plan.json"]
-
-
-@pytest.mark.parametrize("html_bytes", [
-    b"   ",                                      # empty HTML
-    b"not html at all",                          # no markup
-    PLAN_HTML.replace('{"meta":', "{not json").encode(),  # invalid embedded JSON
-])
-def test_save_plan_rejects_bad_uploads(html_bytes):
-    with pytest.raises(ValueError):
-        training_plan.save_plan(html_bytes)
-    assert training_plan.plan_exists() is False
-
-
-def test_save_plan_rejects_oversized_html(monkeypatch):
-    monkeypatch.setattr(training_plan, "MAX_UPLOAD_BYTES", 10)
-    with pytest.raises(ValueError):
-        training_plan.save_plan(PLAN_HTML.encode())
-
-
-def test_plan_info_reports_title_and_size():
-    training_plan.save_plan(PLAN_HTML.encode())
-    info = training_plan.plan_info()
-
-    assert info["title"] == "Marathon build"
-    assert info["html_bytes"] == len(PLAN_HTML.encode())
-    assert info["updated_at"].endswith("UTC")
-
-
-def test_plan_info_tolerates_unparseable_json(plan_dir):
-    training_plan.save_plan(PLAN_HTML.encode())
-    (plan_dir / "plan.json").write_text("{ broken")
-
-    info = training_plan.plan_info()
-    assert info is not None
-    assert info["title"] is None
-
-
-def test_reset_plan_removes_files_and_is_idempotent():
-    training_plan.save_plan(PLAN_HTML.encode())
-
-    assert sorted(training_plan.reset_plan()) == ["plan.html", "plan.json"]
-    assert training_plan.plan_exists() is False
-    assert training_plan.reset_plan() == []
-
-
-# ── ROUTES ────────────────────────────────────────────────────────────────────
-
-def test_get_plan_without_upload_returns_no_plan_page(client):
-    r = client.get("/training-plan", params={"token": "t0k"})
+def test_no_plan_page(client):
+    r = client.get("/training-plan", params=TOKEN)
 
     assert r.status_code == 200
     assert "No plan active" in r.text
     assert "/training-plan/upload?token=t0k" in r.text
+    assert "/training-plan/plans?token=t0k" in r.text
     assert r.headers["cache-control"] == "no-store"
+    assert 'id="gm-nav"' not in r.text
 
 
-def test_get_plan_serves_stored_html_without_the_nav_bar(client):
-    training_plan.save_plan(PLAN_HTML.encode())
+def test_without_a_database_the_pages_explain_why(monkeypatch):
+    monkeypatch.setattr(db, "is_configured", lambda: False)
+    client = TestClient(training_plan.create_app())
 
-    r = client.get("/training-plan", params={"token": "t0k"})
+    r = client.get("/training-plan", params=TOKEN)
+    assert r.status_code == 503 and "DATABASE_URL" in r.text
+    assert client.get("/training-plan/api/plan", params=TOKEN).status_code == 503
+
+
+def test_viewer_embeds_plan_and_server_state(client, fake_db):
+    _upload(client, sample_plan())
+    fake_db.upsert_workout_state("test-block-2026", "w1-tue-run", completed=True)
+
+    r = client.get("/training-plan", params=TOKEN)
 
     assert r.status_code == 200
-    assert r.headers["content-type"].startswith("text/html")
-    # The plan itself is untouched, and no longer gets the shared nav bar
-    # injected (issue: /training-plan navigates via the dashboard's More menu now).
-    assert '<script type="application/json" id="plan-data">{"meta":{"event":"Marathon build","athlete":"Alex"},"weeks":12}</script>' in r.text
-    assert "<div id=app></div>" in r.text
-    assert 'id="gm-nav"' not in r.text
-    plan_with_meta = PLAN_HTML.replace(
-        '<head>',
-        '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">',
-    )
-    assert r.text == plan_with_meta
+    assert "<title>Test Block — Alex</title>" in r.text
+    assert "__PLAN" not in r.text
+    assert 'maximum-scale=1, user-scalable=no' in r.text
+    plan = _embedded(r.text, "plan-data")
+    server = _embedded(r.text, "plan-server")
+    assert plan["meta"]["id"] == "test-block-2026"
+    # weekly totals are recomputed on upload, not trusted from the file
+    assert plan["weeks"][0]["summary"]["totalHours"] == 3.83
+    assert server == {"id": "test-block-2026", "status": "active", "version": 1,
+                      "readOnly": False, "completed": {"w1-tue-run": True}}
 
 
-def test_no_plan_page_has_no_nav_bar(client):
-    r = client.get("/training-plan", params={"token": "t0k"})
+def test_viewer_escapes_script_closers_in_plan_text(client):
+    plan = sample_plan()
+    plan["weeks"][0]["days"][0]["workouts"][0]["humanReadable"] = "</script><b>x</b>"
+    _upload(client, plan)
 
-    assert 'id="gm-nav"' not in r.text
-    assert "/training-plan/upload?token=t0k" in r.text
+    r = client.get("/training-plan", params=TOKEN)
+
+    assert "</script><b>x" not in r.text
+    assert _embedded(r.text, "plan-data")["weeks"][0]["days"][0]["workouts"][0]["humanReadable"] == "</script><b>x</b>"
 
 
-def test_upload_form_has_one_file_input_and_carries_token(client):
-    r = client.get("/training-plan/upload", params={"token": "t0k"})
+def test_archived_plan_is_served_read_only(client):
+    _upload(client, sample_plan())
+    _upload(client, sample_plan(id="next-block"))
+
+    r = client.get("/training-plan", params={**TOKEN, "plan": "test-block-2026"})
+
+    assert _embedded(r.text, "plan-server")["readOnly"] is True
+    assert _embedded(r.text, "plan-data")["meta"]["id"] == "test-block-2026"
+    assert _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["id"] == "next-block"
+
+
+def test_unknown_plan_id_is_404(client):
+    assert client.get("/training-plan", params={**TOKEN, "plan": "nope"}).status_code == 404
+
+
+# ── UPLOAD ────────────────────────────────────────────────────────────────────
+
+def test_upload_form(client):
+    r = client.get("/training-plan/upload", params=TOKEN)
 
     assert r.status_code == 200
-    assert f'name="{training_plan.HTML_FIELD}" type="file"' in r.text
-    assert "plan_json" not in r.text
-    assert 'enctype="multipart/form-data"' in r.text
+    assert f'name="{training_plan.FILE_FIELD}" type="file"' in r.text
+    assert 'accept=".json,application/json"' in r.text
     assert 'action="/training-plan/upload?token=t0k"' in r.text
     assert "No plan is active" in r.text
 
 
-def test_upload_form_shows_active_plan_and_reset_button(client):
-    training_plan.save_plan(PLAN_HTML.encode())
-
-    r = client.get("/training-plan/upload", params={"token": "t0k"})
-
-    assert "Marathon build" in r.text
-    assert 'action="/training-plan/reset?token=t0k"' in r.text
-
-
-def test_post_upload_stores_plan_and_redirects(client):
-    r = client.post("/training-plan/upload", params={"token": "t0k"},
-                    files=_upload_files(), follow_redirects=False)
+def test_upload_stores_plan_and_redirects(client, fake_db):
+    r = _upload(client, sample_plan(), follow_redirects=False)
 
     assert r.status_code == 303
     assert r.headers["location"] == "/training-plan?token=t0k"
-    assert training_plan.read_plan_html() == PLAN_HTML
+    assert fake_db.plans["test-block-2026"]["status"] == "active"
+    assert fake_db.revisions["test-block-2026"][0]["source"] == "upload"
 
 
-def test_post_upload_redirect_lands_on_the_plan(client):
-    r = client.post("/training-plan/upload", params={"token": "t0k"},
-                    files=_upload_files())
+def test_upload_with_warnings_shows_them(client):
+    plan = sample_plan()
+    plan["weeks"][0]["days"][0]["workouts"][0]["description"] = "d" * 130
 
-    assert r.status_code == 200
-    plan_with_meta = PLAN_HTML.replace(
-        '<head>',
-        '<head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">',
-    )
-    assert r.text == plan_with_meta
-
-
-def test_post_upload_with_invalid_embedded_json_returns_form_with_error(client):
-    r = client.post("/training-plan/upload", params={"token": "t0k"},
-                    files=_upload_files(html_text=PLAN_HTML.replace('{"meta":', "{ nope")), follow_redirects=False)
-
-    assert r.status_code == 400
-    assert "embedded plan JSON" in r.text
-    assert training_plan.plan_exists() is False
-
-
-def test_post_upload_keeps_previous_plan_when_new_one_is_invalid(client):
-    training_plan.save_plan(PLAN_HTML.encode())
-
-    r = client.post("/training-plan/upload", params={"token": "t0k"},
-                    files=_upload_files(html_text=""), follow_redirects=False)
-
-    assert r.status_code == 400
-    assert training_plan.read_plan_html() == PLAN_HTML
-
-
-def test_post_upload_without_files_reports_html_required(client):
-    r = client.post("/training-plan/upload", params={"token": "t0k"},
-                    data={"nothing": "here"}, follow_redirects=False)
-
-    assert r.status_code == 400
-    assert "HTML file is required" in r.text
-
-
-def test_post_reset_deletes_the_plan(client):
-    training_plan.save_plan(PLAN_HTML.encode())
-
-    r = client.post("/training-plan/reset", params={"token": "t0k"})
+    r = _upload(client, plan, follow_redirects=False)
 
     assert r.status_code == 200
-    assert "plan.html" in r.text
-    assert training_plan.plan_exists() is False
+    assert "Plan uploaded" in r.text and "description is 130 characters" in r.text
 
 
-def test_post_reset_with_no_plan_still_confirms(client):
-    r = client.post("/training-plan/reset", params={"token": "t0k"})
+@pytest.mark.parametrize("body, message", [
+    (b"", "empty"),
+    (b"{ nope", "not valid JSON"),
+    (b"\xff\xfe", "UTF-8"),
+    (json.dumps({"meta": {}, "weeks": []}), "meta.id"),
+])
+def test_bad_uploads_return_the_form_with_an_error(client, fake_db, body, message):
+    r = _upload(client, body, follow_redirects=False)
+
+    assert r.status_code == 400
+    assert message in r.text
+    assert fake_db.plans == {}
+
+
+def test_upload_without_a_file(client):
+    r = client.post("/training-plan/upload", params=TOKEN, data={"x": "y"}, follow_redirects=False)
+    assert r.status_code == 400 and "file is required" in r.text
+
+
+def test_new_id_archives_the_active_plan(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, sample_plan(id="next-block"))
+
+    assert fake_db.plans["test-block-2026"]["status"] == "archived"
+    assert fake_db.plans["next-block"]["status"] == "active"
+
+
+def test_same_id_asks_for_confirmation_then_replaces(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/operations", params=TOKEN,
+                json={"operations": [{"op": "set_zones", "ftp": 262}]})
+    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
+    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-mon-swim"})
+    replacement = sample_plan()
+    replacement["weeks"][0]["days"][0]["workouts"] = []  # drops the completed swim
+
+    r = _upload(client, replacement, follow_redirects=False)
 
     assert r.status_code == 200
-    assert "no plan was active" in r.text.lower()
+    assert "Replace existing plan?" in r.text
+    assert "<b>1</b> completed workout(s) keep their tick" in r.text
+    assert "1 web/MCP edit(s) since the last upload" in r.text
+    assert "Easy swim" in r.text  # the orphaned completed workout is named
+    assert "Zone overrides and validation flags reset" in r.text
+    assert fake_db.plans["test-block-2026"]["version"] == 2  # nothing replaced yet
+
+    carried = re.search(r'<textarea name="plan_text" hidden>(.*?)</textarea>', r.text, re.S).group(1)
+    import html as html_mod
+    r = client.post("/training-plan/upload", params=TOKEN,
+                    data={training_plan.TEXT_FIELD: html_mod.unescape(carried), training_plan.CONFIRM_FIELD: "1"},
+                    follow_redirects=False)
+
+    assert r.status_code == 303
+    row = fake_db.plans["test-block-2026"]
+    assert row["version"] == 3
+    assert "overrides" not in row["plan"]
+    assert fake_db.revisions["test-block-2026"][-1]["summary"] == "Replaced plan content (upload)"
 
 
-def test_plan_routes_reject_wrong_methods(client):
-    assert client.post("/training-plan", params={"token": "t0k"}).status_code == 405
-    assert client.get("/training-plan/reset", params={"token": "t0k"}).status_code == 405
+def test_replace_keeps_the_unit_choice(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/operations", params=TOKEN,
+                json={"operations": [{"op": "set_unit", "unit": "imperial"}]})
+
+    client.post("/training-plan/upload", params=TOKEN,
+                data={training_plan.TEXT_FIELD: json.dumps(sample_plan()), training_plan.CONFIRM_FIELD: "1"})
+
+    assert fake_db.plans["test-block-2026"]["plan"]["unit"] == "imperial"
 
 
-def test_owns_path_matches_only_plan_routes():
-    assert training_plan.owns_path("/training-plan") is True
-    assert training_plan.owns_path("/training-plan/upload") is True
-    assert training_plan.owns_path("/training-plan-other") is False
-    assert training_plan.owns_path("/dashboard") is False
+# ── PLANS LIST ────────────────────────────────────────────────────────────────
+
+def test_plans_list_and_actions(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, sample_plan(id="next-block", event="Next Block"))
+
+    r = client.get("/training-plan/plans", params=TOKEN)
+    assert r.status_code == 200
+    assert "Next Block" in r.text and "Test Block" in r.text
+    assert "/training-plan/plans/test-block-2026/activate?token=t0k" in r.text
+    assert "/training-plan?plan=test-block-2026&amp;token=t0k" in r.text
+
+    r = client.post("/training-plan/plans/test-block-2026/activate", params=TOKEN, follow_redirects=False)
+    assert r.status_code == 303
+    assert fake_db.plans["test-block-2026"]["status"] == "active"
+    assert fake_db.plans["next-block"]["status"] == "archived"
+
+    client.post("/training-plan/plans/next-block/delete", params=TOKEN)
+    assert "next-block" not in fake_db.plans
 
 
-# ── PDF ───────────────────────────────────────────────────────────────────────
+def test_active_plan_cannot_be_deleted(client, fake_db):
+    _upload(client, sample_plan())
+
+    r = client.post("/training-plan/plans/test-block-2026/delete", params=TOKEN, follow_redirects=False)
+
+    assert "error=" in r.headers["location"]
+    assert "test-block-2026" in fake_db.plans
+
+
+def test_archive_leaves_no_active_plan(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/plans/test-block-2026/archive", params=TOKEN)
+
+    assert "No plan active" in client.get("/training-plan", params=TOKEN).text
+
+
+def test_unknown_plan_action(client):
+    r = client.post("/training-plan/plans/nope/activate", params=TOKEN, follow_redirects=False)
+    assert r.status_code == 303 and "error=" in r.headers["location"]
+    assert client.post("/training-plan/plans/nope/explode", params=TOKEN).status_code == 404
+
+
+# ── JSON API ──────────────────────────────────────────────────────────────────
+
+def test_api_operations_return_the_updated_plan(client, fake_db):
+    _upload(client, sample_plan())
+
+    r = client.post("/training-plan/api/operations", params=TOKEN, json={"operations": [
+        {"op": "move_workout", "workout_id": "w1-tue-run", "date": "2026-09-16"},
+        {"op": "add_workout", "date": "2026-09-18", "workout": {"sport": "swim", "name": "Drills",
+                                                                  "durationMinutes": 30, "distanceMeters": 1500}},
+    ]})
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["version"] == 2
+    assert data["touched"] == ["w1-tue-run", "w1-fri-swim"]
+    assert data["plan"]["weeks"][0]["summary"]["bySport"]["swim"]["sessions"] == 2
+    assert fake_db.revisions["test-block-2026"][-1]["source"] == "web"
+
+
+def test_api_operation_errors_are_400_and_change_nothing(client, fake_db):
+    _upload(client, sample_plan())
+
+    r = client.post("/training-plan/api/operations", params=TOKEN,
+                    json={"operations": [{"op": "remove_workout", "workout_id": "nope"}]})
+
+    assert r.status_code == 400 and "nope" in r.json()["error"]
+    assert fake_db.plans["test-block-2026"]["version"] == 1
+    assert client.post("/training-plan/api/operations", params=TOKEN, content=b"x").status_code == 400
+
+
+def test_api_archived_plans_are_read_only(client):
+    _upload(client, sample_plan())
+    _upload(client, sample_plan(id="next-block"))
+
+    r = client.post("/training-plan/api/operations", params={**TOKEN, "plan": "test-block-2026"},
+                    json={"operations": [{"op": "set_unit", "unit": "imperial"}]})
+
+    assert r.status_code == 400 and "read-only" in r.json()["error"]
+
+
+def test_api_completion_round_trip(client, fake_db):
+    _upload(client, sample_plan())
+
+    r = client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
+    assert r.json()["completed"] == {"w1-tue-run": True}
+    r = client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run", "completed": False})
+    assert r.json()["completed"] == {}
+    assert client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "nope"}).status_code == 400
+    assert client.post("/training-plan/api/completion", params=TOKEN, json={}).status_code == 400
+
+
+def test_api_revisions_and_restore(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/operations", params=TOKEN,
+                json={"operations": [{"op": "remove_workout", "workout_id": "w1-thu-bike"}]})
+    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
+
+    revisions = client.get("/training-plan/api/revisions", params=TOKEN).json()
+    assert [r["version"] for r in revisions] == [2, 1]
+    assert revisions[0]["summary"] == "Removed 'Endurance ride' from Thu Sep 17"
+
+    r = client.post("/training-plan/api/revisions/1/restore", params=TOKEN)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["version"] == 3
+    assert any(w["id"] == "w1-thu-bike" for d in data["plan"]["weeks"][0]["days"] for w in d["workouts"])
+    assert data["completed"] == {"w1-tue-run": True}  # ticks never roll back
+    assert client.post("/training-plan/api/revisions/99/restore", params=TOKEN).status_code == 404
+
+
+def test_api_get_plan(client):
+    assert client.get("/training-plan/api/plan", params=TOKEN).status_code == 404
+    _upload(client, sample_plan())
+    assert client.get("/training-plan/api/plan", params=TOKEN).json()["id"] == "test-block-2026"
+
+
+# ── EXPORT / PDF ──────────────────────────────────────────────────────────────
+
+def test_export_downloads_the_current_plan(client):
+    _upload(client, sample_plan())
+
+    r = client.get("/training-plan/export.json", params=TOKEN)
+
+    assert r.status_code == 200
+    assert r.headers["content-disposition"] == 'attachment; filename="test-block-2026.json"'
+    assert r.json()["meta"]["id"] == "test-block-2026"
+    assert client.get("/training-plan/export.json", params={**TOKEN, "plan": "nope"}).status_code == 404
+
 
 @pytest.fixture
 def captured_pdf(monkeypatch):
@@ -267,58 +348,57 @@ def captured_pdf(monkeypatch):
     return seen
 
 
-def test_get_pdf_renders_the_stored_plan_json(client, captured_pdf):
-    training_plan.save_plan(PLAN_HTML.encode())
+def test_pdf_renders_the_stored_plan_with_zone_overrides(client, captured_pdf):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/operations", params=TOKEN,
+                json={"operations": [{"op": "set_zones", "ftp": 262}]})
 
-    r = client.get("/training-plan/pdf", params={"token": "t0k"})
+    r = client.get("/training-plan/pdf", params=TOKEN)
 
-    assert r.status_code == 200
-    assert r.headers["content-type"] == "application/pdf"
-    assert captured_pdf["plan"]["meta"]["event"] == "Marathon build"
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert captured_pdf["plan"]["overrides"] == {"ftp": 262}
 
 
-def test_get_pdf_without_a_plan_is_404(client, captured_pdf):
-    r = client.get("/training-plan/pdf", params={"token": "t0k"})
-
-    assert r.status_code == 404
+def test_pdf_without_a_plan_is_404(client, captured_pdf):
+    assert client.get("/training-plan/pdf", params=TOKEN).status_code == 404
     assert "plan" not in captured_pdf
 
 
-def test_post_pdf_renders_the_posted_plan(client, captured_pdf):
-    training_plan.save_plan(PLAN_HTML.encode())
-    posted = {"meta": {"event": "Live overrides"}, "weeks": []}
+# ── ROUTING / AUTH ────────────────────────────────────────────────────────────
 
-    r = client.post("/training-plan/pdf", params={"token": "t0k"}, json=posted)
-
-    assert r.status_code == 200
-    assert captured_pdf["plan"] == posted
+def test_plan_routes_reject_wrong_methods(client):
+    assert client.post("/training-plan", params=TOKEN).status_code == 405
+    assert client.get("/training-plan/api/operations", params=TOKEN).status_code == 405
 
 
-@pytest.mark.parametrize("body", ["not json", '["not", "a", "plan"]'])
-def test_post_pdf_rejects_non_plan_bodies(client, captured_pdf, body):
-    r = client.post(
-        "/training-plan/pdf",
-        params={"token": "t0k"},
-        content=body,
-        headers={"content-type": "application/json"},
-    )
-
-    assert r.status_code == 400
-    assert "plan" not in captured_pdf
+def test_owns_path_matches_only_plan_routes():
+    assert training_plan.owns_path("/training-plan") is True
+    assert training_plan.owns_path("/training-plan/api/plan") is True
+    assert training_plan.owns_path("/training-plan-other") is False
+    assert training_plan.owns_path("/dashboard") is False
 
 
-# ── AUTH WIRING ───────────────────────────────────────────────────────────────
-
-def test_training_plan_routes_require_the_bearer_token(monkeypatch):
+def test_training_plan_routes_require_the_bearer_token(monkeypatch, fake_db):
     """The routes sit behind the same ?token= auth as /mcp and /dashboard."""
     import server
 
     monkeypatch.setattr(server, "BEARER_TOKEN", "s3cret")
+    monkeypatch.setattr(db, "ensure_schema", lambda: None)
     app = TestClient(server.build_asgi_app())
 
     assert app.get("/training-plan").status_code == 401
-    assert app.get("/training-plan", params={"token": "wrong"}).status_code == 401
+    assert app.get("/training-plan/api/plan", params={"token": "wrong"}).status_code == 401
 
     ok = app.get("/training-plan", params={"token": "s3cret"})
     assert ok.status_code == 200
     assert "No plan active" in ok.text
+
+
+def test_api_completion_on_an_archived_plan_is_rejected(client):
+    _upload(client, sample_plan())
+    _upload(client, sample_plan(id="next-block"))
+
+    r = client.post("/training-plan/api/completion", params={**TOKEN, "plan": "test-block-2026"},
+                    json={"workout_id": "w1-tue-run"})
+
+    assert r.status_code == 400 and "read-only" in r.json()["error"]
