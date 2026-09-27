@@ -123,3 +123,12 @@ def test_vo2max_history_from_daily_metrics():
     db.upsert_daily_metric("2026-09-20", training_status_data={"vo2max": {"running": 54.6, "cycling": None}})
     (row,) = db.get_vo2max_history_from_daily_metrics("2026-09-01", "2026-09-30")
     assert (row["running"], row["cycling"]) == (pytest.approx(54.6), None)
+
+
+def test_close_pool_is_idempotent_and_reopens():
+    db.get_setting("anything")
+    pool = db._pool
+    db.close_pool()
+    assert db._pool is None and pool.closed
+    db.close_pool()
+    assert db.get_setting("anything") is None   # a fresh pool opens on demand

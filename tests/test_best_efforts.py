@@ -166,3 +166,81 @@ def test_summary_from_list_pool_length_in_metres():
 def test_best_rolling_power_still_exported_from_plan_today():
     from tools import plan_today
     assert plan_today.best_rolling_power is best_efforts.best_rolling_power
+
+
+# ── detail fetch resilience (Garmin 5xx during a detail sync) ────────────────
+
+def _flaky_client(details_errors, splits_errors=()):
+    details_errors, splits_errors = list(details_errors), list(splits_errors)
+
+    class Flaky:
+        def get_activity(self, i):
+            return {"activityId": i, "activityTypeDTO": {"typeKey": "running"}, "summaryDTO": {"duration": 1300}}
+
+        def get_activity_splits(self, i):
+            if splits_errors:
+                raise splits_errors.pop(0)
+            return {"lapDTOs": []}
+
+        def get_activity_weather(self, i):
+            raise RuntimeError("API Error 504 - weather is optional")
+
+        def get_activity_details(self, i):
+            if details_errors:
+                raise details_errors.pop(0)
+            return _details(_steady(5000, 4.0))
+
+        def get_activity_hr_in_timezones(self, i):
+            return []
+
+    return Flaky()
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("tools.activities.time.sleep", sleeps.append)
+    monkeypatch.setattr("tools.activities.get_activity_gear", lambda i: [])
+    return sleeps
+
+
+def test_detail_row_retries_a_garmin_504_once(monkeypatch, no_sleep):
+    err = RuntimeError("HTTP error: API Error 504 - Gateway time-out")
+    monkeypatch.setattr("tools.activities.get_client", lambda: _flaky_client([err]))
+    detail, _ = activities.get_activity_detail_row(5)
+    assert no_sleep == [activities._TRANSIENT_RETRY_DELAY_SEC]
+    assert any(e["record_type"] == "Fastest 5K" for e in detail["best_efforts"])
+    assert detail["weather"] is None   # optional parts still degrade quietly
+
+
+def test_detail_row_raises_when_garmin_keeps_failing(monkeypatch, no_sleep):
+    errs = [RuntimeError("API Error 504"), RuntimeError("API Error 502")]
+    monkeypatch.setattr("tools.activities.get_client", lambda: _flaky_client([], splits_errors=errs))
+    with pytest.raises(RuntimeError, match="502"):
+        activities.get_activity_detail_row(5)
+
+
+def test_detail_row_client_error_means_no_data(monkeypatch, no_sleep):
+    err = RuntimeError("API client error (404): not found")
+    monkeypatch.setattr("tools.activities.get_client", lambda: _flaky_client([err]))
+    detail, route = activities.get_activity_detail_row(5)
+    assert no_sleep == []
+    assert detail["best_efforts"] == [] and route is None
+
+
+def test_detail_sync_keeps_the_stored_row_when_an_activity_fails(monkeypatch):
+    import db
+    import sync_garmin
+    written = []
+    monkeypatch.setattr(db, "get_recent_activity_ids", lambda limit: [1, 2, 3])
+    monkeypatch.setattr(db, "upsert_activity_detail", lambda gid, detail, route: written.append(gid))
+    monkeypatch.setattr(db, "update_sync_state", lambda *a, **k: None)
+
+    def row(activity_id):
+        if activity_id == 2:
+            raise RuntimeError("API Error 504")
+        return {}, None
+
+    monkeypatch.setattr("tools.activities.get_activity_detail_row", row)
+    sync_garmin.sync_activity_details(limit=10, overwrite=True)
+    assert written == [1, 3]

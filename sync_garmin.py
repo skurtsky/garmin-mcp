@@ -164,15 +164,25 @@ def sync_activity_details(limit: int = 10, overwrite: bool = False):
         else db.get_activity_ids_needing_detail(limit=limit)
     )
     logger.info(f"Syncing detail for {len(activity_ids)} activity(ies)")
-    for activity_id in activity_ids:
+    failed = []
+    for n, activity_id in enumerate(activity_ids, 1):
         try:
             detail, route = get_activity_detail_row(activity_id)
-        except Exception:
-            logger.exception(f"Failed to build detail for activity {activity_id}")
+        except Exception as e:
+            # The stored row (if any) is left as it was; a missing one is
+            # picked up again by the next run.
+            logger.error(f"Skipped detail for activity {activity_id}: {str(e)[:200]}")
+            failed.append(activity_id)
             continue
         db.upsert_activity_detail(activity_id, detail, route)
+        if n % 25 == 0:
+            logger.info(f"  {n}/{len(activity_ids)} done")
     db.update_sync_state("activity_details", date.today().isoformat())
-    logger.info("Activity detail sync complete")
+    if failed:
+        logger.warning(f"Activity detail sync complete; {len(failed)} skipped after Garmin errors: "
+                       + " ".join(str(i) for i in failed))
+    else:
+        logger.info("Activity detail sync complete")
 
 
 def sync_personal_records():
