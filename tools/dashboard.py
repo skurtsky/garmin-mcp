@@ -1131,6 +1131,10 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .t-link:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
 .t-link:active { transform:scale(.985); }
 .t-btn:hover { background:color-mix(in srgb, var(--color-accent) 12%, transparent); }
+/* A plan session's dialog (Today / Tomorrow cards), shown in the activity sheet. */
+.pw { display:flex; flex-direction:column; gap:12px; padding-top:4px; }
+.pw-details { font-size:13px; white-space:pre-wrap; line-height:1.6; padding:12px; border-radius:8px;
+  background:var(--color-neutral-900); box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
 .focus-track { margin:0 -16px; padding:2px 16px; display:flex; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory;
   scroll-padding:0 16px; scrollbar-width:none; overscroll-behavior-x:contain; }
 .focus-track::-webkit-scrollbar { display:none; }
@@ -1463,6 +1467,83 @@ def _readiness_card(data: dict) -> str:
     </div>"""
 
 
+def _plan_workout_attrs(w: dict) -> str:
+    """Makes a Today / Tomorrow card open its workout's dialog right here
+    (``openPlanWorkout``, with the markup from ``_plan_workout_template``)."""
+    if not w.get("id"):
+        return ""
+    return (f' data-plan-workout="{_e(w["id"])}" role="button" tabindex="0"'
+            f' aria-label="{_e(w.get("name") or "Planned workout")} details"')
+
+
+def _plan_workout_template(w: dict, when: str, token: str | None) -> str:
+    """The workout dialog's content for one of Today's plan sessions — the
+    plan viewer's dialog, read-only, in the activity sheet. Editing and
+    ticking stay in the plan, one tap away."""
+    color = _plan_color(w["sport"])
+    tag = "font-size:11px;padding:3px 10px;border-radius:6px"
+    outline = f'<span style="{tag};box-shadow:inset 0 0 0 1px var(--color-neutral-700);color:var(--color-neutral-300)">'
+    tags = [f'<span style="{tag};background:color-mix(in srgb, {color} 16%, transparent);color:{color}">{_e(w["sport"])}</span>']
+    tags += [f"{outline}{_e(t)}</span>" for t in (
+        w.get("type"), when, _fmt_session_dur(w.get("durationMinutes")), _workout_distance(w), w.get("primaryZone")) if t]
+    act = w.get("activity")
+    done = ""
+    if w.get("completed"):
+        if act:
+            facts = " · ".join(p for p in (f"{_trim(act['distance_km'], 2)} km" if act.get("distance_km") else None,
+                                           _fmt_session_dur(act.get("duration_min"))) if p)
+            done = f"""
+        <div class="t-act actcard-click" onclick="openActivityModal({int(act['id'])})" role="button" tabindex="0">
+          {_ph("check-circle", 18, _DONE_COLOR)}
+          <div style="flex:1;min-width:0;font-size:13px">Done with {_e(act.get("name") or "Garmin activity")}
+            <div style="font-size:11px;color:var(--color-neutral-500)">{_e(facts)}</div></div>
+          {_ph("caret-right", 14, "var(--color-neutral-600)")}
+        </div>"""
+        else:
+            done = (f'<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:{_DONE_COLOR}">'
+                    f'{_ph("check-circle", 15)}Done</div>')
+    desc = (f'<div style="font-size:13px;color:var(--color-neutral-300)">{_e(w["description"])}</div>'
+            if w.get("description") else "")
+    details = (f'<div class="pw-details">{_e(w["details"])}</div>' if w.get("details") else "")
+    query = {"workout": w["id"], **({"token": token} if token else {})}
+    return f"""
+    <template id="plan-workout-{_e(w['id'])}">
+      <div class="pw">
+        <div style="font-size:18px;font-weight:500;padding-right:28px">{_e(w.get("name"))}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px">{"".join(tags)}</div>
+        {done}{desc}{details}
+        <a class="t-btn" href="{_e('/training-plan?' + urlencode(query))}">Open in plan {_ph("caret-right", 14)}</a>
+      </div>
+    </template>"""
+
+
+def _today_activities_card(acts: list[dict], rest_day: bool) -> str:
+    """Garmin activities from today that no plan session is linked to — on a
+    rest day, everything done today."""
+    rows = ""
+    for act in acts:
+        icon, tint = _sport_style(act.get("type"))
+        facts = " · ".join(p for p in (
+            f"{_trim(act['distance_km'], 2)} km" if act.get("distance_km") else None,
+            _fmt_session_dur(act.get("duration_min"))) if p)
+        aid = int(act["id"])
+        rows += f"""
+      <div class="t-act actcard-click" onclick="openActivityModal({aid})" role="button" tabindex="0"
+          onkeydown="if(event.key==='Enter'||event.key===' '){{event.preventDefault();openActivityModal({aid})}}">
+        <i class="ph" style="font-size:18px;color:{tint}">{icon}</i>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(act.get("name"))}</div>
+          <div style="font-size:11px;color:var(--color-neutral-500)">{_e(facts)}</div>
+        </div>
+        {_ph("caret-right", 14, "var(--color-neutral-600)")}
+      </div>"""
+    kick = "Done today" if rest_day else "Also today"
+    return f"""
+    <div class="t-card" style="display:flex;flex-direction:column;gap:8px">
+      <div class="t-kick">{kick}</div>{rows}
+    </div>"""
+
+
 def _session_card(w: dict, ftp_test: dict | None) -> str:
     color = _plan_color(w["sport"])
     done = w.get("completed")
@@ -1492,8 +1573,9 @@ def _session_card(w: dict, ftp_test: dict | None) -> str:
                        f'{_ph("check-circle", 14, _DONE_COLOR)}Plan FTP set to {_e(ftp_test["estimate"])} W from this test</div>')
         else:
             ftp_row = (f'<button type="button" class="t-btn" data-ftp-open>{_ph("gauge", 15)}Update FTP from test</button>')
+    open_attrs = _plan_workout_attrs(w)
     return f"""
-    <div class="t-card t-session" style="border-left:3px solid {color}">
+    <div class="t-card t-session{' t-link' if open_attrs else ''}"{open_attrs} style="border-left:3px solid {color}">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div class="t-kick" style="color:var(--color-accent)">Today&rsquo;s session</div>{status}
       </div>
@@ -1516,8 +1598,8 @@ def _rest_day_card() -> str:
     </div>"""
 
 
-def _tomorrow_card(workouts: list[dict], token: str | None = None) -> str:
-    """Tomorrow's first session; tapping it opens that workout in the plan."""
+def _tomorrow_card(workouts: list[dict]) -> str:
+    """Tomorrow's first session; tapping it opens that workout's dialog."""
     if workouts:
         w = workouts[0]
         color = _plan_color(w["sport"])
@@ -1531,12 +1613,10 @@ def _tomorrow_card(workouts: list[dict], token: str | None = None) -> str:
         tag = ""
     inner = f'<div style="flex:1;min-width:0"><div class="t-kick">Tomorrow</div>{body}</div>{tag}'
     if workouts and workouts[0].get("id"):
-        query = {"workout": workouts[0]["id"], **({"token": token} if token else {})}
-        href = f"/training-plan?{urlencode(query)}"
         return f"""
-    <a class="t-card t-link" href="{_e(href)}" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
+    <div class="t-card t-link"{_plan_workout_attrs(workouts[0])} style="padding:12px 14px;display:flex;align-items:center;gap:12px">
       {inner}{_ph("caret-right", 16, "var(--color-neutral-600)")}
-    </a>"""
+    </div>"""
     return f"""
     <div class="t-card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">{inner}</div>"""
 
@@ -1825,7 +1905,12 @@ def _panel_today(data: dict, token: str | None = None) -> str:
         else:
             rest_day = True
             cards.append(_rest_day_card())
-        cards += [_tomorrow_card(plan.get("tomorrow") or [], token), _week_card(plan.get("week") or {})]
+        if plan.get("today_activities"):
+            cards.append(_today_activities_card(plan["today_activities"], rest_day))
+        tomorrow = plan.get("tomorrow") or []
+        cards += [_tomorrow_card(tomorrow), _week_card(plan.get("week") or {})]
+        cards += [_plan_workout_template(w, "Today", token) for w in plan.get("today") or [] if w.get("id")]
+        cards += [_plan_workout_template(w, "Tomorrow", token) for w in tomorrow[:1] if w.get("id")]
     elif not plan:
         cards.append(_no_plan_card(token))
     # A rest day opens In Focus on Recovery; a session day on Training status.
@@ -2955,6 +3040,33 @@ _ACTIVITY_MODAL_JS = """
       body.innerHTML = '<div class="muted" style="padding:32px 20px;text-align:center;font-size:13px">Couldn\\u2019t load this activity.</div>';
     });
   };
+
+  // A plan session from Today / Tomorrow: its dialog (pre-rendered in a
+  // <template> on the Today panel) opens in the same sheet, right here.
+  window.openPlanWorkout = function (id) {
+    var tpl = document.getElementById('plan-workout-' + id);
+    if (!tpl) return;
+    destroyMap();
+    body.innerHTML = '';
+    body.appendChild(tpl.content.cloneNode(true));
+    body.scrollTop = 0;
+    modal.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  };
+  function planWorkoutTarget(e) {
+    var t = e.target;
+    if (!t.closest || t.closest('.t-act, button, a, input')) return null;
+    return t.closest('[data-plan-workout]');
+  }
+  document.addEventListener('click', function (e) {
+    var card = planWorkoutTarget(e);
+    if (card) window.openPlanWorkout(card.getAttribute('data-plan-workout'));
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    var card = planWorkoutTarget(e);
+    if (card && card === e.target) { e.preventDefault(); window.openPlanWorkout(card.getAttribute('data-plan-workout')); }
+  });
 
   window.closeActivityModal = function () {
     modal.classList.remove('open');

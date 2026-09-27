@@ -129,6 +129,44 @@ def test_context_for_a_session_day(plan):
     assert week["days"][3]["is_today"]
 
 
+def test_context_lists_todays_unlinked_activities(plan):
+    # 2026-09-19 is a rest day in the plan; its walk still shows on Today.
+    plan.add_activity(20, "2026-09-19", "walking", "Walk", 40, 3.1)
+    plan.add_activity(21, "2026-09-18", "running", "Yesterday", 30)
+
+    ctx = plan_today.build_plan_context(date(2026, 9, 19))
+
+    assert ctx["today"] == []
+    assert [a["name"] for a in ctx["today_activities"]] == ["Walk"]
+
+
+def test_linked_activities_are_not_listed_twice(plan):
+    plan.add_activity(9, "2026-09-17", "road_biking", "Ride", 92, 46.5)
+    plan_service.match_new_activities([9])
+
+    assert plan_today.build_plan_context(date(2026, 9, 17))["today_activities"] == []
+
+
+def test_today_and_tomorrow_carry_their_details_with_zones_written_out(fake_db):
+    p = sample_plan()
+    p["weeks"][0]["days"][2]["workouts"][0].update(
+        description="Steady", humanReadable="Main: 60 min @ {{bike-watts:2}}, HR {{bike-hr:2}}")
+    fake_db.save_uploaded_training_plan(PLAN_ID, plan_doc.normalize_plan(p), "Uploaded")
+
+    [tomorrow] = plan_today.build_plan_context(date(2026, 9, 16))["tomorrow"]
+
+    assert tomorrow["description"] == "Steady"
+    assert tomorrow["details"] == "Main: 60 min @ 140-188W, HR 130-142bpm"
+
+
+def test_resolve_tokens_matches_the_viewer():
+    p = sample_plan()
+    assert plan_doc.resolve_tokens(p, "{{run-pace:2}} / {{swim-pace:4}} / {{RUN-HR:5a}}") == \
+        "5:07-5:27/km / 2:05/100m / 170-173bpm"
+    p["zones"]["run"]["pace"] = {}
+    assert plan_doc.resolve_tokens(p, "{{run-pace:3}}") == "Zone 3 pace"
+
+
 def test_context_is_none_without_an_active_plan(fake_db):
     assert plan_today.build_plan_context(date(2026, 9, 17)) is None
 

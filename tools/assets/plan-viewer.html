@@ -395,12 +395,17 @@ function syncStateFromPlan() {
 }
 syncStateFromPlan();
 
+/* The week holding today. Compared as YYYY-MM-DD strings: comparing Date
+   objects put "now" past a week's endDate (its midnight) on the last day of
+   the week, which fell back to week 1. Before the plan it opens on the first
+   week, after it on the last, and in a gap between weeks on the next one. */
 function startWeek() {
-  const today = new Date();
-  const wk = (PLAN.weeks || []).find(w => d(w.startDate) <= today && today <= d(w.endDate));
-  if (wk) return wk.weekNumber;
-  const first = (PLAN.weeks || [])[0];
-  return first ? first.weekNumber : 1;
+  const weeks = (PLAN.weeks || []).filter(w => w.startDate && w.endDate)
+    .slice().sort((a, b) => a.startDate < b.startDate ? -1 : 1);
+  if (!weeks.length) return ((PLAN.weeks || [])[0] || {}).weekNumber || 1;
+  const today = todayStr();
+  const wk = weeks.find(w => today <= String(w.endDate).slice(0, 10));
+  return (wk || weeks[weeks.length - 1]).weekNumber;
 }
 function weekByNumber(n) { return (PLAN.weeks || []).find(w => w.weekNumber === n); }
 function phaseForWeek(n) { return (PLAN.phases || []).find(p => n >= p.startWeek && n <= p.endWeek) || (PLAN.phases || [])[0] || { name:'Plan', focus:'' }; }
@@ -608,12 +613,12 @@ function settingsTab() {
   const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
     + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;"' + dis + '>'
       + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
-  if (z.bike) h += '<div class="sub-label">Bike</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
-    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
-    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
-  if (z.run) h += '<div class="sub-label">Run</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
-    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
-    + '<div class="field"><label>Threshold pace (min:sec/km)</label><input class="input" type="text" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
+  if (z.bike) h += '<div class="sub-label">Bike</div><div class="field-pair">'
+    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" inputmode="numeric" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
+    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
+  if (z.run) h += '<div class="sub-label">Run</div><div class="field-pair">'
+    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
+    + '<div class="field"><label>Threshold pace (/km)</label><input class="input" type="text" placeholder="m:ss" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
   if (z.swim) h += '<div class="sub-label">Swim</div><div class="field" style="margin-bottom:10px;"><label>CSS (/100m)</label>'
     + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
   h += '</div>';
@@ -1195,7 +1200,12 @@ document.addEventListener('click', e => {
 render();
 if (state.tab === 'settings') setView('settings');
 </script>
-<style>.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }
+<style>/* Two threshold fields side by side: equal columns that can shrink, and the
+   inputs lined up along the bottom even when one label wraps. */
+.field-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; margin-bottom:10px; align-items:end; }
+.field-pair .field > label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.field-pair .input { height:36px; }
+.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }
 .add-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; cursor:pointer;
   border:1px solid var(--color-neutral-700); border-radius:6px; background:transparent; color:var(--color-neutral-400); }
 .add-btn:hover { color: var(--color-accent); border-color: var(--color-accent); }
