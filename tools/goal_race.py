@@ -7,7 +7,8 @@ prediction row). Stored as one JSON value in app_settings under
     {"name": str, "date": "YYYY-MM-DD", "distance": one of DISTANCES,
      "target_sec": int | null, "show_on_today": bool}
 """
-from datetime import date, timedelta
+import os
+from datetime import date, datetime, timedelta, timezone
 
 import db
 
@@ -140,4 +141,23 @@ def describe(goal: dict, today: date) -> dict:
         "days_to_taper": (taper_start - today).days,
         "phase": phase,
         "show_form": 0 <= days <= FORM_WINDOW_DAYS,
+    }
+
+
+def local_today() -> date:
+    """Today in the dashboard's local zone (DASHBOARD_TZ_OFFSET_HOURS)."""
+    try:
+        offset = float(os.environ.get("DASHBOARD_TZ_OFFSET_HOURS", "0"))
+    except ValueError:
+        offset = 0.0
+    return (datetime.now(timezone.utc) + timedelta(hours=offset)).date()
+
+
+def settings_payload(today: date | None = None) -> dict:
+    """What the Settings editor needs: the goal race (described for today, or
+    None) and the distance choices with their taper lengths."""
+    goal = get_goal_race()
+    return {
+        "goal": describe(goal, today or local_today()) if goal else None,
+        "distances": [{"key": k, "label": v[0], "long": v[1], "taper_days": v[2]} for k, v in DISTANCES.items()],
     }

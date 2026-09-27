@@ -26,6 +26,9 @@ JSON API used by the viewer:
     POST /training-plan/api/completion   — {workout_id, completed} → same shape
     GET  /training-plan/api/revisions    — [{version, source, summary, created_at}]
     POST /training-plan/api/revisions/{version}/restore → same shape as /api/plan
+    GET  /training-plan/api/goal-race    — {goal, distances} for Settings' Goal race
+    POST /training-plan/api/goal-race    — {name, date, distance, target?, show_on_today} → same shape
+    POST /training-plan/api/goal-race/clear → same shape (goal: null)
 """
 import html
 import json
@@ -37,7 +40,8 @@ from starlette.applications import Starlette
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from tools import plan_doc, plan_service
+import db
+from tools import goal_race, plan_doc, plan_service
 from tools.navbar import ICON_LINKS, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import render_plan_pdf
 from tools.plan_doc import PlanError
@@ -145,7 +149,8 @@ def render_viewer_html(row: dict, token: str | None = None) -> str:
     with open(TEMPLATE_PATH, encoding="utf-8") as f:
         page = f.read()
     page = page.replace("__PLAN_TITLE__", _e(plan_doc.plan_title(row["plan"])))
-    page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(plan_service.view_payload(row)))
+    server = {**plan_service.view_payload(row), "goalRace": _goal_race_payload()}
+    page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
     athlete = (row["plan"].get("meta") or {}).get("athlete")
     return inject_icon_links(inject_nav(page, "plan", token, title=athlete))
@@ -513,6 +518,47 @@ async def api_restore(request):
     return _plan_response(row)
 
 
+def _goal_race_payload() -> dict | None:
+    """The Settings goal-race editor's data, or None when it can't be read
+    (the viewer then shows the section as unavailable, not a broken page)."""
+    try:
+        return goal_race.settings_payload()
+    except Exception:  # noqa: BLE001 — the goal race is optional on this page
+        logger.exception("Goal race unavailable")
+        return None
+
+
+async def api_get_goal_race(request):
+    payload = _goal_race_payload()
+    if payload is None:
+        return JSONResponse({"error": "Goal race storage is unavailable."}, status_code=503)
+    return JSONResponse(payload, headers=_NO_STORE)
+
+
+def _goal_race_storage_error() -> JSONResponse | None:
+    if not db.is_configured():
+        return JSONResponse({"error": "The goal race is stored in PostgreSQL — set DATABASE_URL."}, status_code=503)
+    return None
+
+
+async def api_save_goal_race(request):
+    if (err := _goal_race_storage_error()) is not None:
+        return err
+    try:
+        body = await _json_body(request)
+        goal_race.save_goal_race(body)
+    except (PlanError, goal_race.GoalRaceError) as e:
+        return _api_error(e)
+    return await api_get_goal_race(request)
+
+
+async def api_clear_goal_race(request):
+    if (err := _goal_race_storage_error()) is not None:
+        return err
+    goal_race.clear_goal_race()
+    return await api_get_goal_race(request)
+
+
 ROUTES = [
     Route("/training-plan", serve_plan, methods=["GET"]),
     Route("/training-plan/plans", serve_plans, methods=["GET"]),
@@ -526,6 +572,9 @@ ROUTES = [
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
     Route("/training-plan/api/revisions", api_revisions, methods=["GET"]),
     Route("/training-plan/api/revisions/{version}/restore", api_restore, methods=["POST"]),
+    Route("/training-plan/api/goal-race", api_get_goal_race, methods=["GET"]),
+    Route("/training-plan/api/goal-race", api_save_goal_race, methods=["POST"]),
+    Route("/training-plan/api/goal-race/clear", api_clear_goal_race, methods=["POST"]),
 ]
 
 PATH_PREFIX = "/training-plan"
