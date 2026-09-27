@@ -3,6 +3,7 @@
 When DATABASE_URL is set, the dashboard reads pre-synced data from PostgreSQL
 instead of calling Garmin live. The schema is auto-created on first connect.
 """
+import atexit
 import logging
 import os
 import threading
@@ -67,7 +68,18 @@ def _get_pool() -> ConnectionPool:
         with _pool_lock:
             if _pool is None:
                 _pool = ConnectionPool(database_url, min_size=1, max_size=5, open=True)
+                atexit.register(close_pool)
     return _pool
+
+
+def close_pool():
+    """Close the pool's connections and worker threads. Runs at exit: left
+    to the pool's own finaliser, the threads are joined during interpreter
+    shutdown, which Python 3.14 refuses (PythonFinalizationError)."""
+    global _pool
+    pool, _pool = _pool, None
+    if pool is not None:
+        pool.close()
 
 
 @contextmanager
