@@ -254,6 +254,7 @@ const ICONS = {
   copy:'<path d="M216 32H88a8 8 0 0 0-8 8v40H40a8 8 0 0 0-8 8v128a8 8 0 0 0 8 8h128a8 8 0 0 0 8-8v-40h40a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Zm-56 176H48V96h112Zm48-48h-32V88a8 8 0 0 0-8-8H96V48h112Z"/>',
   trash:'<path d="M216 48h-40v-8a24 24 0 0 0-24-24h-48a24 24 0 0 0-24 24v8H40a8 8 0 0 0 0 16h8v144a16 16 0 0 0 16 16h128a16 16 0 0 0 16-16V64h8a8 8 0 0 0 0-16ZM96 40a8 8 0 0 1 8-8h48a8 8 0 0 1 8 8v8H96Zm96 168H64V64h128Zm-80-104v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Zm48 0v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Z"/>',
   plus:'<path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/>',
+  flag:'<path d="M34.8 42A8 8 0 0 0 32 48v168a8 8 0 0 0 16 0v-44.2c26.8-21.2 49.9-9.8 76.5 3.4 16.4 8.1 34 16.8 53 16.8 13.9 0 28.5-4.7 43.8-18a8 8 0 0 0 2.8-6V48a8 8 0 0 0-13.2-6.1c-28 24.2-51.7 12.5-79.2-1.1C103.1 26.8 70.8 10.8 34.8 42ZM208 164.3c-26.8 21.1-49.9 9.7-76.5-3.5-25-12.3-52.8-26.1-83.5-8.4V51.8c26.8-21.2 49.9-9.8 76.5 3.4 25 12.3 52.8 26.1 83.5 8.4Z"/>',
   history:'<path d="M136 80v43.5l36.1 21.7a8 8 0 0 1-8.2 13.7l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Zm-8-48a95.4 95.4 0 0 0-67.9 28.1C54 66.3 48.3 72.4 43 78.5V64a8 8 0 0 0-16 0v40a8 8 0 0 0 8 8h40a8 8 0 0 0 0-16H52.1c5.7-6.8 11.4-13.2 19.3-21.2a80 80 0 1 1 1.7 114.8 8 8 0 1 0-11 11.6A96 96 0 1 0 128 32Z"/>'
 };
 function icon(name, size) {
@@ -374,7 +375,11 @@ const state = {
   revisions: null,
   historyOpen: false,
   modalMenu: false,
-  revisionsError: ''
+  revisionsError: '',
+  goal: SERVER.goalRace || null,   // {goal, distances} from the server, or null if unavailable
+  goalDraft: null,                 // the editor's copy while editing; saved only on Save
+  goalError: '',
+  goalSaving: false
 };
 function defaultUnit() {
   const p = PLAN.preferences || {};
@@ -587,6 +592,7 @@ function settingsTab() {
   const ov = state.overrides;
   const z = PLAN.zones || {};
   let h = '<div style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>';
+  h += goalRaceSection();
 
   const dis = READ_ONLY ? ' disabled' : '';
   h += readOnlyBanner();
@@ -628,6 +634,80 @@ function settingsTab() {
     + '<div class="hr" style="margin:12px 0;"></div>'
     + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
   return h;
+}
+
+/* Goal race: one race for the whole app, stored on the server (not in the
+   plan), read by Today's countdown, Trends' race marker and Fitness'
+   highlighted prediction. Read-only until the pencil opens the editor;
+   edits apply only on Save. The countdown toggle saves straight away. */
+const RACE_FORM_TARGET = '+5 to +15 (Fresh)';
+function goalDistance(key) { return ((state.goal && state.goal.distances) || []).find(x => x.key === key) || null; }
+function goalDateLabel(iso) {
+  return d(iso).toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric', year:'numeric' });
+}
+function goalTaperLabel(iso, key) {
+  const dist = goalDistance(key);
+  if (!iso || !dist) return '—';
+  const start = d(iso); start.setDate(start.getDate() - dist.taper_days);
+  return dist.taper_days + ' days · starts ' + start.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+}
+function goalRaceSection() {
+  if (!state.goal) return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Goal race</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px;">Unavailable right now — the goal race needs the database.</div></div>';
+  const g = state.goal.goal, f = state.goalDraft;
+  let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px;">'
+      + '<div class="card-title">Goal race</div>'
+      + (f && g ? '<button type="button" class="goal-clear" data-act="goal-clear">Clear</button>' : '')
+      + (!f && g ? '<button type="button" class="btn btn-icon btn-secondary" data-act="goal-edit" aria-label="Edit goal race" title="Edit goal race">' + icon('pencil', 16) + '</button>' : '')
+    + '</div>';
+  if (!g && !f) {
+    return h + '<button type="button" class="goal-add" data-act="goal-add">' + icon('flag', 16) + ' Add a goal race</button>'
+      + '<div class="goal-note">Drives the countdown on Today, the race marker on Trends and the highlighted prediction on Fitness.</div></div>';
+  }
+  if (f) {
+    h += '<div class="field" style="margin-bottom:10px;"><label>Race name</label>'
+      + '<input class="input" type="text" maxlength="120" data-goal-field="name" value="' + esc(f.name) + '"></div>'
+      + '<div style="display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; margin-bottom:10px;">'
+        + '<div class="field"><label>Date</label><input class="input" type="date" data-goal-field="date" value="' + esc(f.date) + '"></div>'
+        + '<div class="field"><label>Target time <span style="color:var(--color-neutral-600);">(optional)</span></label>'
+          + '<input class="input" type="text" inputmode="numeric" placeholder="h:mm:ss" data-goal-field="target" value="' + esc(f.target) + '"></div></div>'
+      + '<div class="field" style="margin-bottom:12px;"><label>Distance</label><div class="goal-dists">'
+        + state.goal.distances.map(x => '<button type="button" class="goal-dist' + (f.distance === x.key ? ' on' : '') + '" data-act="goal-distance" data-key="' + esc(x.key) + '" aria-pressed="' + (f.distance === x.key) + '">' + esc(x.label) + '</button>').join('')
+      + '</div></div>';
+  } else {
+    h += '<div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px;">'
+      + '<div class="goal-tile">' + icon('flag', 20) + '</div>'
+      + '<div style="flex:1; min-width:0;"><div style="font-size:15px; font-weight:500;">' + esc(g.name) + '</div>'
+        + '<div style="font-size:12px; color:var(--color-neutral-500);">' + esc(goalDateLabel(g.date)) + ' · ' + esc(g.distance_long) + '</div>'
+        + (g.target ? '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:2px;">Target ' + esc(g.target) + '</div>' : '')
+      + '</div></div>';
+  }
+  const src = f || g;
+  h += '<div class="goal-info">'
+      + '<div><span>Taper</span><span>' + esc(goalTaperLabel(src.date, src.distance)) + '</span></div>'
+      + '<div><span>Race-day form target</span><span>' + RACE_FORM_TARGET + '</span></div></div>';
+  const on = f ? f.show_on_today : g.show_on_today;
+  h += '<button type="button" class="goal-toggle" data-act="goal-toggle-today" role="switch" aria-checked="' + on + '">'
+      + '<span style="font-size:13px;">Show countdown on Today</span><span class="switch' + (on ? ' on' : '') + '"></span></button>';
+  if (state.goalError) h += '<div class="goal-error">' + esc(state.goalError) + '</div>';
+  if (f) {
+    h += '<div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">'
+      + '<button type="button" class="btn btn-secondary" data-act="goal-cancel">Cancel</button>'
+      + '<button type="button" class="btn btn-primary" data-act="goal-save"' + (state.goalSaving ? ' disabled' : '') + '>' + (state.goalSaving ? 'Saving…' : 'Save') + '</button></div>';
+  }
+  return h + '<div class="goal-note">Also used for the race marker on Trends and the highlighted prediction on Fitness.</div></div>';
+}
+function goalDraftFrom(g) {
+  return g ? { name: g.name, date: g.date, distance: g.distance, target: g.target || '', show_on_today: g.show_on_today }
+    : { name: '', date: '', distance: 'half', target: '', show_on_today: true };
+}
+function goalSubmit(path, body, onDone) {
+  state.goalSaving = true; state.goalError = ''; render();
+  return api(path, body)
+    .then(data => { state.goal = data; if (onDone) onDone(); })
+    .catch(err => { state.goalError = err.message; })
+    .finally(() => { state.goalSaving = false; render(); });
 }
 
 function settingsLinkCard(title, text, href, iconName, label) {
@@ -868,6 +948,26 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
+  // The goal race isn't part of the plan, so it stays editable on archived plans.
+  if (a === 'goal-add') { state.goalDraft = goalDraftFrom(null); state.goalError = ''; return render(); }
+  if (a === 'goal-edit') { state.goalDraft = goalDraftFrom(state.goal.goal); state.goalError = ''; return render(); }
+  if (a === 'goal-cancel') { state.goalDraft = null; state.goalError = ''; return render(); }
+  if (a === 'goal-distance') { state.goalDraft.distance = act.getAttribute('data-key'); state.goalError = ''; return render(); }
+  if (a === 'goal-toggle-today') {
+    if (state.goalDraft) { state.goalDraft.show_on_today = !state.goalDraft.show_on_today; return render(); }
+    const g = state.goal.goal;
+    return goalSubmit('goal-race', Object.assign(goalDraftFrom(g), { show_on_today: !g.show_on_today }));
+  }
+  if (a === 'goal-save') {
+    const f = state.goalDraft;
+    if (!f.name.trim()) { state.goalError = 'Give the race a name.'; return render(); }
+    if (!f.date) { state.goalError = 'Pick the race date.'; return render(); }
+    return goalSubmit('goal-race', f, () => { state.goalDraft = null; });
+  }
+  if (a === 'goal-clear') {
+    if (!confirm('Clear the goal race? Today, Trends and Fitness stop showing it.')) return;
+    return goalSubmit('goal-race/clear', {}, () => { state.goalDraft = null; });
+  }
   if (READ_ONLY) return;
   if (a === 'validate') {
     const sport = act.getAttribute('data-sport');
@@ -937,9 +1037,19 @@ document.getElementById('app').addEventListener('click', e => {
 document.getElementById('app').addEventListener('input', e => {
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
+  const goalField = e.target.getAttribute && e.target.getAttribute('data-goal-field');
+  if (goalField && state.goalDraft) {
+    state.goalDraft[goalField] = e.target.value;
+    if (state.goalError) { state.goalError = ''; const el = document.querySelector('.goal-error'); if (el) el.remove(); }
+  }
 });
 
 document.getElementById('app').addEventListener('change', e => {
+  if (e.target.getAttribute && e.target.getAttribute('data-goal-field') === 'date' && state.goalDraft) {
+    state.goalDraft.date = e.target.value;
+    state.goalError = '';
+    return render();
+  }
   if (e.target.id === 'phase-select') {
     const p = (PLAN.phases || []).find(x => x.name === e.target.value);
     if (p) { state.planWeekNumber = p.startWeek; render(); }
@@ -1099,6 +1209,31 @@ if (state.tab === 'settings') setView('settings');
   background:transparent; color: var(--color-text); font-family: var(--font-body); font-size:14px; text-align:left; }
 .wmenu-pop button:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
 .wmenu-pop button.danger { color:#e0736f; }
+.goal-tile { width:40px; height:40px; flex:0 0 auto; border-radius:10px; display:grid; place-items:center;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent); color: var(--color-accent-400); }
+.goal-add { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; padding:18px; cursor:pointer;
+  border:1px dashed var(--color-neutral-700); border-radius: var(--radius-md); background:transparent; color: var(--color-accent-400);
+  font-family: var(--font-body); font-size:13px; }
+.goal-add:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+.goal-clear { border:0; background:transparent; padding:0; cursor:pointer; font-family: var(--font-body); font-size:12px; color: var(--color-neutral-500); }
+.goal-clear:hover { color:#cf8a80; }
+.goal-dists { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:6px; }
+.goal-dist { padding:7px 4px; border-radius: var(--radius-md); border:1px solid var(--color-neutral-800); cursor:pointer; white-space:nowrap;
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent); color: var(--color-neutral-400); font-family: var(--font-body); font-size:12px; }
+.goal-dist.on { color: var(--color-accent-200); border-color: var(--color-accent-700); background: color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.goal-info { display:flex; flex-direction:column; gap:4px; padding:10px 12px; margin-bottom:12px; border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent); font-size:12px; color: var(--color-neutral-400); }
+.goal-info > div { display:flex; justify-content:space-between; gap:8px; }
+.goal-info > div > span:first-child { color: var(--color-neutral-500); }
+.goal-toggle { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; padding:0; border:0; cursor:pointer;
+  background:transparent; color: var(--color-text); font-family: var(--font-body); text-align:left; }
+.switch { position:relative; flex:0 0 auto; width:36px; height:20px; border-radius:999px; background: var(--color-neutral-800); transition: background .15s ease; }
+.switch::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background: var(--color-text); transition: left .15s ease; }
+.switch.on { background: var(--color-accent); }
+.switch.on::after { left:18px; }
+.input[type=date] { color-scheme: dark; }
+.goal-note { margin-top:10px; font-size:12px; color: var(--color-neutral-600); }
+.goal-error { margin-top:10px; font-size:12px; color:#e0736f; }
 .rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
 .rev-row:first-child { border-top:none; }
 .saving-pill { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;

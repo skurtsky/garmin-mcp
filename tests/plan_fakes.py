@@ -72,6 +72,7 @@ class FakePlanDB:
         self.revisions = {}   # id -> [revision]
         self.states = {}      # (plan_id, workout_id) -> state
         self.activities = {}  # garmin_id -> brief
+        self.settings = {}    # app_settings key -> JSON value
         self._clock = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
     def _now(self):
@@ -188,13 +189,22 @@ class FakePlanDB:
             return str((a.get("summary") or {}).get("date") or a["activity_date"].isoformat())[:10]
         return sorted((dict(a) for a in self.activities.values() if start_date <= day(a) < end_date), key=day)
 
+    def get_setting(self, key):
+        return copy.deepcopy(self.settings.get(key))
+
+    def set_setting(self, key, value):
+        if value is None:
+            self.settings.pop(key, None)
+        else:
+            self.settings[key] = copy.deepcopy(value)
+
 
 PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
     "update_training_plan", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
     "get_workout_states", "upsert_workout_state", "get_activity_brief",
-    "get_activities_by_ids", "get_activities_in_range",
+    "get_activities_by_ids", "get_activities_in_range", "get_setting", "set_setting",
 ]
 
 

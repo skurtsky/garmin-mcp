@@ -72,6 +72,7 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     assert plan["meta"]["id"] == "test-block-2026"
     # weekly totals are recomputed on upload, not trusted from the file
     assert plan["weeks"][0]["summary"]["totalHours"] == 3.83
+    assert server.pop("goalRace")["goal"] is None   # Settings' goal race (none set yet)
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
                       "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {}}
     assert 'data-nav="plan" aria-current="page"' in r.text   # the site nav, on Plan
@@ -417,3 +418,59 @@ def test_viewer_links_workouts_and_their_garmin_activities(client):
 def test_plan_list_highlights_settings_in_the_nav(client):
     r = client.get("/training-plan/plans", params=TOKEN)
     assert 'data-nav="settings" aria-current="page"' in r.text
+
+
+# ── GOAL RACE (Settings) ──────────────────────────────────────────────────────
+
+GOAL = {"name": "Fall Classic Half Marathon", "date": "2026-10-11", "distance": "half",
+        "target": "1:32:00", "show_on_today": True}
+
+
+def test_goal_race_starts_empty_and_lists_distances(client):
+    r = client.get("/training-plan/api/goal-race", params=TOKEN)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    body = r.json()
+    assert body["goal"] is None
+    assert [d["key"] for d in body["distances"]] == ["5k", "10k", "half", "marathon", "sprint", "olympic", "70.3", "140.6"]
+    assert {d["key"]: d["taper_days"] for d in body["distances"]}["70.3"] == 14
+
+
+def test_goal_race_save_edit_and_clear(client, fake_db, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_TZ_OFFSET_HOURS", "0")
+    r = client.post("/training-plan/api/goal-race", params=TOKEN, json=GOAL)
+    assert r.status_code == 200
+    goal = r.json()["goal"]
+    assert (goal["name"], goal["target"], goal["target_sec"], goal["distance_long"]) == \
+        ("Fall Classic Half Marathon", "1:32:00", 5520, "Half marathon")
+    assert goal["taper_start"] == "2026-10-01"
+    assert fake_db.settings["goal_race"]["target_sec"] == 5520
+
+    r = client.post("/training-plan/api/goal-race", params=TOKEN, json={**GOAL, "target": "", "show_on_today": False})
+    assert r.json()["goal"]["target"] is None and r.json()["goal"]["show_on_today"] is False
+
+    r = client.post("/training-plan/api/goal-race/clear", params=TOKEN, json={})
+    assert r.json()["goal"] is None and "goal_race" not in fake_db.settings
+
+
+def test_goal_race_invalid_input_is_400_and_keeps_the_stored_race(client, fake_db):
+    client.post("/training-plan/api/goal-race", params=TOKEN, json=GOAL)
+    r = client.post("/training-plan/api/goal-race", params=TOKEN, json={**GOAL, "target": "soon"})
+    assert r.status_code == 400 and "h:mm:ss" in r.json()["error"]
+    assert fake_db.settings["goal_race"]["name"] == GOAL["name"]
+    assert client.post("/training-plan/api/goal-race", params=TOKEN, content=b"[1]").status_code == 400
+
+
+def test_goal_race_without_a_database(monkeypatch):
+    monkeypatch.setattr(db, "is_configured", lambda: False)
+    c = TestClient(training_plan.create_app())
+    assert c.get("/training-plan/api/goal-race", params=TOKEN).json()["goal"] is None
+    r = c.post("/training-plan/api/goal-race", params=TOKEN, json=GOAL)
+    assert r.status_code == 503 and "DATABASE_URL" in r.json()["error"]
+
+
+def test_viewer_embeds_the_goal_race(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/goal-race", params=TOKEN, json=GOAL)
+    server = _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")
+    assert server["goalRace"]["goal"]["name"] == GOAL["name"]
+    assert len(server["goalRace"]["distances"]) == 8
