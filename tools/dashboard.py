@@ -1370,6 +1370,7 @@ _PH_PATHS = {
     'caret-left': '<path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>',
     'lightning': '<path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17ZM109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06l52.8,19.8Z"/>',
     'trophy': '<path d="M232,64H208V48a8,8,0,0,0-8-8H56a8,8,0,0,0-8,8V64H24A16,16,0,0,0,8,80V96a40,40,0,0,0,40,40h3.65A80.13,80.13,0,0,0,120,191.61V216H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16H136V191.58c31.94-3.23,58.44-25.64,68.08-55.58H208a40,40,0,0,0,40-40V80A16,16,0,0,0,232,64ZM48,120A24,24,0,0,1,24,96V80H48v32q0,4,.39,8Zm144-8.9c0,35.52-29,64.64-64,64.9a64,64,0,0,1-64-64V56H192ZM232,96a24,24,0,0,1-24,24h-.5a81.81,81.81,0,0,0,.5-8.9V80h24Z"/>',
+    'chart-line': '<path d="M232,208a8,8,0,0,1-8,8H32a8,8,0,0,1-8-8V48a8,8,0,0,1,16,0v94.37L90.73,98a8,8,0,0,1,10.07-.38l58.81,44.11L218.73,90a8,8,0,1,1,10.54,12l-64,56a8,8,0,0,1-10.07.38L96.39,114.29,40,163.63V200H224A8,8,0,0,1,232,208Z"/>',
     'calendar-blank': '<path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM72,48v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V80H48V48ZM208,208H48V96H208V208Z"/>',
     'arrow-counter-clockwise': '<path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
     'flag-checkered': '<path d="M227.32,48.75A8,8,0,0,0,218.76,50c-28,24.22-51.72,12.48-79.21-1.13C111.07,34.76,78.78,18.79,42.76,50A8,8,0,0,0,40,56V224a8,8,0,0,0,16,0V179.77c26.79-21.16,49.87-9.75,76.45,3.41,28.49,14.09,60.77,30.06,96.79-1.13a8,8,0,0,0,2.76-6V56A8,8,0,0,0,227.32,48.75ZM216,71.6v40.65c-14,11.06-27,13.22-40,10.88V79.34A60.05,60.05,0,0,0,216,71.6Zm-56,3.76v43c-6.66-2.67-13.43-6-20.45-9.48-8.82-4.37-18-8.91-27.55-12.18v-43c6.66,2.66,13.43,6,20.45,9.48C141.27,67.55,150.46,72.09,160,75.36ZM96,48.91V92.69a60.06,60.06,0,0,0-40,7.75V59.78C70,48.72,83,46.57,96,48.91ZM86.58,152A60.06,60.06,0,0,0,56,160.43V119.78c14-11.06,27-13.22,40-10.88v43.8A65.61,65.61,0,0,0,86.58,152ZM112,156.67v-43c6.66,2.66,13.43,6,20.45,9.48,8.82,4.37,18,8.9,27.55,12.17v43c-6.66-2.67-13.43-6-20.45-9.48C130.73,164.47,121.54,159.94,112,156.67Zm64,26.45v-43.8a65.61,65.61,0,0,0,9.42.72A60.11,60.11,0,0,0,216,131.57v40.68C202,183.31,189,185.46,176,183.12Z"/>',
@@ -1846,6 +1847,9 @@ _CHART_SPECS = [
 ]
 
 
+_OVERLAY_METRICS = {"hrv", "rhr", "sleep_score", "stress"}
+
+
 def _chart_card_html(c: dict) -> str:
     return f"""
     <div class="card" style="padding:13px;gap:7px">
@@ -1891,18 +1895,24 @@ def _panel_trends(data: dict) -> str:
         f'<input class="hide" type="radio" name="range" id="range-{r}"{" checked" if r == default_range else ""}>'
         for r in ranges
     )
+    from tools import dashboard_trends
+    redesign = data.get("redesign") or {}
     range_sets = ""
     for r in ranges:
+        # HRV, resting HR, sleep and stress are the fitness & fatigue card's
+        # overlay cards (tools/dashboard_trends.py); the rest stay as charts.
         cards = "".join(
             _chart_card_html(chart) for chart in (
                 _chart(metrics.get(key), label, unit, lower_better, r, big=big, stroke=stroke, fill=fill,
                        chart_id=f"lc-{key}-{r}")
                 for key, label, unit, lower_better, big, stroke, fill in _CHART_SPECS
+                if key not in _OVERLAY_METRICS
             ) if chart is not None
         )
+        fitness = dashboard_trends.render(redesign.get("fitness"), redesign.get("goal"), trends, r, f"r{r}")
         range_sets += (
             f'<div class="range-set rs-{r}" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">'
-            f"{_training_status_card(data, r)}{cards}</div>"
+            f'<div style="grid-column:1/-1;display:grid">{_training_status_card(data, r)}</div>{fitness}{cards}</div>'
         )
 
     return f"""
@@ -3406,7 +3416,8 @@ def _ftp_dialog(plan: dict | None, token: str | None) -> str:
 
 def _activity_css() -> str:
     from tools.dashboard_activity import ACTIVITY_CSS
-    return ACTIVITY_CSS
+    from tools.dashboard_trends import TRENDS_CSS
+    return ACTIVITY_CSS + TRENDS_CSS
 
 
 def _dashboard_head(token: str | None) -> str:
@@ -3619,7 +3630,8 @@ async def stream_dashboard(week_offset: int = 0, token: str | None = None,
 
 def _activity_js() -> str:
     from tools.dashboard_activity import ACTIVITY_JS
-    return ACTIVITY_JS
+    from tools.dashboard_trends import TRENDS_JS
+    return ACTIVITY_JS + TRENDS_JS
 
 
 def render_activity_calendar(month: str | None, filter_key: str | None, viewed_offset: int = 0) -> str:

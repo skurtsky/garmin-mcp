@@ -4,7 +4,6 @@ week, its plan sessions and commute flags are built here."""
 import re
 from datetime import date
 
-
 from tools import dashboard_activity as da
 
 TODAY = date(2026, 9, 25)          # a Friday
