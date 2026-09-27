@@ -325,6 +325,8 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
 
         with _timed("training_plan"):
             plan, plan_err = _safe(_plan_context, now.date(), athlete)
+        with _timed("redesign"):
+            redesign, _ = _safe(_redesign_data, now.date(), plan, athlete, personal_records)
 
         logger.info("dashboard timing: TOTAL %6.0fms (week_offset=%s)",
                     (time.monotonic() - _page_t0) * 1000, week_offset)
@@ -366,6 +368,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "gear_status_err": gear_err,
             "plan": plan,
             "plan_err": plan_err,
+            "redesign": redesign or {},
         }
         return data
     except Exception as e:
@@ -473,6 +476,8 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     # The training plan lives in PostgreSQL only, so it's there even when
     # the Garmin data above came live.
     data["plan"], data["plan_err"] = _safe(_plan_context, now.date(), data.get("athlete"))
+    data["redesign"] = _safe(_redesign_data, now.date(), data["plan"], data.get("athlete"),
+                             data.get("personal_records"))[0] or {}
 
     if not week_offset:
         data["activity_week"] = data.get("week")
@@ -487,6 +492,13 @@ def _plan_context(today: date, athlete: dict | None) -> dict | None:
     (tools/plan_today.py), or None without one."""
     from tools.plan_today import build_plan_context
     return build_plan_context(today, athlete)
+
+
+def _redesign_data(today: date, plan: dict | None, athlete: dict | None, records: dict | None) -> dict:
+    """The goal race, fitness / fatigue, race predictions, threshold history
+    and records progress (tools/dashboard_data.py) — PostgreSQL only."""
+    from tools import dashboard_data
+    return dashboard_data.build(today, plan, athlete, records)
 
 
 def get_activity_week_data(week_offset: int = 0) -> dict:
@@ -1342,6 +1354,21 @@ _PH_PATHS = {
     'caret-left': '<path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>',
     'lightning': '<path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17ZM109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06l52.8,19.8Z"/>',
     'trophy': '<path d="M232,64H208V48a8,8,0,0,0-8-8H56a8,8,0,0,0-8,8V64H24A16,16,0,0,0,8,80V96a40,40,0,0,0,40,40h3.65A80.13,80.13,0,0,0,120,191.61V216H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16H136V191.58c31.94-3.23,58.44-25.64,68.08-55.58H208a40,40,0,0,0,40-40V80A16,16,0,0,0,232,64ZM48,120A24,24,0,0,1,24,96V80H48v32q0,4,.39,8Zm144-8.9c0,35.52-29,64.64-64,64.9a64,64,0,0,1-64-64V56H192ZM232,96a24,24,0,0,1-24,24h-.5a81.81,81.81,0,0,0,.5-8.9V80h24Z"/>',
+    'calendar-blank': '<path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM72,48v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V80H48V48ZM208,208H48V96H208V208Z"/>',
+    'arrow-counter-clockwise': '<path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
+    'flag-checkered': '<path d="M227.32,48.75A8,8,0,0,0,218.76,50c-28,24.22-51.72,12.48-79.21-1.13C111.07,34.76,78.78,18.79,42.76,50A8,8,0,0,0,40,56V224a8,8,0,0,0,16,0V179.77c26.79-21.16,49.87-9.75,76.45,3.41,28.49,14.09,60.77,30.06,96.79-1.13a8,8,0,0,0,2.76-6V56A8,8,0,0,0,227.32,48.75ZM216,71.6v40.65c-14,11.06-27,13.22-40,10.88V79.34A60.05,60.05,0,0,0,216,71.6Zm-56,3.76v43c-6.66-2.67-13.43-6-20.45-9.48-8.82-4.37-18-8.91-27.55-12.18v-43c6.66,2.66,13.43,6,20.45,9.48C141.27,67.55,150.46,72.09,160,75.36ZM96,48.91V92.69a60.06,60.06,0,0,0-40,7.75V59.78C70,48.72,83,46.57,96,48.91ZM86.58,152A60.06,60.06,0,0,0,56,160.43V119.78c14-11.06,27-13.22,40-10.88v43.8A65.61,65.61,0,0,0,86.58,152ZM112,156.67v-43c6.66,2.66,13.43,6,20.45,9.48,8.82,4.37,18,8.9,27.55,12.17v43c-6.66-2.67-13.43-6-20.45-9.48C130.73,164.47,121.54,159.94,112,156.67Zm64,26.45v-43.8a65.61,65.61,0,0,0,9.42.72A60.11,60.11,0,0,0,216,131.57v40.68C202,183.31,189,185.46,176,183.12Z"/>',
+    'check': '<path d="M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z"/>',
+    'caret-down': '<path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"/>',
+    'caret-up': '<path d="M213.66,165.66a8,8,0,0,1-11.32,0L128,91.31,53.66,165.66a8,8,0,0,1-11.32-11.32l80-80a8,8,0,0,1,11.32,0l80,80A8,8,0,0,1,213.66,165.66Z"/>',
+    'x': '<path d="M205.66,194.34a8,8,0,0,1-11.32,11.32L128,139.31,61.66,205.66a8,8,0,0,1-11.32-11.32L116.69,128,50.34,61.66A8,8,0,0,1,61.66,50.34L128,116.69l66.34-66.35a8,8,0,0,1,11.32,11.32L139.31,128Z"/>',
+    'arrows-left-right': '<path d="M213.66,181.66l-32,32a8,8,0,0,1-11.32-11.32L188.69,184H48a8,8,0,0,1,0-16H188.69l-18.35-18.34a8,8,0,0,1,11.32-11.32l32,32A8,8,0,0,1,213.66,181.66Zm-139.32-64a8,8,0,0,0,11.32-11.32L67.31,88H208a8,8,0,0,0,0-16H67.31L85.66,53.66A8,8,0,0,0,74.34,42.34l-32,32a8,8,0,0,0,0,11.32Z"/>',
+    'bicycle': '<path d="M208,112a47.81,47.81,0,0,0-16.93,3.09L165.93,72H192a8,8,0,0,1,8,8,8,8,0,0,0,16,0,24,24,0,0,0-24-24H152a8,8,0,0,0-6.91,12l11.65,20H99.26L82.91,60A8,8,0,0,0,76,56H48a8,8,0,0,0,0,16H71.41L85.12,95.51,69.41,117.06a48.13,48.13,0,1,0,12.92,9.44l11.59-15.9L125.09,164A8,8,0,1,0,138.91,156l-30.32-52h57.48l11.19,19.17A48,48,0,1,0,208,112ZM80,160a32,32,0,1,1-20.21-29.74l-18.25,25a8,8,0,1,0,12.92,9.42l18.25-25A31.88,31.88,0,0,1,80,160Zm128,32a32,32,0,0,1-22.51-54.72L201.09,164A8,8,0,1,0,214.91,156L199.3,129.21A32,32,0,1,1,208,192Z"/>',
+    'swimming-pool': '<path d="M88,149.39a8,8,0,0,0,8-8V128h64v15.29a8,8,0,0,0,16,0V32a8,8,0,0,0-16,0V48H96V32a8,8,0,0,0-16,0V141.39A8,8,0,0,0,88,149.39ZM96,112V96h64v16Zm64-48V80H96V64ZM24,168a8,8,0,0,1,8-8c14.42,0,22.19,5.18,28.44,9.34C66,173.06,70.42,176,80,176s14-2.94,19.56-6.66c6.24-4.16,14-9.34,28.43-9.34s22.2,5.18,28.44,9.34c5.58,3.72,10,6.66,19.57,6.66s14-2.94,19.56-6.66c6.25-4.16,14-9.34,28.44-9.34a8,8,0,0,1,0,16c-9.58,0-14,2.94-19.56,6.66-6.25,4.16-14,9.34-28.44,9.34s-22.2-5.18-28.44-9.34C142,178.94,137.57,176,128,176s-14,2.94-19.56,6.66c-6.24,4.16-14,9.34-28.43,9.34s-22.19-5.18-28.44-9.34C46,178.94,41.58,176,32,176A8,8,0,0,1,24,168Zm208,40a8,8,0,0,1-8,8c-9.58,0-14,2.94-19.56,6.66-6.25,4.16-14,9.34-28.44,9.34s-22.2-5.18-28.44-9.34C142,218.94,137.57,216,128,216s-14,2.94-19.56,6.66c-6.24,4.16-14,9.34-28.43,9.34s-22.19-5.18-28.44-9.34C46,218.94,41.58,216,32,216a8,8,0,0,1,0-16c14.42,0,22.19,5.18,28.44,9.34C66,213.06,70.42,216,80,216s14-2.94,19.56-6.66c6.24-4.16,14-9.34,28.43-9.34s22.2,5.18,28.44,9.34c5.58,3.72,10,6.66,19.57,6.66s14-2.94,19.56-6.66c6.25-4.16,14-9.34,28.44-9.34A8,8,0,0,1,232,208Z"/>',
+    'sneaker-move': '<path d="M231.16,166.63l-28.63-14.31A47.74,47.74,0,0,1,176,109.39V80a8,8,0,0,0-8-8,48.05,48.05,0,0,1-48-48,8,8,0,0,0-12.83-6.37L30.13,76l-.2.16a16,16,0,0,0-1.24,23.75L142.4,213.66a8,8,0,0,0,5.66,2.34H224a16,16,0,0,0,16-16V180.94A15.92,15.92,0,0,0,231.16,166.63ZM224,200H151.37L40,88.63l12.87-9.76,38.79,38.79A8,8,0,0,0,103,106.34L65.74,69.11l40-30.31A64.15,64.15,0,0,0,160,87.5v21.89a63.65,63.65,0,0,0,35.38,57.24L224,180.94ZM70.8,184H32a8,8,0,0,1,0-16H70.8a8,8,0,1,1,0,16Zm40,24a8,8,0,0,1-8,8H48a8,8,0,0,1,0-16h54.8A8,8,0,0,1,110.8,208Z"/>',
+    'mountains': '<path d="M164,80a28,28,0,1,0-28-28A28,28,0,0,0,164,80Zm0-40a12,12,0,1,1-12,12A12,12,0,0,1,164,40Zm90.88,155.92-54.56-92.08A15.87,15.87,0,0,0,186.55,96h0a15.85,15.85,0,0,0-13.76,7.84L146.63,148l-44.84-76.1a16,16,0,0,0-27.58,0L1.11,195.94A8,8,0,0,0,8,208H248a8,8,0,0,0,6.88-12.08ZM88,80l23.57,40H64.43ZM22,192l33-56h66l18.74,31.8,0,0L154,192Zm150.57,0-16.66-28.28L186.55,112,234,192Z"/>',
+    'volleyball': '<path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm81.74,136.58a88,88,0,0,1-93.49,3.78L132.62,136h83A87.16,87.16,0,0,1,209.74,160.58ZM91.12,48.11a87.57,87.57,0,0,1,24.22-7.2,88,88,0,0,1,50,79.09H132.62ZM215.63,120H181.37a104.18,104.18,0,0,0-35.78-78.23A88.18,88.18,0,0,1,215.63,120ZM77.27,56.13,94.39,85.78a104.14,104.14,0,0,0-49.86,70.09A87.95,87.95,0,0,1,77.27,56.13ZM58.9,182.43a88,88,0,0,1,43.49-82.79L118.76,128,77.27,199.87A88.62,88.62,0,0,1,58.9,182.43ZM128,216a87.5,87.5,0,0,1-36.88-8.11l17.13-29.67a104.23,104.23,0,0,0,85.53,8.17A87.81,87.81,0,0,1,128,216Z"/>',
+    'barbell': '<path d="M248,120h-8V88a16,16,0,0,0-16-16H208V64a16,16,0,0,0-16-16H168a16,16,0,0,0-16,16v56H104V64A16,16,0,0,0,88,48H64A16,16,0,0,0,48,64v8H32A16,16,0,0,0,16,88v32H8a8,8,0,0,0,0,16h8v32a16,16,0,0,0,16,16H48v8a16,16,0,0,0,16,16H88a16,16,0,0,0,16-16V136h48v56a16,16,0,0,0,16,16h24a16,16,0,0,0,16-16v-8h16a16,16,0,0,0,16-16V136h8a8,8,0,0,0,0-16ZM32,168V88H48v80Zm56,24H64V64H88V192Zm104,0H168V64h24V175.82c0,.06,0,.12,0,.18s0,.12,0,.18V192Zm32-24H208V88h16Z"/>',
+    'person-simple-walk': '<path d="M152,80a32,32,0,1,0-32-32A32,32,0,0,0,152,80Zm0-48a16,16,0,1,1-16,16A16,16,0,0,1,152,32Zm64,112a8,8,0,0,1-8,8c-35.31,0-52.95-17.81-67.12-32.12-2.74-2.77-5.36-5.4-8-7.84l-13.43,30.88,37.2,26.57A8,8,0,0,1,160,176v56a8,8,0,0,1-16,0V180.12l-31.07-22.2L79.34,235.19A8,8,0,0,1,72,240a7.84,7.84,0,0,1-3.19-.67,8,8,0,0,1-4.15-10.52l54.08-124.37c-9.31-1.65-20.92,1.2-34.7,8.58a163.88,163.88,0,0,0-30.57,21.77,8,8,0,0,1-10.95-11.66c2.5-2.35,61.69-57.23,98.72-25.08,3.83,3.32,7.48,7,11,10.57C166.19,122.7,179.36,136,208,136A8,8,0,0,1,216,144Z"/>',
 }
 
 
@@ -1683,9 +1710,95 @@ def _in_focus(data: dict, start: int) -> str:
     </div>"""
 
 
+_PHASES = {"build": ("Build", "#4fae72"), "taper": ("Taper", "#4aa7d8"),
+           "race_day": ("Race day", "#e7e5fe"), "done": ("Done", "#9397ab")}
+
+
+def _hms(seconds) -> str | None:
+    if seconds is None:
+        return None
+    s = int(round(abs(seconds)))
+    h, m, x = s // 3600, s % 3600 // 60, s % 60
+    return f"{h}:{m:02d}:{x:02d}" if h else f"{m}:{x:02d}"
+
+
+def _dow_mon_day(iso) -> str:
+    d = date.fromisoformat(str(iso)[:10])
+    return f"{d.strftime('%a %b')} {d.day}"
+
+
+def _goal_cell(label: str, value: str, sub: str = "", color: str | None = None, value_colored: bool = True) -> str:
+    style = f"color:{color}" if color else ""
+    return (f'<div><div class="t-kick">{label}</div><div style="font-size:15px;{style if value_colored else ""}">{value}</div>'
+            + (f'<div style="font-size:11px;{style or "color:var(--color-neutral-500)"}">{sub}</div>' if sub else "")
+            + "</div>")
+
+
+def _goal_card(g: dict) -> str:
+    """Today's goal-race countdown: days left, phase, predicted vs target,
+    race-day form (within 6 weeks) and where the taper stands."""
+    days = g["days_left"]
+    phase, phase_color = _PHASES[g["phase"]]
+    ring = ('<span style="font-size:18px;font-weight:500">&#10003;</span>'
+            '<span style="font-size:9px;color:var(--color-neutral-500);margin-top:2px">done</span>') if days < 0 else (
+        f'<span style="font-size:18px;font-weight:500">{days}</span>'
+        f'<span style="font-size:9px;color:var(--color-neutral-500);margin-top:2px">{"day" if days == 1 else "days"}</span>')
+
+    gap = g.get("gap_sec")
+    if gap is None:
+        gap_text, gap_color = "", None
+    elif gap > 0:
+        gap_text, gap_color = f"{_hms(gap)} to find", "#d9a441"
+    else:
+        gap_text, gap_color = f"{_hms(gap)} ahead" if gap else "on target", "#4fae72"
+
+    rf = g.get("race_form")
+    if not g.get("show_form"):
+        form = _goal_cell("Race-day form", "&mdash;", "Shown 6 weeks out", "var(--color-neutral-500)")
+    elif rf is None:
+        form = _goal_cell("Race-day form", "&mdash;", "Plan ends before race", "var(--color-neutral-500)")
+    else:
+        value = f"{'+' if rf['form'] > 0 else ''}{rf['form']}"
+        if rf["on_target"]:
+            form = _goal_cell("Race-day form", value, "Fresh · on target", "#4aa7d8")
+        else:
+            why = "Too fresh" if rf["too_fresh"] else rf["zone"]["label"]
+            form = _goal_cell("Race-day form", value, f"{why} · target +5 to +15", "#d9a441")
+
+    if days < 0:
+        taper = "Race complete. Clear or set a new goal in Settings."
+    elif g["days_to_taper"] > 0:
+        n = g["days_to_taper"]
+        taper = f"Taper starts in {n} day{'' if n == 1 else 's'} ({_dow_mon_day(g['taper_start'])})."
+    else:
+        taper = "In taper: keep intensity, cut volume."
+
+    return f"""
+    <div class="t-card" style="display:flex;flex-direction:column;gap:12px;box-shadow:0 0 0 1px var(--color-accent-700)">
+      <div style="display:flex;align-items:center;gap:14px">
+        <div class="t-ring" style="display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1;box-shadow:inset 0 0 0 4px var(--color-accent)">{ring}</div>
+        <div style="flex:1;min-width:0">
+          <div class="t-kick" style="color:var(--color-accent-400)">Goal race</div>
+          <div style="font-size:17px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(g["name"])}</div>
+          <div class="t-sub" style="color:var(--color-neutral-500)">{_e(_dow_mon_day(g["date"]))} · {_e(g["distance_long"])}</div>
+        </div>
+        <span style="flex:0 0 auto;font-size:10px;padding:3px 9px;border-radius:6px;
+            background:color-mix(in srgb, {phase_color} 16%, transparent);color:{phase_color}">{phase}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:10px;border-top:1px solid rgba(233,233,237,.07)">
+        {_goal_cell("Predicted", _e(_hms(g.get("predicted_sec"))))}
+        {_goal_cell("Target", _e(g.get("target")), gap_text, gap_color, value_colored=False)}
+        {form}
+      </div>
+      <div style="font-size:12px;color:var(--color-neutral-400)">{_e(taper)}</div>
+    </div>"""
+
+
 def _panel_today(data: dict, token: str | None = None) -> str:
     plan = data.get("plan")
-    cards = [_readiness_card(data)]
+    goal = (data.get("redesign") or {}).get("goal")
+    cards = [_goal_card(goal)] if goal and goal.get("show_on_today") else []
+    cards.append(_readiness_card(data))
     rest_day = False
     if plan and plan.get("in_plan"):
         ftp_test = plan.get("ftp_test")
