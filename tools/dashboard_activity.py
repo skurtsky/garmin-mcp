@@ -537,7 +537,7 @@ def render_panel(week: dict | None, prev_week: dict | None, extras: dict | None,
         log = _log(its, today, offset)
         upcoming = _upcoming(its)
         empty = "" if log or upcoming else (
-            '<div class="card" style="padding:24px;align-items:center;font-size:12px;color:var(--color-neutral-500)">'
+            '<div class="card act-filter-empty" style="padding:24px;align-items:center;font-size:12px;color:var(--color-neutral-500)">'
             'No activities match this filter.</div>')
         sections.append(f"""
     <div class="activity-filter-section activity-filter-{key}" style="flex-direction:column;gap:16px">
@@ -718,6 +718,9 @@ ACTIVITY_CSS = """
 .act-days.filtered .act-day { opacity:.45; }
 .act-days.filtered .act-day.sel { opacity:1; }
 .act-days.filtered .act-day.sel .act-day-letter { font-weight:600; }
+/* The day filter hides rows with [hidden]; their own display:flex would win otherwise. */
+.act-group[hidden], .act-planned[hidden], .act-upcoming[hidden], .act-day-empty[hidden] { display:none; }
+.act-day-empty { padding:24px; align-items:center; font-size:12px; color:var(--color-neutral-500); }
 .act-row { display:flex; align-items:center; gap:12px; padding:12px; border-radius:8px; background:var(--color-surface);
   box-shadow:var(--shadow-sm); }
 .act-row.act-planned, .act-row.act-missed { background:transparent; box-shadow:none; border:1px dashed var(--color-neutral-800); padding:11px 12px; }
@@ -784,9 +787,24 @@ ACTIVITY_JS = """
     sec.querySelectorAll('.act-day').forEach(function (b) {
       b.classList.toggle('sel', day !== null && b.getAttribute('data-act-day') === String(day));
     });
+    var shown = 0;
     sec.querySelectorAll('.act-group, .act-planned').forEach(function (g) {
       g.hidden = day !== null && g.getAttribute('data-day') !== String(day);
+      if (!g.hidden) shown++;
     });
+    var upcoming = sec.querySelector('.act-upcoming');
+    if (upcoming) upcoming.hidden = !upcoming.querySelector('.act-planned:not([hidden])');
+    // A day with nothing on it says so, rather than leaving the list blank.
+    var log = sec.querySelector('.act-log'), empty = sec.querySelector('.act-day-empty');
+    if (log && !empty) {
+      empty = document.createElement('div');
+      empty.className = 'card act-day-empty';
+      log.appendChild(empty);
+    }
+    if (empty) {
+      empty.hidden = day === null || shown > 0 || !!log.querySelector('.act-filter-empty');
+      if (day !== null) empty.textContent = 'Nothing on ' + DOW[day] + '.';
+    }
     var hint = sec.querySelector('.act-strip-hint');
     if (hint) hint.textContent = day === null ? 'Tap a day to filter' : DOW[day] + ' only · tap again to clear';
     if (day === null) sec.removeAttribute('data-day'); else sec.setAttribute('data-day', day);

@@ -1541,10 +1541,42 @@ def test_fitness_topbar_swaps_in_with_its_tab():
     assert "#tab-you:checked ~ .topbar .topbar-fitness { display:flex; }" in html
 
 
-def test_tomorrow_card_opens_that_workout_in_the_plan():
+def test_tomorrow_card_opens_that_workout_on_today():
     today = _section(dashboard.render_dashboard_html(_with_plan(), token="t0k"), "tp-today")
-    card = today.split(">Tomorrow<", 1)[0].rsplit("<a ", 1)[1]
-    assert 'href="/training-plan?workout=w2-sat-bike&amp;token=t0k"' in card
+    card = today.split(">Tomorrow<", 1)[0].rsplit('class="t-card', 1)[1]
+    assert 'data-plan-workout="w2-sat-bike"' in card and "href=" not in card
+    # Its dialog is on the page, with a way on to the plan for editing.
+    dialog = today.split('<template id="plan-workout-w2-sat-bike">', 1)[1].split("</template>", 1)[0]
+    assert "Plantagenet Ride w/ Cam" in dialog and ">Tomorrow<" in dialog and "115 km" in dialog
+    assert 'href="/training-plan?workout=w2-sat-bike&amp;token=t0k"' in dialog
+
+
+def test_todays_session_opens_its_workout_dialog():
+    plan = _with_plan()
+    plan["plan"]["today"][0].update(description="Ramp then 20 min all out", details="WU 20 min\nMain: 20 min @ 250W")
+    html = dashboard.render_dashboard_html(plan)
+    today = _section(html, "tp-today")
+    card = today.split("Today&rsquo;s session", 1)[0].rsplit('class="t-card', 1)[1]
+    assert 'data-plan-workout="w2-fri-bike"' in card
+    dialog = today.split('<template id="plan-workout-w2-fri-bike">', 1)[1].split("</template>", 1)[0]
+    assert "Ramp then 20 min all out" in dialog and "Main: 20 min @ 250W" in dialog
+    assert "Done with Ottawa - FTP Test (20 min warmup)" in dialog and "openActivityModal(900)" in dialog
+    assert "window.openPlanWorkout = function" in html
+
+
+def test_todays_activities_show_on_a_rest_day():
+    act = {"id": 901, "name": "Lunch walk", "type": "walking", "distance_km": 3.2, "duration_min": 40,
+           "date": "2026-07-17"}
+    today = _section(dashboard.render_dashboard_html(_with_plan(today=[], today_activities=[act])), "tp-today")
+    assert "Rest day" in today and "Done today" in today
+    assert "Lunch walk" in today and "openActivityModal(901)" in today and "3.2 km · 40 min" in today
+    assert today.index("Rest day") < today.index("Lunch walk") < today.index(">Tomorrow<")
+
+
+def test_unplanned_activities_show_beside_a_session():
+    act = {"id": 902, "name": "Commute", "type": "cycling", "distance_km": 8, "duration_min": 25, "date": "2026-07-17"}
+    today = _section(dashboard.render_dashboard_html(_with_plan(today_activities=[act])), "tp-today")
+    assert "Also today" in today and "Commute" in today
 
 
 def test_rest_tomorrow_is_not_a_link():
