@@ -436,6 +436,12 @@ python sync_garmin.py --activities-only --activities-since 2026-03-01
 python sync_garmin.py --details-only --detail-limit 999 --overwrite
 ```
 
+The Fitness tab's triathlon predictions are estimated from CSS (or, without
+one, the swim records), FTP and threshold pace. Their per-distance
+multipliers can be changed with `TRI_PREDICTOR_CONFIG`, a JSON object such as
+`{"70.3": {"bike_if": 0.8, "run_factor": 1.12}}` (keys: `swim_offset_s`,
+`bike_if`, `run_factor`, `transitions_s`).
+
 ## Testing
 
 ### Run the test suite

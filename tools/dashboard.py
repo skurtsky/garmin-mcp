@@ -1370,6 +1370,7 @@ _PH_PATHS = {
     'caret-left': '<path d="M165.66,202.34a8,8,0,0,1-11.32,11.32l-80-80a8,8,0,0,1,0-11.32l80-80a8,8,0,0,1,11.32,11.32L91.31,128Z"/>',
     'lightning': '<path d="M215.79,118.17a8,8,0,0,0-5-5.66L153.18,90.9l14.66-73.33a8,8,0,0,0-13.69-7l-112,120a8,8,0,0,0,3,13l57.63,21.61L88.16,238.43a8,8,0,0,0,13.69,7l112-120A8,8,0,0,0,215.79,118.17ZM109.37,214l10.47-52.38a8,8,0,0,0-5-9.06L62,132.71l84.62-90.66L136.16,94.43a8,8,0,0,0,5,9.06l52.8,19.8Z"/>',
     'trophy': '<path d="M232,64H208V48a8,8,0,0,0-8-8H56a8,8,0,0,0-8,8V64H24A16,16,0,0,0,8,80V96a40,40,0,0,0,40,40h3.65A80.13,80.13,0,0,0,120,191.61V216H96a8,8,0,0,0,0,16h64a8,8,0,0,0,0-16H136V191.58c31.94-3.23,58.44-25.64,68.08-55.58H208a40,40,0,0,0,40-40V80A16,16,0,0,0,232,64ZM48,120A24,24,0,0,1,24,96V80H48v32q0,4,.39,8Zm144-8.9c0,35.52-29,64.64-64,64.9a64,64,0,0,1-64-64V56H192ZM232,96a24,24,0,0,1-24,24h-.5a81.81,81.81,0,0,0,.5-8.9V80h24Z"/>',
+    'arrows-clockwise': '<path d="M224,48V96a8,8,0,0,1-8,8H168a8,8,0,0,1,0-16h28.69L182.06,73.37a79.56,79.56,0,0,0-56.13-23.43h-.45A79.52,79.52,0,0,0,69.59,72.71,8,8,0,0,1,58.41,61.27a96,96,0,0,1,135,.79L208,76.69V48a8,8,0,0,1,16,0ZM186.41,183.29a80,80,0,0,1-112.47-.66L59.31,168H88a8,8,0,0,0,0-16H40a8,8,0,0,0-8,8v48a8,8,0,0,0,16,0V179.31l14.63,14.63A95.43,95.43,0,0,0,130,222.06h.53a95.36,95.36,0,0,0,67.07-27.33,8,8,0,0,0-11.18-11.44Z"/>',
     'chart-line': '<path d="M232,208a8,8,0,0,1-8,8H32a8,8,0,0,1-8-8V48a8,8,0,0,1,16,0v94.37L90.73,98a8,8,0,0,1,10.07-.38l58.81,44.11L218.73,90a8,8,0,1,1,10.54,12l-64,56a8,8,0,0,1-10.07.38L96.39,114.29,40,163.63V200H224A8,8,0,0,1,232,208Z"/>',
     'calendar-blank': '<path d="M208,32H184V24a8,8,0,0,0-16,0v8H88V24a8,8,0,0,0-16,0v8H48A16,16,0,0,0,32,48V208a16,16,0,0,0,16,16H208a16,16,0,0,0,16-16V48A16,16,0,0,0,208,32ZM72,48v8a8,8,0,0,0,16,0V48h80v8a8,8,0,0,0,16,0V48h24V80H48V48ZM208,208H48V96H208V208Z"/>',
     'arrow-counter-clockwise': '<path d="M224,128a96,96,0,0,1-94.71,96H128A95.38,95.38,0,0,1,62.1,197.8a8,8,0,0,1,11-11.63A80,80,0,1,0,71.43,71.39a3.07,3.07,0,0,1-.26.25L44.59,96H72a8,8,0,0,1,0,16H24a8,8,0,0,1-8-8V56a8,8,0,0,1,16,0V85.8L60.25,60A96,96,0,0,1,224,128Z"/>',
@@ -1971,32 +1972,8 @@ def _vo2_rating(value):
     return "Poor"
 
 
-_STATUS_COLORS = {"Tested": "#7fb87a", "Provisional": "#d9a441", "Unvalidated": "#cf5a4e"}
 _ZONE_COLORS = {"1": "#6c93b0", "2": "#5eb8ad", "3": "#8fb85e", "4": "#d9b35a", "5": "#d9705e",
                 "5a": "#d98a5e", "5b": "#d9705e", "5c": "#c9506a"}
-
-
-def _garmin_thresholds(athlete: dict) -> list[dict]:
-    """The thresholds rows without a plan: Garmin's own values only."""
-    pace = athlete.get("lactate_threshold_pace")
-    rows = [("FTP", f"{athlete['ftp']} W" if athlete.get("ftp") else None, ""),
-            ("Run LTHR", str(athlete["lactate_threshold_hr"]) if athlete.get("lactate_threshold_hr") else None, ""),
-            ("Threshold pace", f"{int(pace)}:{round(pace % 1 * 60):02d}" if pace else None, "/km")]
-    return [{"label": l, "garmin": g, "plan": None, "status": None, "sub": sub} for l, g, sub in rows]
-
-
-def _threshold_row(t: dict, last: bool) -> str:
-    color = _STATUS_COLORS.get(t.get("status"))
-    tag = (f'<span class="f-tag" style="background:color-mix(in srgb, {color} 15%, transparent);color:{color}">'
-           f'{_e(t["status"])}</span>') if color else ""
-    return f"""
-      <div class="f-row" style="{"" if last else "border-bottom:1px solid rgba(233,233,237,.07)"}">
-        <div style="min-width:0"><div style="font-size:13px">{_e(t["label"])}</div>
-          <div class="f-ellipsis">{_e(t.get("sub")) or "&nbsp;"}</div></div>
-        <div style="font-size:13px;color:var(--color-neutral-500);text-align:right">{_e(t.get("garmin")) or "&mdash;"}</div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:3px">
-          <span style="font-size:14px;font-weight:500">{_e(t.get("plan")) or "&mdash;"}</span>{tag}</div>
-      </div>"""
 
 
 def _zone_table(sport: str, rows: list[dict], now: dict) -> str:
@@ -2088,7 +2065,7 @@ def _personal_records_row(records: dict) -> str:
           </div>"""
     return f"""
     <details class="f-prs">
-      <summary>{_ph("trophy", 18, "var(--color-neutral-500)")}<span style="flex:1;font-size:14px">Personal records</span>
+      <summary>{_ph("trophy", 18, "var(--color-neutral-500)")}<span style="flex:1;font-size:14px">All personal records</span>
         <span style="font-size:12px;color:var(--color-neutral-500)">{count}</span>
         <span class="f-prs-caret">{_ph("caret-right", 16, "var(--color-neutral-600)")}</span></summary>
       <div style="display:flex;flex-direction:column;gap:14px;padding:4px 0 2px">{groups}</div>
@@ -2137,21 +2114,23 @@ def _panel_fitness(data: dict) -> str:
                 f'<div style="font-size:24px;font-weight:500;margin-top:2px">{_num(value)}</div>'
                 f'<div style="font-size:11px;color:{"#7fb87a" if rating in ("Superior", "Excellent", "Good") else "var(--color-neutral-500)"}">{rating or "&mdash;"}</div></div>')
 
-    thresholds = (plan or {}).get("thresholds") or _garmin_thresholds(athlete)
-    rows = "".join(_threshold_row(t, i == len(thresholds) - 1) for i, t in enumerate(thresholds))
-    cols = ('<div style="display:flex;gap:28px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;'
-            'color:var(--color-neutral-600);padding-right:14px"><span>Garmin</span><span>Plan</span></div>')
+    from tools import dashboard_fitness
+    redesign = data.get("redesign") or {}
+    today = _local_now().date()
+    try:
+        today = date.fromisoformat(str(data.get("date"))[:10])
+    except (TypeError, ValueError):
+        pass
     return f"""
     <section class="panel tabpanel tp-you" style="flex-direction:column;gap:12px">
       {_ftp_banner((plan or {}).get("ftp_test"))}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         {vo2_card("Running", vo2.get("running"))}{vo2_card("Cycling", vo2.get("cycling"))}
       </div>
-      <div style="display:flex;justify-content:space-between;align-items:baseline;padding:8px 2px 0">
-        <div class="section-title" style="margin:0">Thresholds</div>{cols}
-      </div>
-      <div class="card" style="padding:0;gap:0;box-shadow:var(--shadow-sm);overflow:hidden">{rows}</div>
+      {dashboard_fitness.thresholds(plan, athlete, redesign.get("thresholds"))}
       {_plan_zones(plan) if plan else _garmin_hr_zones(athlete)}
+      {dashboard_fitness.predictions(redesign.get("predictions"), redesign.get("goal"))}
+      {dashboard_fitness.records(redesign.get("records"), today)}
       {_personal_records_row(data.get("personal_records"))}
     </section>"""
 
@@ -3416,8 +3395,9 @@ def _ftp_dialog(plan: dict | None, token: str | None) -> str:
 
 def _activity_css() -> str:
     from tools.dashboard_activity import ACTIVITY_CSS
+    from tools.dashboard_fitness import FITNESS_CSS
     from tools.dashboard_trends import TRENDS_CSS
-    return ACTIVITY_CSS + TRENDS_CSS
+    return ACTIVITY_CSS + TRENDS_CSS + FITNESS_CSS
 
 
 def _dashboard_head(token: str | None) -> str:
@@ -3630,8 +3610,9 @@ async def stream_dashboard(week_offset: int = 0, token: str | None = None,
 
 def _activity_js() -> str:
     from tools.dashboard_activity import ACTIVITY_JS
+    from tools.dashboard_fitness import FITNESS_JS
     from tools.dashboard_trends import TRENDS_JS
-    return ACTIVITY_JS + TRENDS_JS
+    return ACTIVITY_JS + TRENDS_JS + FITNESS_JS
 
 
 def render_activity_calendar(month: str | None, filter_key: str | None, viewed_offset: int = 0) -> str:

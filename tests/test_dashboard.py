@@ -778,7 +778,7 @@ def test_range_toggle_shrinks_to_available_days():
 
 def test_render_shows_personal_records_grouped_by_sport():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert "Personal records" in html
+    assert "All personal records" in html
     assert "Fastest 5K" in html
     assert "20:35" in html
     assert "Longest Ride" in html
@@ -789,8 +789,8 @@ def test_render_shows_personal_records_grouped_by_sport():
 def test_render_shows_thresholds_from_athlete_profile():
     html = dashboard.render_dashboard_html(SAMPLE)
     fitness = re.search(r'<section class="panel tabpanel tp-you".*?</section>', html, re.S).group(0)
-    assert ">170<" in fitness   # LTHR
-    assert ">265 W<" in fitness   # FTP
+    assert ">170 bpm<" in fitness   # LTHR, with its unit
+    assert ">265 W<" in fitness     # FTP
 
 
 def test_render_vo2max_gauges_show_rating_and_sport_labels():
@@ -1499,10 +1499,11 @@ def test_topbar_carries_the_plan_week_and_phase():
 
 def test_fitness_compares_garmin_and_plan_thresholds_with_tags():
     fitness = _section(dashboard.render_dashboard_html(_with_plan()), "tp-you")
-    ftp_row = fitness.split(">FTP<", 1)[1].split('class="f-row"', 1)[0]
+    ftp_row = fitness.split(">FTP<", 1)[1].split('class="thr-row"', 1)[0]
 
-    assert ">275 W<" in ftp_row and ">250 W<" in ftp_row and ">Provisional<" in ftp_row
-    assert "test today" in ftp_row
+    # Garmin's value comes from the athlete profile (265 W), the plan's from the plan.
+    assert ">265 W<" in ftp_row and ">250 W<" in ftp_row and ">Provisional<" in ftp_row
+    assert "test today" not in ftp_row          # no sub-lines under threshold names
     assert ">Tested<" in fitness and ">Unvalidated<" in fitness
 
 
@@ -1530,7 +1531,7 @@ def test_ftp_dialog_posts_to_the_plan_operations_api():
 
 def test_personal_records_fold_into_one_row():
     fitness = _section(dashboard.render_dashboard_html(SAMPLE), "tp-you")
-    assert '<details class="f-prs">' in fitness and "Personal records" in fitness
+    assert '<details class="f-prs">' in fitness and "All personal records" in fitness
 
 
 def test_fitness_topbar_swaps_in_with_its_tab():
