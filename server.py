@@ -876,7 +876,8 @@ def build_asgi_app():
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import StreamingResponse
 
-    from tools.dashboard import get_activity_week_data, render_activity_panel, stream_dashboard
+    from tools.dashboard import (get_activity_week_data, render_activity_calendar, render_activity_panel,
+                                 stream_dashboard)
     from tools import training_plan
     from tools import weekly_summaries
     from tools import gear_tracker
@@ -992,6 +993,20 @@ def build_asgi_app():
             except Exception as e:  # pragma: no cover — defensive
                 logger.exception("Activity week render failed")
                 response = HTMLResponse(f"Activity week error: {e}", status_code=500)
+            await response(scope, receive, send)
+            return
+
+        # The Activity tab's calendar: one month, as the modal's content.
+        if scope["type"] == "http" and scope.get("path") == "/dashboard/activity-calendar":
+            query = parse_qs(scope.get("query_string", b"").decode())
+            try:
+                markup = await run_in_threadpool(
+                    render_activity_calendar, query.get("month", [None])[0],
+                    query.get("filter", [None])[0], _week_offset(query))
+                response = HTMLResponse(markup, headers={"Cache-Control": "no-store"})
+            except Exception as e:  # pragma: no cover — defensive
+                logger.exception("Activity calendar render failed")
+                response = HTMLResponse(f"Activity calendar error: {e}", status_code=500)
             await response(scope, receive, send)
             return
 

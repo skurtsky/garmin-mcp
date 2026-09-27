@@ -369,6 +369,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "plan": plan,
             "plan_err": plan_err,
             "redesign": redesign or {},
+            **_activity_bundle(week_offset, activity_week_data, now.date()),
         }
         return data
     except Exception as e:
@@ -483,6 +484,7 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
         data["activity_week"] = data.get("week")
         data["activity_week_err"] = data.get("week_err")
     data["activity_week_offset"] = week_offset
+    data.update(_activity_bundle(week_offset, data.get("activity_week"), now.date()))
 
     return data
 
@@ -492,6 +494,22 @@ def _plan_context(today: date, athlete: dict | None) -> dict | None:
     (tools/plan_today.py), or None without one."""
     from tools.plan_today import build_plan_context
     return build_plan_context(today, athlete)
+
+
+def _activity_bundle(week_offset: int, week: dict | None, today: date) -> dict:
+    """What the Activity tab adds to a week (PostgreSQL only): the week
+    before, for the changes, and the plan sessions / commutes / result
+    chips (tools/dashboard_activity.py)."""
+    import db
+    out = {"activity_prev_week": None, "activity_extras": None}
+    if not week or not db.is_configured():
+        return out
+    from tools import dashboard_activity
+    with _timed(f"activity_bundle(offset={week_offset})"):
+        out["activity_prev_week"], _ = _past_week_from_db(week_offset + 1)
+        out["activity_extras"], _ = _safe(dashboard_activity.week_extras, str(week.get("week_start"))[:10],
+                                          str(week.get("week_end"))[:10], week.get("activities") or [], today)
+    return out
 
 
 def _redesign_data(today: date, plan: dict | None, athlete: dict | None, records: dict | None) -> dict:
@@ -529,10 +547,13 @@ def get_activity_week_data(week_offset: int = 0) -> dict:
             value, err = _safe(get_weekly_summary, week_offset=week_offset)
             if value is not None:
                 _set_cached(cache_key, value, err)
+    today = _local_now().date()
     return {
+        "date": today.isoformat(),
         "activity_week": value,
         "activity_week_err": err,
         "activity_week_offset": week_offset,
+        **_activity_bundle(week_offset, value, today),
     }
 
 
@@ -1058,7 +1079,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filter-triathlon,
 #activity-filter-bike:checked ~ .tabpanels .activity-filter-bike,
 #activity-filter-run:checked ~ .tabpanels .activity-filter-run,
-#activity-filter-strength:checked ~ .tabpanels .activity-filter-strength,
+#activity-filter-swim:checked ~ .tabpanels .activity-filter-swim,
 #activity-filter-other:checked ~ .tabpanels .activity-filter-other { display:flex; }
 #prf-all:checked ~ .pr-body .pr-group,
 #prf-run:checked ~ .pr-body .pr-group.pr-running,
@@ -1073,7 +1094,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-triathlon],
 #activity-filter-bike:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-bike],
 #activity-filter-run:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-run],
-#activity-filter-strength:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-strength],
+#activity-filter-swim:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-swim],
 #activity-filter-other:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-other],
 #prf-all:checked ~ .prbar label[for=prf-all],
 #prf-run:checked ~ .prbar label[for=prf-run],
@@ -1258,11 +1279,6 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
 /* ── spinners: the Activity tab's week change (only after a short delay),
    and the top bar's "Updating" chip while a stale page is refreshed ── */
 @keyframes dash-spin { to { transform:rotate(360deg); } }
-.tp-activity.is-loading > * { opacity:.4; pointer-events:none; transition:opacity .2s; }
-.tp-activity.is-loading::after { content:""; position:fixed; left:50%; top:50%; z-index:25;
-  width:30px; height:30px; margin:-15px 0 0 -15px; border-radius:50%;
-  border:3px solid color-mix(in srgb, var(--color-accent) 25%, transparent); border-top-color:var(--color-accent);
-  animation:dash-spin .8s linear infinite; }
 .dash-updating { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--color-neutral-400); }
 .dash-updating[hidden] { display:none; }
 .dash-spin { width:12px; height:12px; border-radius:50%; border:2px solid var(--color-neutral-700);
@@ -1902,233 +1918,28 @@ def _panel_trends(data: dict) -> str:
 
 # ── PANEL: ACTIVITY ──────────────────────────────────────────────────────────
 
-_ACTIVITY_FILTERS = ("all", "triathlon", "bike", "run", "strength", "other")
-_BIKE_TYPES = {"cycling", "road_biking", "virtual_ride", "indoor_cycling"}
-_RUN_TYPES = {"running", "trail_running", "treadmill_running", "track_running", "indoor_running"}
-_SWIM_TYPES = {"lap_swimming", "open_water_swimming", "swimming"}
-_TRIATHLON_TYPES = {"multi_sport", "triathlon", "duathlon"}
-_STRENGTH_TYPES = {"strength", "strength_training"}
-
-
-def _activity_filter_key(activity: dict) -> str:
-  activity_type = str(activity.get("type") or "").lower()
-  if activity_type in _STRENGTH_TYPES:
-    return "strength"
-  if activity_type in _TRIATHLON_TYPES:
-    return "triathlon"
-  if activity_type in _BIKE_TYPES:
-    return "bike"
-  if activity_type in _RUN_TYPES:
-    return "run"
-  if activity_type in _SWIM_TYPES:
-    return "other"
-  return "other"
-
-
-def _activity_filter_matches(activity: dict, filter_key: str) -> bool:
-  activity_type = str(activity.get("type") or "").lower()
-  if filter_key == "all":
-    return True
-  if filter_key == "triathlon":
-    return activity_type in (_TRIATHLON_TYPES | _BIKE_TYPES | _RUN_TYPES | _SWIM_TYPES)
-  return _activity_filter_key(activity) == filter_key
-
-
-def _activity_summary_card(activities: list[dict], split: list[tuple], summary: dict | None = None) -> str:
-  summary = summary or {}
-  total_distance = summary.get("total_distance_km", sum(a.get("distance_km") or 0 for a in activities))
-  total_duration = summary.get("total_duration_min", sum(a.get("duration_min") or 0 for a in activities))
-  total_load = summary.get("total_training_load", sum(a.get("training_load") or 0 for a in activities))
-  count = summary.get("total_activities", len(activities))
-  avg_load = total_load / count if count else None
-  total_dur = total_duration or 0
-  palette = ["#4fae72", "#d9a441", "#e2734a", "#4aa7d8", "#a07fe0", "#9397ab"]
-  split_items = []
-  for i, (label, duration) in enumerate(sorted(split, key=lambda item: -item[1])):
-    pct = duration / total_dur * 100 if total_dur else 0
-    color = palette[i % len(palette)]
-    split_items.append((label, pct, color))
-  split_bars = "".join(
-    f'<div title="{html.escape(label)}" style="width:{pct:.1f}%;background:{color}"></div>'
-    for label, pct, color in split_items
-  )
-  split_legend = "".join(
-    f'<span style="display:flex;align-items:center;gap:5px"><span style="width:7px;height:7px;border-radius:2px;background:{color}"></span>{html.escape(label)}</span>'
-    for label, pct, color in split_items
-  )
-  return f"""
-  <div class="card" style="padding:16px;gap:14px">
-    <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px">
-    <div><div class="kicker">Distance</div><div style="font-family:var(--font-heading);font-size:24px">{_trim(total_distance)}<span style="font-size:12px;color:var(--color-neutral-500)"> km</span></div></div>
-    <div><div class="kicker">Time</div><div style="font-family:var(--font-heading);font-size:24px">{_fmt_dur(total_duration)}</div></div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px">
-    <div><div class="kicker">Load</div><div style="font-family:var(--font-heading);font-size:24px">{_num(round(total_load))}</div></div>
-    <div><div class="kicker">Sessions</div><div style="font-family:var(--font-heading);font-size:24px">{_num(count)}</div></div>
-    <div><div class="kicker">Avg load/session</div><div style="font-family:var(--font-heading);font-size:20px">{_num(round(avg_load, 1) if avg_load is not None else None)}</div></div>
-    </div>
-    <div style="display:flex;height:10px;gap:2px;border-radius:999px;overflow:hidden">{split_bars}</div>
-    <div style="display:flex;flex-wrap:wrap;gap:10px 14px;font-size:10px;color:var(--color-neutral-500)">{split_legend}</div>
-  </div>"""
+from tools.dashboard_activity import FILTER_KEYS as _ACTIVITY_FILTERS  # noqa: E402 — the Activity tab's filters
 
 
 def _activity_week_url(token: str | None, offset: int) -> str:
-  """/dashboard link that opens the Activity tab on the given week offset
-  (0 = current week, 1 = last week, …), carrying the bearer token along."""
-  params = {"tab": "activity", "week": str(max(0, offset))}
-  if token:
-    params["token"] = token
-  return f"/dashboard?{urlencode(params)}"
-
-
-# A drawn chevron rather than a "‹"/"›" text glyph — those two characters
-# sit high in most fonts' em-box (they're metrically designed as quote
-# marks, not arrows), so flex-centering the *character* still left them
-# visibly off-center inside the circle. An SVG path has no such baseline
-# quirk: with `display:block` it centers exactly inside its flex parent.
-_CHEVRON_LEFT = ('<svg width="8" height="13" viewBox="0 0 8 13" fill="none" style="display:block">'
-                 '<path d="M7 1L1.5 6.5L7 12" stroke="currentColor" stroke-width="2" '
-                 'stroke-linecap="round" stroke-linejoin="round"/></svg>')
-_CHEVRON_RIGHT = ('<svg width="8" height="13" viewBox="0 0 8 13" fill="none" style="display:block">'
-                  '<path d="M1 1L6.5 6.5L1 12" stroke="currentColor" stroke-width="2" '
-                  'stroke-linecap="round" stroke-linejoin="round"/></svg>')
-
-
-def _activity_nav_button(direction: str, token: str | None, offset: int, disabled: bool, size: int = 28) -> str:
-  """One prev/next week-navigation control. Rendered as an inert <span> when
-  disabled (used for the right/next arrow on the current week — issue 85:
-  can't navigate into future weeks that have no data) or a link otherwise."""
-  arrow = _CHEVRON_LEFT if direction == "prev" else _CHEVRON_RIGHT
-  label = "Previous week" if direction == "prev" else "Next week"
-  base_style = (
-    f"display:inline-flex;align-items:center;justify-content:center;width:{size}px;height:{size}px;"
-    "border-radius:999px;border:1px solid var(--color-divider);flex:0 0 auto"
-  )
-  if disabled:
-    return f'<span aria-hidden="true" style="{base_style};color:var(--color-neutral-700)">{arrow}</span>'
-  url = _e(_activity_week_url(token, offset))
-  return (
-    f'<a href="{url}" data-week="{offset}" aria-label="{label}" style="{base_style};color:var(--color-text);text-decoration:none">'
-    f'{arrow}</a>'
-  )
-
-
-def _activity_current_week_link(token: str | None, offset: int) -> str:
-  """"This week" quick-jump back to week_offset=0 — only shown once you've
-  actually navigated away from the current week (issue 85 follow-up)."""
-  if offset <= 0:
-    return ""
-  url = _e(_activity_week_url(token, 0))
-  return (
-    f'<a href="{url}" data-week="0" style="font-size:11px;color:var(--color-accent);text-decoration:none;'
-    'white-space:nowrap;padding:6px 2px">This week</a>'
-  )
+    from tools.dashboard_activity import week_url
+    return week_url(token, offset)
 
 
 def _panel_activity(data: dict, token: str | None = None) -> str:
+    """The Activity tab (tools/dashboard_activity.py) for the week being viewed."""
+    from tools.dashboard_activity import render_panel
     week = data.get("activity_week")
-    if week is None:
+    if week is None and not data.get("activity_week_offset"):
         week = data.get("week")
-    offset = data.get("activity_week_offset") or 0
-    activities = data.get("activities")
-    if not week and not activities:
-        err = data.get("activity_week_err") or data.get("week_err") or data.get("activities_err") or "no data"
-        return (f'<section class="panel tabpanel tp-activity" data-week="{offset}">'
-                f'<div class="err">Activity data unavailable — {_e(err)}</div></section>')
-
-    week = week or {}
-
-    week_start = str(week.get("week_start") or "")[:10]
-    week_end = str(week.get("week_end") or "")[:10]
-    date_range_label = _format_week_range(week_start, week_end)
-    filter_labels = "".join(
-      f'<label for="activity-filter-{key}">{key.title()}</label>'
-      for key in _ACTIVITY_FILTERS
-    )
-    # The requested week's own activities, straight from get_weekly_summary
-    # (already scoped to week_start..week_end server-side) rather than the
-    # separately-fetched "recent 20 activities" list, which only covers the
-    # current/most-recent week — using it here left older weeks' cards empty
-    # while their summary totals (computed from this same source) were correct.
-    summary_source = week.get("activities") or []
-    current_week_link = _activity_current_week_link(token, offset)
-    prev_btn = _activity_nav_button("prev", token, offset + 1, False)
-    next_btn = _activity_nav_button("next", token, offset - 1, offset <= 0)
-    sections = []
-    for key in _ACTIVITY_FILTERS:
-      selected_summary = summary_source if key == "all" else [a for a in summary_source if _activity_filter_matches(a, key)]
-      split = []
-      if key == "all":
-        split = [
-          (f"{_sport_label(activity_type)} {_fmt_dur(values.get('duration_min'))}", values.get("duration_min") or 0)
-          for activity_type, values in (week.get("by_type") or {}).items()
-        ]
-      else:
-        for activity in selected_summary:
-          label = _sport_label(activity.get("type"))
-          existing = next((index for index, item in enumerate(split) if item[0] == label), None)
-          duration = activity.get("duration_min") or 0
-          if existing is None:
-            split.append((label, duration))
-          else:
-            split[existing] = (label, split[existing][1] + duration)
-      max_load = max((a.get("training_load") or 0) for a in selected_summary) or 1 if selected_summary else 1
-      cards = "".join(_activity_row_expandable(a, max_load) for a in selected_summary)
-      empty = '<div class="muted" style="font-size:13px">No activities for this filter this week.</div>'
-      view_more = '<button type="button" class="btn btn-secondary" style="align-self:center" disabled>View More</button>' if selected_summary else ""
-      bottom_nav = (
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:4px">'
-        f'{prev_btn}<div style="flex:1;display:flex;justify-content:center">{view_more}</div>{next_btn}</div>'
-      )
-      sections.append(
-        f'<div class="activity-filter-section activity-filter-{key}" style="flex-direction:column;gap:8px">'
-        f'{_activity_summary_card(selected_summary, split, week if key == "all" else None)}{cards or empty}{bottom_nav}</div>'
-      )
-
-    return f"""
-    <section class="panel tabpanel tp-activity" data-week="{offset}" style="flex-direction:column;gap:16px">
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px">
-        <div>
-          <div style="font-family:var(--font-heading);font-size:20px">Activity</div>
-          <div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">{_e(date_range_label)}</div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px">{current_week_link}{prev_btn}{next_btn}</div>
-      </div>
-      <div class="activity-filterbar pillbar">{filter_labels}</div>
-      {"".join(sections)}
-    </section>"""
-
-
-def _activity_row_expandable(a: dict, max_load: float) -> str:
-    icon, tint = _sport_style(a.get("type"))
-    big, sub = _activity_big_stat(a)
-    load = a.get("training_load") or 0
-    load_w = max(2, round(load / max_load * 100))
-    activity_id = a.get("id")
-    click_attrs = (
-        f' onclick="openActivityModal({activity_id})" role="button" tabindex="0"'
-        f' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){{event.preventDefault();openActivityModal({activity_id})}}"'
-        if activity_id is not None else ""
-    )
-    click_class = " actcard-click" if activity_id is not None else ""
-    return f"""
-    <div class="actcard{click_class}"{click_attrs}>
-      <div style="display:flex;align-items:center;gap:12px">
-        <div style="width:34px;height:34px;flex:0 0 auto;border-radius:9px;display:grid;place-items:center;
-            background:color-mix(in srgb, {tint} 18%, transparent);color:{tint};font-size:18px"><i class="ph">{icon}</i></div>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(a.get("name"))}</div>
-          <div style="font-size:11px;color:var(--color-neutral-500)">{_e(_short_date(a.get("date")))}</div>
-        </div>
-        <div style="text-align:right;flex:0 0 auto">
-          <div style="font-family:var(--font-heading);font-size:15px">{big}</div>
-          <div style="font-size:10px;color:var(--color-neutral-500)">{sub}</div>
-        </div>
-      </div>
-      <div style="margin-top:10px;height:3px;border-radius:999px;background:var(--color-neutral-800);overflow:hidden">
-        <div style="height:100%;width:{load_w}%;background:{tint};border-radius:999px"></div>
-      </div>
-    </div>"""
+    err = data.get("activity_week_err") or data.get("week_err") or data.get("activities_err")
+    today = _local_now().date()
+    try:
+        today = date.fromisoformat(str(data.get("date"))[:10])
+    except (TypeError, ValueError):
+        pass
+    return render_panel(week, data.get("activity_prev_week"), data.get("activity_extras"),
+                        data.get("activity_week_offset") or 0, today, token, err)
 
 
 # ── PANEL: FITNESS ───────────────────────────────────────────────────────────
@@ -3355,6 +3166,8 @@ _APP_JS = """
     });
   }
 
+  window.__goToWeek = goToWeek;
+
   if (panel()) {
     weekCache[currentWeek()] = Promise.resolve(panel().outerHTML);
     setTimeout(function () { prefetch(currentWeek() + 1); }, 1500);
@@ -3591,6 +3404,11 @@ def _ftp_dialog(plan: dict | None, token: str | None) -> str:
   </div>"""
 
 
+def _activity_css() -> str:
+    from tools.dashboard_activity import ACTIVITY_CSS
+    return ACTIVITY_CSS
+
+
 def _dashboard_head(token: str | None) -> str:
     """Everything up to and including ``<body>`` — no data needed, so the
     streamed response (``stream_dashboard``) can send it, styles and all,
@@ -3606,7 +3424,7 @@ def _dashboard_head(token: str | None) -> str:
         f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
         f"{ICON_LINKS}"
         "<title>Garmin Health Dashboard</title>"
-        f"<style>{_STYLE}</style>"
+        f"<style>{_STYLE}{_activity_css()}</style>"
         f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
     )
 
@@ -3745,6 +3563,7 @@ def render_dashboard_body(data: dict, token: str | None = None,
         f"<script>{_GEAR_MODAL_JS}</script>"
         f"<script>{_ACTIVITY_MODAL_JS}</script>"
         f"<script>{_APP_JS}</script>"
+        f"<script>{_activity_js()}</script>"
         f"<script>{_TODAY_JS}</script>"
         f'<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("{_e(_pwa_asset_url("/sw.js", token))}");</script>'
         f"{DASHBOARD_COMPLETE_MARKER}"
@@ -3796,6 +3615,25 @@ async def stream_dashboard(week_offset: int = 0, token: str | None = None,
         yield ("<style>#dash-boot{display:none}</style>"
                f'<div class="err" style="padding:calc(24px + env(safe-area-inset-top, 0px)) 16px">'
                f"Dashboard error: {_e(e)}</div></body></html>")
+
+
+def _activity_js() -> str:
+    from tools.dashboard_activity import ACTIVITY_JS
+    return ACTIVITY_JS
+
+
+def render_activity_calendar(month: str | None, filter_key: str | None, viewed_offset: int = 0) -> str:
+    """The Activity tab's calendar modal for one month (``YYYY-MM``; default:
+    this month) — what /dashboard/activity-calendar returns."""
+    from tools import dashboard_activity
+    today = _local_now().date()
+    try:
+        year, mon = (int(x) for x in str(month).split("-")[:2])
+        date(year, mon, 1)
+    except (TypeError, ValueError):
+        year, mon = today.year, today.month
+    cal = dashboard_activity.calendar_data(year, mon, today)
+    return dashboard_activity.render_calendar(year, mon, today, cal, filter_key or "all", viewed_offset)
 
 
 def render_activity_panel(data: dict, token: str | None = None) -> str:

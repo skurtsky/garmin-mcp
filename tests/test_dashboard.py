@@ -819,7 +819,7 @@ def test_render_omits_ftp_toggle_without_weight():
 
 def test_render_shows_activity_list_opening_the_detail_modal():
     html = dashboard.render_dashboard_html(SAMPLE)
-    assert 'class="actcard actcard-click"' in html
+    assert 'class="act-row actcard-click"' in html
     assert "Pool Swim" in html
     assert "openActivityModal(2)" in html
     assert 'id="activity-modal"' in html
@@ -829,41 +829,35 @@ def test_render_shows_activity_list_opening_the_detail_modal():
 def test_render_activity_filters_include_all_requested_options():
     html = dashboard.render_dashboard_html(SAMPLE)
 
-    for key in ("all", "triathlon", "bike", "run", "strength", "other"):
+    # Every filter has its radio and section; pills show only for sports
+    # with sessions this week (the sample has a run and a swim).
+    for key in ("all", "triathlon", "bike", "swim", "run", "other"):
         assert f'id="activity-filter-{key}"' in html
+        assert f'activity-filter-section activity-filter-{key}' in html
+        assert f"#activity-filter-{key}:checked" in html
+    for key in ("all", "triathlon", "run", "swim"):
         assert f'for="activity-filter-{key}"' in html
-    assert html.index('for="activity-filter-strength"') < html.index('for="activity-filter-other"')
-    assert "410" in html
+    assert 'for="activity-filter-bike"' not in html
+    assert "activity-filter-strength" not in html   # no Strength / Climb pill: they show under All
+    # Totals are summed from the (filtered) sessions shown: 120 + 60.
+    assert '<div style="font-size:24px">180</div>' in html
 
 
-def test_strength_filter_section_is_rendered_and_selectable():
-    html = dashboard.render_dashboard_html(SAMPLE)
-
-    assert "activity-filter-strength" in html
-    assert "#activity-filter-strength:checked" in html
-
-
-def test_activity_filter_classifies_sports():
-    assert dashboard._activity_filter_key({"type": "multi_sport"}) == "triathlon"
-    assert dashboard._activity_filter_key({"type": "road_biking"}) == "bike"
-    assert dashboard._activity_filter_key({"type": "running"}) == "run"
-    assert dashboard._activity_filter_key({"type": "lap_swimming"}) == "other"
-    assert dashboard._activity_filter_key({"type": "strength_training"}) == "strength"
-
-
-def test_activity_filter_classifies_all_run_types_as_run():
-    for activity_type in ("running", "trail_running", "treadmill_running",
-                          "track_running", "indoor_running"):
-        assert dashboard._activity_filter_key({"type": activity_type}) == "run"
-        assert dashboard._activity_filter_matches({"type": activity_type}, "run")
-        assert dashboard._activity_filter_matches({"type": activity_type}, "triathlon")
-
-
-def test_triathlon_filter_includes_all_endurance_sports_but_not_strength():
-    for activity_type in ("multi_sport", "triathlon", "duathlon", "cycling",
-                          "road_biking", "running", "lap_swimming"):
-        assert dashboard._activity_filter_matches({"type": activity_type}, "triathlon")
-    assert not dashboard._activity_filter_matches({"type": "strength_training"}, "triathlon")
+def test_activity_sport_groups_and_filters():
+    from tools.dashboard_activity import matches, sport_group
+    assert sport_group("multi_sport") == "multi"
+    assert sport_group("road_biking") == sport_group("indoor_cycling") == sport_group("virtual_ride") == "bike"
+    assert sport_group("lap_swimming") == sport_group("open_water_swimming") == "swim"
+    for t in ("running", "trail_running", "treadmill_running", "track_running", "indoor_running"):
+        assert sport_group(t) == "run"
+    assert sport_group("bouldering") == "climb"
+    assert sport_group("strength_training") == "strength"
+    assert sport_group("volleyball") == "other"
+    for g in ("swim", "bike", "run", "multi"):
+        assert matches(g, "triathlon")
+    for g in ("strength", "climb", "other"):
+        assert not matches(g, "triathlon") and matches(g, "all")
+    assert not matches("climb", "other")
 
 
 def test_render_activity_list_is_limited_to_current_week():
@@ -876,7 +870,6 @@ def test_render_activity_list_is_limited_to_current_week():
 
     assert "Pool Swim" in html
     assert "Older Run" not in html
-    assert "View More" in html
 
 
 def test_format_week_range_formats_same_and_cross_month():
@@ -889,11 +882,11 @@ def test_format_week_range_formats_same_and_cross_month():
 def test_render_shows_activity_week_date_range_and_nav_arrows():
     html = dashboard.render_dashboard_html(SAMPLE)
 
-    assert "Jul 13–17, 2026" in html
+    assert "Jul 13–19, 2026" in html     # the whole Monday–Sunday week
     # Current week (no activity_week_offset set -> defaults to 0): the next
     # (right) arrow is disabled — no navigating into a future, dataless week.
     assert 'href="/dashboard?tab=activity&amp;week=1"' in html
-    assert '<span aria-hidden="true"' in html
+    assert '<span class="act-circle act-disabled" aria-hidden="true">' in html
     assert "week=-1" not in html
 
 
@@ -908,11 +901,12 @@ def test_render_activity_week_nav_enables_next_arrow_when_browsing_a_past_week()
 
 def test_render_shows_this_week_quick_jump_only_when_browsing_a_past_week():
     on_current_week = dashboard.render_dashboard_html(SAMPLE)
-    assert ">This week<" not in on_current_week
+    assert '<span class="act-tag">This week</span>' in on_current_week   # a tag, not a link
+    assert "week=0" not in on_current_week
 
     past_week_data = {**SAMPLE, "activity_week": SAMPLE["week"], "activity_week_offset": 5}
     on_past_week = dashboard.render_dashboard_html(past_week_data, token="secret")
-    assert ">This week<" in on_past_week
+    assert "This week</a>" in on_past_week and "Jul 13–19, 2026 · 5 weeks ago" in on_past_week
     assert 'href="/dashboard?tab=activity&amp;week=0&amp;token=secret"' in on_past_week
 
 
@@ -1070,9 +1064,9 @@ def test_build_dashboard_data_from_db_never_calls_garmin_live_for_weeks_or_sync(
 
     data = dashboard.build_dashboard_data(week_offset=3)
 
-    # One DB query for the current week, one for the requested week — never
-    # a live Garmin call for either.
-    assert len(week_calls) == 2
+    # One DB query each for the current week, the requested week and the
+    # week before it (the Activity tab's changes) — never a live Garmin call.
+    assert len(week_calls) == 3
     assert data["week"]["total_activities"] == 1
     assert data["activity_week"]["total_activities"] == 1
     assert data["activity_week_offset"] == 3
@@ -1084,7 +1078,7 @@ def test_build_dashboard_data_from_db_never_calls_garmin_live_for_weeks_or_sync(
     # for it (the current-week query still runs — it's never cached, since
     # it's still accumulating today's activities).
     dashboard.build_dashboard_data(week_offset=3)
-    assert len(week_calls) == 3  # +1 for "week" only, none for "activity_week"
+    assert len(week_calls) == 4  # +1 for "week" only, none for the closed weeks
 
 
 def test_build_dashboard_data_from_db_derives_training_status_history_from_trend_rows(monkeypatch):
@@ -1127,8 +1121,8 @@ def test_render_compact_mobile_metric_layouts():
     html = dashboard.render_dashboard_html(SAMPLE)
 
     assert 'grid-template-columns:repeat(2,minmax(0,1fr))' in html
-    assert 'grid-template-columns:repeat(3,minmax(0,1fr))' in html
-    assert "Avg load/session" in html
+    assert "Avg load/session" not in html   # replaced by the daily load strip
+    assert "Daily load" in html
 
 
 def test_render_includes_longer_trend_ranges_when_data_is_available():
@@ -1409,14 +1403,19 @@ def test_get_activity_week_data_reads_the_db_and_caches_past_weeks(monkeypatch):
     monkeypatch.setattr(activities_mod, "get_weekly_summary_from_db", from_db)
     monkeypatch.setattr(activities_mod, "get_weekly_summary", boom)
 
+    monkeypatch.setattr(dashboard, "_activity_bundle", lambda offset, week, today: (
+        {"activity_prev_week": dashboard._past_week_from_db(offset + 1)[0], "activity_extras": {}}))
+
     data = dashboard.get_activity_week_data(3)
-    assert data == {"activity_week": from_db(), "activity_week_err": None, "activity_week_offset": 3}
+    assert data["activity_week"] == from_db() and data["activity_week_err"] is None
+    assert data["activity_week_offset"] == 3 and data["activity_prev_week"] == from_db()
+    assert calls[:2] == [3, 4]               # the week, and the one before it
     calls.clear()
-    dashboard.get_activity_week_data(3)      # a closed week: served from cache
+    dashboard.get_activity_week_data(3)      # closed weeks: served from cache
     assert calls == []
     dashboard.get_activity_week_data(0)      # the current week: always fresh
     dashboard.get_activity_week_data(0)
-    assert calls == [0, 0]
+    assert calls == [0, 1, 0]
 
 
 def test_get_activity_week_data_falls_back_to_garmin_without_a_db(monkeypatch):
