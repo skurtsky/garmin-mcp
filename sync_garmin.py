@@ -196,8 +196,43 @@ def sync_athlete_profile():
     profile = get_athlete_profile()
     if profile:
         db.upsert_athlete_profile(profile)
+        # Garmin only reports current thresholds — keep a daily copy for the
+        # Fitness page's history.
+        from tools.history_snapshots import snapshot_garmin_thresholds
+        snapshot_garmin_thresholds(date.today(), profile)
     db.update_sync_state("athlete_profile", date.today().isoformat())
     logger.info("Athlete profile sync complete")
+
+
+def sync_history_snapshots():
+    """Today's plan thresholds and Garmin race predictions, kept daily so
+    their trends can be charted (Garmin thresholds are snapshotted with the
+    athlete profile)."""
+    from garmin_client import get_client
+    from tools import history_snapshots
+    import db
+
+    today = date.today()
+    logger.info("Syncing threshold and race-prediction snapshots")
+    history_snapshots.snapshot_plan_thresholds(today)
+    db.update_sync_state("threshold_snapshots", today.isoformat())
+    predictions = history_snapshots.snapshot_race_predictions(today, get_client())
+    db.update_sync_state("race_predictions", today.isoformat())
+    logger.info(f"Snapshots stored ({len(predictions)} race prediction(s))")
+
+
+def backfill_history(days: int):
+    """One-off: the past year of thresholds and race predictions."""
+    from garmin_client import get_client
+    from tools import history_snapshots
+
+    logger.info(f"Backfilling {days} day(s) of threshold and race-prediction history")
+    results = history_snapshots.backfill_history(get_client(), days=days)
+    for part, result in results.items():
+        logger.info(f"  {part}: {result}")
+    failed = [p for p, r in results.items() if isinstance(r, str)]
+    if failed:
+        raise RuntimeError(f"Backfill failed for: {', '.join(failed)}")
 
 
 def sync_gear():
@@ -284,6 +319,15 @@ def parse_args(argv: list[str] | None = None):
              "rows don't have yet, e.g. "
              "--details-only --detail-limit 999 --overwrite",
     )
+    parser.add_argument(
+        "--backfill-history", action="store_true",
+        help="one-off: fill threshold (FTP, LTHR, threshold pace, VO2max, plan) "
+             "and race-prediction history from Garmin and the database, then exit",
+    )
+    parser.add_argument(
+        "--history-days", type=int, default=365,
+        help="how many days --backfill-history reaches back (Garmin allows up to 365)",
+    )
     return parser.parse_args(argv)
 
 
@@ -301,7 +345,9 @@ def main(argv: list[str] | None = None):
     )
 
     errors = []
-    if args.details_only:
+    if args.backfill_history:
+        sync_plan = [lambda: backfill_history(args.history_days)]
+    elif args.details_only:
         sync_plan = [lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite)]
     elif args.activities_only:
         sync_plan = [sync_activities_step]
@@ -319,6 +365,7 @@ def main(argv: list[str] | None = None):
                 lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite),
                 sync_personal_records,
                 sync_athlete_profile,
+                sync_history_snapshots,
                 sync_gear,
                 sync_active_goals,
             ])

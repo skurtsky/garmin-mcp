@@ -413,6 +413,29 @@ The sync job itself always calls Garmin directly.
 | `MCP_DB_FIRST` | `1` | Set `0` to make every tool call Garmin live |
 | `MCP_DB_MAX_AGE_SECONDS` | `900` | How recently today's (still-changing) row must have been synced to be used |
 
+## Dashboard History
+
+Garmin only reports the *current* thresholds, race predictions and personal
+records, so each `sync_garmin.py` run also stores a daily copy (tables
+`threshold_snapshots`, `race_prediction_snapshots`, and
+`personal_record_history` for each record change with the value it beat).
+The activity-detail sync indexes the best efforts inside every activity
+(fastest 1K … marathon and 40K, best 20-minute power, fastest 100 m / 400 m
+swim) in `activity_best_efforts`, for the Fitness page's close calls.
+
+After deploying, run these once to fill the past:
+
+```bash
+# A year of FTP, run LTHR / threshold pace, VO2max, plan thresholds and race predictions
+python sync_garmin.py --backfill-history
+# Re-sync activities so older rows gain the new fields (key metrics, training
+# benefit, start/end points for commute detection) — reach back ~6 months for
+# the fitness/fatigue history
+python sync_garmin.py --activities-only --activities-since 2026-03-01
+# Re-fetch activity details so older activities get their best efforts
+python sync_garmin.py --details-only --detail-limit 999 --overwrite
+```
+
 ## Testing
 
 ### Run the test suite

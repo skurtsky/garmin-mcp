@@ -4,6 +4,7 @@ import logging
 from collections import Counter
 from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
+from tools.best_efforts import activity_efforts
 from datetime import date, timedelta
 
 logger = logging.getLogger(__name__)
@@ -746,6 +747,12 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         hr_zones = []
 
     hr_series, power_series, pauses = _extract_series_and_pauses(details_raw)
+    sport = (activity_raw.get('activityTypeDTO') or {}).get('typeKey')
+    try:
+        best_efforts = activity_efforts(sport, details_raw, laps_raw, power_series)
+    except Exception:
+        logger.warning(f"Best efforts unavailable for activity {activity_id}", exc_info=True)
+        best_efforts = []
 
     detail = {
         'duration_elapsed_sec':  summary.get('duration'),
@@ -771,6 +778,10 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         # length" on the activity-detail page means.
         'avg_swolf':               summary.get('averageSWOLF'),
         'avg_strokes_per_length':  round(summary.get('averageStrokes') or 0, 1) or None,
+        # Fastest 5K / 20-min power / 100 m … inside this activity, keyed by
+        # personal-record type — db.upsert_activity_detail indexes them for
+        # the Fitness page's close calls.
+        'best_efforts':            best_efforts,
     }
 
     if _is_multisport(activity_raw):
@@ -869,7 +880,48 @@ def _activity_summary_from_list(a: dict) -> dict:
     # test is scored from (the dashboard's "Update FTP from test").
     if a.get('max20MinPower'):
         out['max_20min_power'] = round(a['max20MinPower'])
+    # What the Activity tab shows per row and groups by: the key metric per
+    # sport (power, pace, HR), Garmin's primary training benefit, and the
+    # start/end points commute detection compares. Absent fields stay out
+    # rather than being stored as None/0.
+    extra = {
+        'avg_speed_kph':         round(a['averageSpeed'] * 3.6, 2) if a.get('averageSpeed') else None,
+        'avg_power':             _round_or_none(a.get('avgPower')),
+        'normalized_power':      _round_or_none(a.get('normPower')),
+        'max_hr':                a.get('maxHR'),
+        'elevation_gain_m':      _round_or_none(a.get('elevationGain')),
+        'moving_duration_min':   round(a['movingDuration'] / 60, 1) if a.get('movingDuration') else None,
+        'pool_length_m':         _pool_length_m(a),
+        'active_lengths':        a.get('activeLengths'),
+        'training_effect_label': a.get('trainingEffectLabel'),
+        'aerobic_te':            _round_or_none(a.get('aerobicTrainingEffect'), 1),
+        'anaerobic_te':          _round_or_none(a.get('anaerobicTrainingEffect'), 1),
+        'event_type':            (a.get('eventType') or {}).get('typeKey'),
+        'start_lat':             a.get('startLatitude'),
+        'start_lon':             a.get('startLongitude'),
+        'end_lat':               a.get('endLatitude'),
+        'end_lon':               a.get('endLongitude'),
+    }
+    out.update({k: v for k, v in extra.items() if v is not None})
     return out
+
+
+def _round_or_none(value, digits: int = 0):
+    if value is None:
+        return None
+    return round(value) if digits == 0 else round(value, digits)
+
+
+def _pool_length_m(a: dict) -> float | None:
+    """Pool length in metres. The activities list reports it in the unit's
+    base (centimetres, with unitOfPoolLength.factor 100) — divide it out."""
+    length = a.get('poolLength')
+    if not length:
+        return None
+    factor = (a.get('unitOfPoolLength') or {}).get('factor') or (100 if length > 100 else 1)
+    return round(length / factor, 2)
+
+
 def get_activities(
     limit: int = 10,
     sport_type: str | None = None,
