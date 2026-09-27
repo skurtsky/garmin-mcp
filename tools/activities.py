@@ -1,6 +1,8 @@
 # tools/activities.py
 import calendar
 import logging
+import re
+import time
 from collections import Counter
 from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
@@ -703,6 +705,37 @@ def _extract_series_and_pauses(
     return hr_series, power_series, pauses
 
 
+_TRANSIENT_RETRY_DELAY_SEC = 10
+_STATUS_RE = re.compile(r"(?:API Error |error \()(\d{3})")
+
+
+def _is_transient(exc: Exception) -> bool:
+    """A Garmin server-side failure worth retrying (5xx, timeouts, dropped
+    connections) — as opposed to a 4xx, which means there is no such data."""
+    status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if status is None:
+        m = _STATUS_RE.search(str(exc))
+        status = int(m.group(1)) if m else None
+    return status is None or status >= 500
+
+
+def _fetch_detail_part(fetch, activity_id: int):
+    """One required part of an activity's detail: retried once after a pause
+    on a transient Garmin failure, re-raised if it fails again; None when
+    Garmin says the activity has no such data (4xx)."""
+    for attempt in (1, 2):
+        try:
+            return fetch(activity_id)
+        except Exception as e:
+            if not _is_transient(e):
+                return None
+            if attempt == 2:
+                raise
+            logger.warning(f"{fetch.__name__}({activity_id}) failed, retrying in "
+                           f"{_TRANSIENT_RETRY_DELAY_SEC}s: {str(e)[:120]}")
+            time.sleep(_TRANSIENT_RETRY_DELAY_SEC)
+
+
 def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
     """Build the (detail, route) JSONB payloads stored in activity_details for
     the activity-detail page. Everything already covered by columns on
@@ -721,18 +754,16 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
     activity_raw = client.get_activity(activity_id)
     summary = activity_raw.get('summaryDTO') or {}
 
-    try:
-        laps_raw = client.get_activity_splits(activity_id)
-    except Exception:
-        laps_raw = None
+    # Laps and the per-sample details carry most of the page (charts, route,
+    # best efforts). A Garmin outage on either aborts this activity rather
+    # than storing a row without them — that would overwrite a good row on
+    # an --overwrite run, and the next run retries a missing one anyway.
+    laps_raw = _fetch_detail_part(client.get_activity_splits, activity_id)
     try:
         weather_raw = client.get_activity_weather(activity_id)
     except Exception:
         weather_raw = None
-    try:
-        details_raw = client.get_activity_details(activity_id)
-    except Exception:
-        details_raw = None
+    details_raw = _fetch_detail_part(client.get_activity_details, activity_id)
     # Isolated from the fetch through the extraction: Garmin's hrTimeInZones
     # response has been observed to vary by activity (see _extract_hr_zones'
     # docstring) — either half of this failing degrades to "no HR zones"
