@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 import db
 from tools import plan_doc
+from tools.best_efforts import best_rolling_power
 from tools.plan_service import activity_day
 
 logger = logging.getLogger(__name__)
@@ -52,29 +53,6 @@ def _phase_for_week(plan: dict, week: dict | None) -> str | None:
         if isinstance(n, int) and p.get("startWeek", 0) <= n <= p.get("endWeek", 0):
             return p.get("name")
     return week.get("phase")
-
-
-def best_rolling_power(series: list[dict], window_sec: int = 1200) -> int | None:
-    """Best average power over any ``window_sec`` stretch of an activity's
-    power samples (``{t_offset_sec, value}``, as stored in activity_details).
-    Each sample holds until the next one, with gaps over 5s (pauses) not
-    counted. None when the ride is shorter than the window."""
-    pts = [(p["t_offset_sec"], p["value"] or 0) for p in series or [] if p.get("t_offset_sec") is not None]
-    if len(pts) < 2 or pts[-1][0] - pts[0][0] < window_sec:
-        return None
-    # (duration, energy) per sample, then a sliding window over time.
-    spans = [(min(pts[i + 1][0] - pts[i][0], 5.0), pts[i][1]) for i in range(len(pts) - 1)]
-    best, lo, dur, energy = None, 0, 0.0, 0.0
-    for dt, watts in spans:
-        dur += dt
-        energy += dt * watts
-        while dur - spans[lo][0] >= window_sec:
-            dur -= spans[lo][0]
-            energy -= spans[lo][0] * spans[lo][1]
-            lo += 1
-        if dur >= window_sec:
-            best = max(best or 0, energy / dur)
-    return round(best) if best is not None else None
 
 
 def _best_20min(activity: dict) -> int | None:
