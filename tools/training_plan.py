@@ -29,6 +29,8 @@ JSON API used by the viewer:
     GET  /training-plan/api/goal-race    — {goal, distances} for Settings' Goal race
     POST /training-plan/api/goal-race    — {name, date, distance, target?, show_on_today} → same shape
     POST /training-plan/api/goal-race/clear → same shape (goal: null)
+    GET  /training-plan/api/timezone     — {timezone, effective, source, now} for Settings' Time zone
+    POST /training-plan/api/timezone     — {timezone: "America/Toronto" | null} → same shape
 """
 import html
 import json
@@ -41,7 +43,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 import db
-from tools import goal_race, plan_doc, plan_service
+from tools import goal_race, local_time, plan_doc, plan_service
 from tools.navbar import ICON_LINKS, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import render_plan_pdf
 from tools.plan_doc import PlanError
@@ -149,7 +151,8 @@ def render_viewer_html(row: dict, token: str | None = None) -> str:
     with open(TEMPLATE_PATH, encoding="utf-8") as f:
         page = f.read()
     page = page.replace("__PLAN_TITLE__", _e(plan_doc.plan_title(row["plan"])))
-    server = {**plan_service.view_payload(row), "goalRace": _goal_race_payload()}
+    server = {**plan_service.view_payload(row), "goalRace": _goal_race_payload(),
+              "timezone": _timezone_payload()}
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
     athlete = (row["plan"].get("meta") or {}).get("athlete")
@@ -559,6 +562,36 @@ async def api_clear_goal_race(request):
     return await api_get_goal_race(request)
 
 
+def _timezone_payload() -> dict | None:
+    """The Settings time-zone picker's data, or None when it can't be read."""
+    try:
+        return local_time.settings_payload()
+    except Exception:  # noqa: BLE001 — optional on this page, like the goal race
+        logger.exception("Time zone settings unavailable")
+        return None
+
+
+async def api_get_timezone(request):
+    payload = _timezone_payload()
+    if payload is None:
+        return JSONResponse({"error": "Time zone settings are unavailable."}, status_code=503)
+    return JSONResponse(payload, headers=_NO_STORE)
+
+
+async def api_save_timezone(request):
+    if not db.is_configured():
+        return JSONResponse({"error": "The time zone is stored in PostgreSQL — set DATABASE_URL, "
+                                      "or set LOCAL_TIMEZONE on the server."}, status_code=503)
+    try:
+        body = await _json_body(request)
+        if "timezone" not in body:
+            raise local_time.TimezoneError("Send {\"timezone\": \"Area/City\"} (or null to reset).")
+        local_time.save_zone(body["timezone"])
+    except (PlanError, local_time.TimezoneError) as e:
+        return _api_error(e)
+    return await api_get_timezone(request)
+
+
 ROUTES = [
     Route("/training-plan", serve_plan, methods=["GET"]),
     Route("/training-plan/plans", serve_plans, methods=["GET"]),
@@ -575,6 +608,8 @@ ROUTES = [
     Route("/training-plan/api/goal-race", api_get_goal_race, methods=["GET"]),
     Route("/training-plan/api/goal-race", api_save_goal_race, methods=["POST"]),
     Route("/training-plan/api/goal-race/clear", api_clear_goal_race, methods=["POST"]),
+    Route("/training-plan/api/timezone", api_get_timezone, methods=["GET"]),
+    Route("/training-plan/api/timezone", api_save_timezone, methods=["POST"]),
 ]
 
 PATH_PREFIX = "/training-plan"
