@@ -160,6 +160,30 @@ def schedule_day(day: date, workouts: list[dict], default_time: str, slots: list
     return all_day + out
 
 
+def _schedule() -> tuple[str, list[dict]]:
+    settings = db.get_calendar_settings() or {}
+    return settings.get("default_time") or DEFAULT_TIME, list(settings.get("slots") or [])
+
+
+def start_times(plan: dict) -> dict[str, str]:
+    """``{workout id: "HH:MM"}`` — each timed workout's start as the feed
+    places it, so the viewer can order a day's workouts the same way.
+    Workouts without a duration (all-day in the feed) are left out."""
+    plan_service._require_db()
+    default_time, slots = _schedule()
+    out = {}
+    for week in plan.get("weeks") or []:
+        for day in week.get("days") or []:
+            try:
+                day_date = plan_doc.parse_date(day.get("date"))
+            except PlanError:
+                continue
+            for w, start, _ in schedule_day(day_date, day.get("workouts") or [], default_time, slots):
+                if start is not None and w.get("id"):
+                    out[w["id"]] = f"{start:%H:%M}"
+    return out
+
+
 # ── ICS ───────────────────────────────────────────────────────────────────────
 
 def _escape(text) -> str:
@@ -286,8 +310,7 @@ def build_ics(row: dict | None, completed: set[str], default_time: str, slots: l
 def feed() -> str:
     """The feed for whichever plan is active right now."""
     plan_service._require_db()
-    settings = db.get_calendar_settings() or {}
+    default_time, slots = _schedule()
     row = db.get_training_plan(None)
     completed = set(plan_service.completed_map(row["id"])) if row else set()
-    return build_ics(row, completed, settings.get("default_time") or DEFAULT_TIME,
-                     list(settings.get("slots") or []))
+    return build_ics(row, completed, default_time, slots)

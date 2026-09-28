@@ -161,6 +161,17 @@ def week_extras(week_start: str, week_end: str, activities: list[dict], today: d
     except Exception:  # noqa: BLE001
         logger.exception("Planned sessions unavailable for the Activity tab")
     try:
+        # Start times as the calendar feed places them (own time, weekly
+        # schedule, default): Coming up lists a day earliest first.
+        if out["planned"]:
+            from tools import plan_calendar
+            row = db.get_training_plan(None)
+            times = plan_calendar.start_times(row["plan"]) if row else {}
+            for s in out["planned"]:
+                s["start_time"] = times.get(s["workout_id"])
+    except Exception:  # noqa: BLE001
+        logger.exception("Start times unavailable for the Activity tab")
+    try:
         from tools import commutes
         rows = [{"garmin_id": a.get("id"), "activity_type": a.get("type"), "distance_km": a.get("distance_km"),
                  "summary": a} for a in activities if a.get("id") is not None]
@@ -234,7 +245,8 @@ def _items(week: dict, extras: dict, today: date) -> list[dict]:
             continue
         d = date.fromisoformat(s["date"])
         items.append({
-            "kind": s["status"], "id": None, "date": s["date"], "dow": d.weekday(), "title": s["name"] or "Session",
+            "kind": s["status"], "id": None, "workout_id": s.get("workout_id"), "start": s.get("start_time"),
+            "date": s["date"], "dow": d.weekday(), "title": s["name"] or "Session",
             "group": plan_sport_group(s["sport"]), "km": 0, "min": s.get("duration_min") or 0,
             "load": s.get("est_load") or 0, "benefit": s.get("benefit"),
             "metric": s.get("primary_zone") or ("Test" if s.get("is_test") else "Planned"),
@@ -390,19 +402,32 @@ def _day_label(iso: str) -> str:
     return f"{DOW[d.weekday()]} {d.day}"
 
 
+def _open_workout_attrs(i) -> str:
+    """Tapping the row opens the plan workout's dialog (``openPlanWorkout`` in
+    tools/dashboard.py, from the templates ``render_panel`` carries)."""
+    if not i.get("workout_id"):
+        return ""
+    return (f' data-plan-workout="{_e(i["workout_id"])}" role="button" tabindex="0"'
+            f' aria-label="{_e(i["title"])} details"')
+
+
 def _upcoming(items) -> str:
+    """Sessions still to come this week — collapsed by default."""
     rows = [i for i in items if i["kind"] == "planned"]
     if not rows:
         return ""
     body = "".join(f"""
-        <div class="act-row act-planned" data-day="{i['dow']}">
+        <div class="act-row act-planned{' act-open' if i.get('workout_id') else ''}" data-day="{i['dow']}"{_open_workout_attrs(i)}>
           {_icon_tile(i['group'], dashed=True)}
           <div style="flex:1;min-width:0"><div class="act-title">{_e(i['title'])}</div>
-            <div class="act-meta">{_day_label(i['date'])} · {_e(i['metric'])}</div></div>
+            <div class="act-meta">{" · ".join(_e(p) for p in (_day_label(i['date']), i.get('start'), i['metric']) if p)}</div></div>
           <div class="act-right"><div style="font-size:15px;color:var(--color-neutral-400)">{dur(i['min'])}</div>
             <div class="act-sub">{f"~{i['load']} load" if i['load'] else ""}</div></div>
-        </div>""" for i in sorted(rows, key=lambda i: i["date"]))
-    return f'<div class="act-upcoming" style="display:flex;flex-direction:column;gap:8px"><div class="section-title" style="margin:0">Coming up</div>{body}</div>'
+        </div>""" for i in sorted(rows, key=lambda i: (i["date"], i.get("start") or "~")))
+    return (f'<details class="act-upcoming"><summary class="act-upcoming-head">'
+            f'<span class="section-title" style="margin:0">Coming up · {len(rows)}</span>'
+            f'<span class="act-upcoming-caret">{_ph("caret-down", 14)}</span></summary>'
+            f'<div class="act-upcoming-body">{body}</div></details>')
 
 
 def _right(i) -> tuple[str, str]:
@@ -514,8 +539,11 @@ SKELETON = """
 
 
 def render_panel(week: dict | None, prev_week: dict | None, extras: dict | None, offset: int,
-                 today: date, token: str | None = None, err: str | None = None) -> str:
-    """The Activity tab's ``<section class="tp-activity">`` for one week."""
+                 today: date, token: str | None = None, err: str | None = None,
+                 workout_templates: str = "") -> str:
+    """The Activity tab's ``<section class="tp-activity">`` for one week.
+    ``workout_templates``: the dialogs Coming up's rows open, kept inside the
+    section so they travel with it when the week changes in place."""
     if not week:
         return (f'<section class="panel tabpanel tp-activity" data-week="{offset}">'
                 f'<div class="err">Activity data unavailable — {_e(err or "no data")}</div></section>')
@@ -570,6 +598,7 @@ def render_panel(week: dict | None, prev_week: dict | None, extras: dict | None,
         <div class="act-cal-backdrop" data-cal-close></div>
         <div class="act-cal-box"><div class="act-cal-body"><div class="sk" style="height:320px"></div></div></div>
       </div>
+      {workout_templates}
     </section>"""
 
 
@@ -725,6 +754,14 @@ ACTIVITY_CSS = """
   box-shadow:var(--shadow-sm); }
 .act-row.act-planned, .act-row.act-missed { background:transparent; box-shadow:none; border:1px dashed var(--color-neutral-800); padding:11px 12px; }
 .act-row.act-missed { opacity:.75; }
+.act-row.act-open { cursor:pointer; }
+.act-row.act-open:hover { border-color:var(--color-neutral-700); }
+.act-upcoming { display:flex; flex-direction:column; }
+.act-upcoming-head { display:flex; align-items:center; justify-content:space-between; cursor:pointer; list-style:none; padding:4px 0; }
+.act-upcoming-head::-webkit-details-marker { display:none; }
+.act-upcoming-caret { color:var(--color-neutral-500); display:inline-flex; transition:transform .15s ease; }
+.act-upcoming[open] .act-upcoming-caret { transform:rotate(180deg); }
+.act-upcoming-body { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
 .act-tile { width:34px; height:34px; flex:0 0 auto; border-radius:9px; display:grid; place-items:center; }
 .act-title { font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .act-meta { font-size:11px; color:var(--color-neutral-500); }
@@ -793,7 +830,11 @@ ACTIVITY_JS = """
       if (!g.hidden) shown++;
     });
     var upcoming = sec.querySelector('.act-upcoming');
-    if (upcoming) upcoming.hidden = !upcoming.querySelector('.act-planned:not([hidden])');
+    if (upcoming) {
+      upcoming.hidden = !upcoming.querySelector('.act-planned:not([hidden])');
+      // Picking a day shows its sessions, so open the (collapsed) list.
+      if (day !== null && !upcoming.hidden) upcoming.open = true;
+    }
     // A day with nothing on it says so, rather than leaving the list blank.
     var log = sec.querySelector('.act-log'), empty = sec.querySelector('.act-day-empty');
     if (log && !empty) {

@@ -2033,7 +2033,25 @@ def _panel_activity(data: dict, token: str | None = None) -> str:
     except (TypeError, ValueError):
         pass
     return render_panel(week, data.get("activity_prev_week"), data.get("activity_extras"),
-                        data.get("activity_week_offset") or 0, today, token, err)
+                        data.get("activity_week_offset") or 0, today, token, err,
+                        _coming_up_templates(data.get("activity_extras"), token))
+
+
+def _coming_up_templates(extras: dict | None, token: str | None) -> str:
+    """The workout dialogs for the Activity tab's Coming up rows — the same
+    read-only dialog as Today's plan cards, with Open in plan."""
+    out = []
+    for s in (extras or {}).get("planned") or []:
+        if s.get("status") != "planned" or not s.get("workout_id"):
+            continue
+        d = date.fromisoformat(s["date"])
+        w = {"id": s["workout_id"], "sport": s.get("sport") or "other", "name": s.get("name"),
+             "type": s.get("type"), "durationMinutes": s.get("duration_min"),
+             "distanceKm": None if s.get("distance_meters") else s.get("distance_km"),
+             "distanceMeters": s.get("distance_meters"), "primaryZone": s.get("primary_zone"),
+             "description": s.get("description"), "details": s.get("details"), "completed": False}
+        out.append(_plan_workout_template(w, f"{d:%a} {d.day} {d:%b}", token))
+    return "".join(out)
 
 
 # ── PANEL: FITNESS ───────────────────────────────────────────────────────────
