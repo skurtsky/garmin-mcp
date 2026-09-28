@@ -377,6 +377,7 @@ const state = {
   modalMenu: false,
   revisionsError: '',
   goal: SERVER.goalRace || null,   // {goal, distances} from the server, or null if unavailable
+  tz: SERVER.timezone || null,     // {timezone, effective, source, now} from the server, or null if unavailable
   goalDraft: null,                 // the editor's copy while editing; saved only on Save
   goalError: '',
   goalSaving: false
@@ -598,6 +599,7 @@ function settingsTab() {
   const z = PLAN.zones || {};
   let h = '<div style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>';
   h += goalRaceSection();
+  h += timezoneSection();
 
   const dis = READ_ONLY ? ' disabled' : '';
   h += readOnlyBanner();
@@ -713,6 +715,54 @@ function goalSubmit(path, body, onDone) {
     .then(data => { state.goal = data; if (onDone) onDone(); })
     .catch(err => { state.goalError = err.message; })
     .finally(() => { state.goalSaving = false; render(); });
+}
+
+/* Time zone: the server runs on UTC, so this decides when the athlete's day
+   rolls over for everything server-side (Today, Trends, the sync, the coach's
+   tools). Stored on the server like the goal race; saves on change. */
+function deviceZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; }
+}
+function zoneList(extra) {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch (e) { /* older browser: just the known ones */ }
+  extra.forEach(z => { if (z && zones.indexOf(z) < 0) zones = zones.concat([z]); });
+  return zones.slice().sort();
+}
+function zoneNowLabel(tz) {
+  const opts = { weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' };
+  try { return new Date().toLocaleString(undefined, Object.assign({ timeZone: tz.effective }, opts)); }
+  catch (e) { return new Date(tz.now).toLocaleString(undefined, Object.assign({ timeZone: 'UTC' }, opts)) + ' (' + tz.effective + ')'; }
+}
+const TZ_SOURCES = { env: 'the server\'s LOCAL_TIMEZONE', offset: 'the server\'s DASHBOARD_TZ_OFFSET_HOURS', default: 'the server clock (UTC)' };
+function timezoneSection() {
+  const tz = state.tz;
+  let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Time zone</div>';
+  if (!tz) return h + '<div style="color:var(--color-neutral-400); font-size:13px;">Unavailable right now.</div></div>';
+  const device = deviceZone();
+  h += '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">When your day starts — what counts as today on Today, Trends, the plan and the coach\'s tools.</div>';
+  const dflt = tz.source === 'settings' ? 'Server default' : 'Server default (' + tz.effective + ')';
+  h += '<div class="field" style="margin-bottom:12px;"><select class="input" data-tz-select aria-label="Time zone"' + (state.tzSaving ? ' disabled' : '') + '>'
+    + '<option value=""' + (tz.timezone ? '' : ' selected') + '>' + esc(dflt) + '</option>'
+    + zoneList([tz.timezone, device]).map(z => '<option value="' + esc(z) + '"' + (z === tz.timezone ? ' selected' : '') + '>' + esc(z.replace(/_/g, ' ')) + '</option>').join('')
+    + '</select></div>';
+  h += '<div class="goal-info" style="margin-bottom:0;">'
+    + '<div><span>Now in ' + esc(tz.effective) + '</span><span>' + esc(zoneNowLabel(tz)) + '</span></div>'
+    + (tz.source === 'settings' ? '' : '<div><span>Set by</span><span>' + esc(TZ_SOURCES[tz.source] || tz.source) + '</span></div>')
+    + '</div>';
+  if (device && device !== tz.effective) {
+    h += '<button type="button" class="goal-add" style="margin-top:12px;" data-act="tz-device"' + (state.tzSaving ? ' disabled' : '') + '>'
+      + 'Use this device\'s zone (' + esc(device.replace(/_/g, ' ')) + ')</button>';
+  }
+  if (state.tzError) h += '<div class="goal-error">' + esc(state.tzError) + '</div>';
+  return h + '</div>';
+}
+function tzSubmit(zone) {
+  state.tzSaving = true; state.tzError = ''; render();
+  return api('timezone', { timezone: zone || null })
+    .then(data => { state.tz = data; })
+    .catch(err => { state.tzError = err.message; })
+    .finally(() => { state.tzSaving = false; render(); });
 }
 
 function settingsLinkCard(title, text, href, iconName, label) {
@@ -969,6 +1019,7 @@ document.getElementById('app').addEventListener('click', e => {
     if (!f.date) { state.goalError = 'Pick the race date.'; return render(); }
     return goalSubmit('goal-race', f, () => { state.goalDraft = null; });
   }
+  if (a === 'tz-device') return tzSubmit(deviceZone());
   if (a === 'goal-clear') {
     if (!confirm('Clear the goal race? Today, Trends and Fitness stop showing it.')) return;
     return goalSubmit('goal-race/clear', {}, () => { state.goalDraft = null; });
@@ -1050,6 +1101,7 @@ document.getElementById('app').addEventListener('input', e => {
 });
 
 document.getElementById('app').addEventListener('change', e => {
+  if (e.target.hasAttribute && e.target.hasAttribute('data-tz-select')) return tzSubmit(e.target.value);
   if (e.target.getAttribute && e.target.getAttribute('data-goal-field') === 'date' && state.goalDraft) {
     state.goalDraft.date = e.target.value;
     state.goalError = '';

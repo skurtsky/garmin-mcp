@@ -211,7 +211,7 @@ Optional environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `LOCAL_TIMEZONE` | — | Your IANA time zone (e.g. `America/Toronto`). Decides what "today" is everywhere — dashboard, MCP tools and the sync job — and follows daylight saving. The server itself runs on UTC, so without this the day rolls over at UTC midnight (the evening before, in the Americas) |
+| `LOCAL_TIMEZONE` | — | Your IANA time zone (e.g. `America/Toronto`). Decides what "today" is everywhere — dashboard, MCP tools and the sync job — and follows daylight saving. The server itself runs on UTC, so without a zone the day rolls over at UTC midnight (the evening before, in the Americas). The time zone picked in the app's **Settings → Time zone** (stored in PostgreSQL) takes precedence over this |
 | `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Fixed offset from UTC (e.g. `-4`), used only when `LOCAL_TIMEZONE` is unset. Doesn't follow daylight saving |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | How old the dashboard can get before coming back to the app refreshes it; set `0` to disable |
 | `DASHBOARD_TREND_PERIOD` | `14d` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window. `get_trends` fetches its per-day metrics concurrently, but there's no batch endpoint for most of them, so wider windows still add latency; `1m` (30d) restores the full toggle at the cost of a slower load |

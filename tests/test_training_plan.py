@@ -73,6 +73,7 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     # weekly totals are recomputed on upload, not trusted from the file
     assert plan["weeks"][0]["summary"]["totalHours"] == 3.83
     assert server.pop("goalRace")["goal"] is None   # Settings' goal race (none set yet)
+    assert server.pop("timezone")["source"] in ("default", "env", "offset")   # Settings' time zone (none picked yet)
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
                       "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {}}
     assert 'data-nav="plan" aria-current="page"' in r.text   # the site nav, on Plan
@@ -474,3 +475,31 @@ def test_viewer_embeds_the_goal_race(client, fake_db):
     server = _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")
     assert server["goalRace"]["goal"]["name"] == GOAL["name"]
     assert len(server["goalRace"]["distances"]) == 8
+
+
+def test_timezone_setting_round_trip(client, fake_db, monkeypatch):
+    monkeypatch.delenv("LOCAL_TIMEZONE", raising=False)
+    monkeypatch.delenv("DASHBOARD_TZ_OFFSET_HOURS", raising=False)
+    r = client.get("/training-plan/api/timezone", params=TOKEN)
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert (r.json()["timezone"], r.json()["source"], r.json()["effective"]) == (None, "default", "UTC")
+
+    r = client.post("/training-plan/api/timezone", params=TOKEN, json={"timezone": "America/Toronto"})
+    assert r.status_code == 200 and r.json()["effective"] == "America/Toronto"
+    assert fake_db.settings["timezone"] == "America/Toronto"
+
+    r = client.post("/training-plan/api/timezone", params=TOKEN, json={"timezone": "Nowhere/Land"})
+    assert r.status_code == 400 and "Unknown time zone" in r.json()["error"]
+    assert fake_db.settings["timezone"] == "America/Toronto"
+
+    r = client.post("/training-plan/api/timezone", params=TOKEN, json={"timezone": None})
+    assert r.json()["timezone"] is None and "timezone" not in fake_db.settings
+    assert client.post("/training-plan/api/timezone", params=TOKEN, json={}).status_code == 400
+
+
+def test_timezone_setting_without_a_database(monkeypatch):
+    monkeypatch.setattr(db, "is_configured", lambda: False)
+    c = TestClient(training_plan.create_app())
+    assert c.get("/training-plan/api/timezone", params=TOKEN).json()["timezone"] is None
+    r = c.post("/training-plan/api/timezone", params=TOKEN, json={"timezone": "America/Toronto"})
+    assert r.status_code == 503 and "LOCAL_TIMEZONE" in r.json()["error"]
