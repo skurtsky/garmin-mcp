@@ -374,7 +374,10 @@ const state = {
   revisions: null,
   historyOpen: false,
   modalMenu: false,
-  revisionsError: ''
+  revisionsError: '',
+  calendar: null,
+  calendarError: '',
+  calendarCopied: false
 };
 function defaultUnit() {
   const p = PLAN.preferences || {};
@@ -612,6 +615,8 @@ function settingsTab() {
     + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
   h += '</div>';
 
+  h += calendarSection();
+
   h += settingsLinkCard('Plan PDF', 'A printable wall chart of the whole plan, with the current zones.',
     appLink('/training-plan/pdf'), 'down', 'Download');
   h += settingsLinkCard('All plans', 'Switch the active plan, or open an archived plan read-only.',
@@ -636,6 +641,82 @@ function settingsLinkCard(title, text, href, iconName, label) {
       + '<div class="card-title">' + esc(title) + '</div>'
       + '<a class="btn btn-secondary" href="' + esc(href) + '" style="font-size:12px; padding:5px 10px;">' + icon(iconName, 14) + ' ' + esc(label) + '</a></div>'
     + '<div style="color:var(--color-neutral-400); font-size:13px;">' + esc(text) + '</div></div>';
+}
+
+/* Publish calendar to URL: the active plan as a feed calendar apps subscribe
+   to. The weekly schedule (one row per day + sport) gives each workout its
+   start time; a workout's own start time (edit dialog) wins. The feed link
+   has its own read-only key, so it never carries this page's ?token=. These
+   settings aren't part of the plan — they carry over to the next one. */
+const CAL_DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+const CAL_SPORTS = ['run','bike','swim','strength','brick','race','other'];
+function capitalize(s) { return s ? s[0].toUpperCase() + s.slice(1) : ''; }
+function calendarSection() {
+  if (state.calendar === null && !state.calendarError) loadCalendar();
+  let inner;
+  if (state.calendarError) inner = '<div style="font-size:13px; color:var(--color-neutral-400);">' + esc(state.calendarError) + '</div>';
+  else if (!state.calendar) inner = '<div style="font-size:13px; color:var(--color-neutral-400);">Loading…</div>';
+  else {
+    const c = state.calendar;
+    const lock = state.saving ? ' disabled' : '';          // one save at a time
+    const opts = (list, cur, label) => list.map(v => '<option value="' + v + '"' + (v === cur ? ' selected' : '') + '>' + esc(label(v)) + '</option>').join('');
+    inner = '<div class="field" style="margin-bottom:12px;"><label>Default start time</label>'
+      + '<input class="input" type="time" data-cal-default value="' + esc(c.defaultTime) + '" style="max-width:140px;"' + lock + '></div>'
+      + '<div class="sub-label">Weekly schedule</div>'
+      + (c.slots.length ? '' : '<div style="font-size:13px; color:var(--color-neutral-400); margin-bottom:8px;">No rows yet — every workout starts at the default time.</div>')
+      + c.slots.map((slot, i) => '<div class="cal-row">'
+        + '<select class="input" data-cal-field="day" data-index="' + i + '" aria-label="Day"' + lock + '>' + opts(CAL_DAYS, slot.day, v => v.slice(0, 3)) + '</select>'
+        + '<select class="input" data-cal-field="sport" data-index="' + i + '" aria-label="Sport"' + lock + '>' + opts(CAL_SPORTS, slot.sport, capitalize) + '</select>'
+        + '<input class="input" type="time" data-cal-field="time" data-index="' + i + '" value="' + esc(slot.time) + '" aria-label="Start time"' + lock + '>'
+        + '<button type="button" class="btn btn-icon btn-secondary" data-act="cal-remove" data-index="' + i + '" title="Remove row" aria-label="Remove row"' + lock + '>' + icon('trash', 16) + '</button>'
+      + '</div>').join('')
+      + '<button type="button" class="btn btn-secondary" data-act="cal-add" style="font-size:12px; padding:5px 10px; margin-top:4px;"' + lock + '>' + icon('plus', 14) + ' Add row</button>'
+      + '<div class="hr" style="margin:14px 0;"></div>'
+      + calendarPublish(c);
+  }
+  return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div class="card-title" style="margin-bottom:2px;">Publish calendar to URL</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Subscribe to the active plan from your calendar app, and plan changes show up there on their own. Each workout starts at its own start time if it has one, else its row below, else the default; it ends after its duration.</div>'
+    + inner + '</div>';
+}
+function calendarUrl(c) { return location.origin + c.feedPath; }
+function calendarPublish(c) {
+  if (!c.published) return '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">'
+    + '<div style="font-size:13px; color:var(--color-neutral-400);">Not published.</div>'
+    + '<button type="button" class="btn btn-primary" data-act="cal-publish" style="font-size:12px; padding:5px 10px;">' + icon('calendar', 14) + ' Publish calendar</button></div>';
+  return '<div class="field" style="margin-bottom:10px;"><label>Calendar URL (read-only)</label>'
+    + '<input class="input" type="text" readonly data-cal-url value="' + esc(calendarUrl(c)) + '"></div>'
+    + '<div class="actions-row">'
+      + '<button type="button" class="btn btn-secondary" data-act="cal-copy" style="font-size:12px; padding:5px 10px;">' + icon('copy', 14) + (state.calendarCopied ? ' Copied' : ' Copy') + '</button>'
+      + '<a class="btn btn-secondary" href="' + esc('webcal://' + location.host + c.feedPath) + '" style="font-size:12px; padding:5px 10px;">' + icon('calendar', 14) + ' Subscribe</a>'
+      + '<button type="button" class="btn btn-secondary" data-act="cal-publish" style="font-size:12px; padding:5px 10px;">New link</button>'
+      + '<button type="button" class="btn btn-secondary" data-act="cal-revoke" style="font-size:12px; padding:5px 10px; color:#e0736f;">Revoke</button>'
+    + '</div>'
+    + '<div style="font-size:12px; color:var(--color-neutral-500); margin-top:10px;">Anyone with this link can see your workouts, nothing else. Calendar apps check it on their own schedule: Apple Calendar can refresh every few minutes, Google Calendar can take up to a day.</div>';
+}
+function loadCalendar() {
+  state.calendar = undefined;
+  api('calendar')
+    .then(c => { state.calendar = c; })
+    .catch(err => { state.calendarError = 'Could not load calendar settings: ' + err.message; })
+    .finally(() => { if (state.tab === 'settings') render(); });
+}
+function calendarCall(action, body) {
+  state.saving = true; render();
+  return api('calendar/' + action, body || {})
+    .then(c => { state.calendar = c; })
+    .catch(err => { alert('Could not save: ' + err.message); state.calendar = null; })
+    .finally(() => { state.saving = false; render(); });
+}
+function saveCalendarSchedule(defaultTime, slots) {
+  return calendarCall('schedule', { defaultTime, slots });
+}
+/* A new row takes the first day + sport not already listed. */
+function nextCalendarSlot(c) {
+  for (const day of CAL_DAYS) for (const sport of CAL_SPORTS) {
+    if (!c.slots.some(s => s.day === day && s.sport === sport)) return { day, sport, time: c.defaultTime };
+  }
+  return null;
 }
 
 /* Every change to the plan (upload, edit here, coach via MCP, restore) is a
@@ -700,7 +781,7 @@ function modal() {
       + '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">'
         + '<span class="tag" style="background:' + tint(color) + '; color:' + color + ';">' + esc(w.sport) + '</span>'
         + (w.type ? '<span class="tag tag-outline">' + esc(w.type) + '</span>' : '')
-        + '<span class="tag tag-outline">' + esc(dayMonth(hit.date)) + '</span>'
+        + '<span class="tag tag-outline">' + esc(dayMonth(hit.date)) + (w.startTime ? ' · ' + esc(w.startTime) : '') + '</span>'
         + (w.durationMinutes ? '<span class="tag tag-outline">' + esc(fmtDuration(w.durationMinutes)) + '</span>' : '')
         + (dist ? '<span class="tag tag-outline">' + esc(dist) + '</span>' : '')
         + (w.terrain ? '<span class="tag tag-outline">' + esc(w.terrain) + '</span>' : '')
@@ -749,7 +830,7 @@ function workoutDistance(w, sport) {
   if (w.distanceKm != null) return w.distanceKm;
   return w.distanceMeters != null ? +(w.distanceMeters / 1000).toFixed(2) : '';
 }
-const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable'];
+const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable','startTime'];
 function draftFor(w, date, mode) {
   const sport = w.sport || 'run';
   const dist = workoutDistance(w, sport);
@@ -758,7 +839,7 @@ function draftFor(w, date, mode) {
   const extra = {};
   if (mode === 'duplicate') Object.keys(w).forEach(k => { if (!FORM_FIELDS.includes(k)) extra[k] = w[k]; });
   return { mode, date, name: w.name || '', sport, type: w.type || '', durationMinutes: w.durationMinutes ?? '',
-    distance: dist, distanceOrig: dist, sportOrig: sport, primaryZone: w.primaryZone || '',
+    distance: dist, distanceOrig: dist, sportOrig: sport, primaryZone: w.primaryZone || '', startTime: w.startTime || '',
     description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '', extra };
 }
 const EDIT_TITLES = { add:'Add workout', duplicate:'Duplicate workout', edit:'Edit workout' };
@@ -778,8 +859,9 @@ function editModal() {
     + '<div class="dialog-body" style="display:flex; flex-direction:column; gap:10px;">'
       + field('Name', 'name', 'type="text" maxlength="80" required')
       + grid(sportSel, field('Type', 'type', 'type="text" placeholder="e.g. endurance, threshold"'))
-      + grid(field('Date', 'date', 'type="date"'), field('Duration (min)', 'durationMinutes', 'type="number" min="0" step="1"'))
-      + grid(field('Distance (' + distanceUnit(d.sport) + ')', 'distance', 'type="number" min="0" step="any"'), field('Primary zone', 'primaryZone', 'type="text" placeholder="e.g. Zone 2"'))
+      + grid(field('Date', 'date', 'type="date"'), field('Start time (optional)', 'startTime', 'type="time" title="Blank uses the weekly schedule in Settings"'))
+      + grid(field('Duration (min)', 'durationMinutes', 'type="number" min="0" step="1"'), field('Distance (' + distanceUnit(d.sport) + ')', 'distance', 'type="number" min="0" step="any"'))
+      + field('Primary zone', 'primaryZone', 'type="text" placeholder="e.g. Zone 2"')
       + area('Description', 'description', 2, 'maxlength="120"')
       + area('Key targets', 'keyTargets', 2, 'maxlength="120"')
       + area('Details', 'humanReadable', 7)
@@ -792,7 +874,8 @@ function editModal() {
 function draftToFields(d) {
   const num = v => (v === '' || v == null) ? null : Number(v);
   const fields = { name: d.name.trim(), sport: d.sport, type: d.type.trim(), durationMinutes: num(d.durationMinutes),
-    primaryZone: d.primaryZone.trim(), description: d.description.trim(), keyTargets: d.keyTargets.trim(), humanReadable: d.humanReadable };
+    primaryZone: d.primaryZone.trim(), description: d.description.trim(), keyTargets: d.keyTargets.trim(), humanReadable: d.humanReadable,
+    startTime: d.startTime || null };
   if (d.mode !== 'edit' || String(d.distance) !== String(d.distanceOrig) || d.sport !== d.sportOrig) {
     const dist = num(d.distance);
     if (d.sport === 'swim') { fields.distanceMeters = dist; fields.distanceKm = null; }
@@ -868,6 +951,34 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
+  /* The calendar settings aren't part of the plan, so they stay editable
+     while viewing an archived plan. */
+  if (a && a.startsWith('cal-') && state.calendar && !state.saving) {
+    const c = state.calendar;
+    if (a === 'cal-add') {
+      const slot = nextCalendarSlot(c);
+      return slot ? saveCalendarSchedule(c.defaultTime, c.slots.concat([slot])) : undefined;
+    }
+    if (a === 'cal-remove') {
+      const i = Number(act.getAttribute('data-index'));
+      return saveCalendarSchedule(c.defaultTime, c.slots.filter((_, j) => j !== i));
+    }
+    if (a === 'cal-publish') {
+      if (c.published && !confirm('Make a new link? The current link stops working, so calendars subscribed to it stop updating.')) return;
+      return calendarCall('publish');
+    }
+    if (a === 'cal-revoke') {
+      if (!confirm('Revoke the calendar link? Calendars subscribed to it stop updating.')) return;
+      return calendarCall('revoke');
+    }
+    if (a === 'cal-copy') {
+      const url = calendarUrl(c);
+      const done = () => { state.calendarCopied = true; render(); setTimeout(() => { state.calendarCopied = false; render(); }, 2000); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(url).then(done, () => prompt('Copy the calendar URL:', url));
+      else prompt('Copy the calendar URL:', url);
+      return;
+    }
+  }
   if (READ_ONLY) return;
   if (a === 'validate') {
     const sport = act.getAttribute('data-sport');
@@ -949,6 +1060,19 @@ document.getElementById('app').addEventListener('change', e => {
   if (editField && state.editDraft) {
     state.editDraft[editField] = e.target.value;
     if (editField === 'sport') render();
+    return;
+  }
+  if (state.calendar && state.saving && e.target.closest && e.target.closest('[data-cal-default], [data-cal-field]')) return;
+  if (state.calendar && e.target.hasAttribute && e.target.hasAttribute('data-cal-default')) {
+    if (e.target.value) saveCalendarSchedule(e.target.value, state.calendar.slots);
+    return;
+  }
+  const calField = e.target.getAttribute && e.target.getAttribute('data-cal-field');
+  if (calField && state.calendar) {
+    const i = Number(e.target.getAttribute('data-index'));
+    if (!e.target.value) return;
+    const slots = state.calendar.slots.map((s, j) => j === i ? Object.assign({}, s, { [calField]: e.target.value }) : s);
+    saveCalendarSchedule(state.calendar.defaultTime, slots);
     return;
   }
   const ovKey = e.target.getAttribute && e.target.getAttribute('data-ov');
@@ -1099,6 +1223,12 @@ if (state.tab === 'settings') setView('settings');
   background:transparent; color: var(--color-text); font-family: var(--font-body); font-size:14px; text-align:left; }
 .wmenu-pop button:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
 .wmenu-pop button.danger { color:#e0736f; }
+.cal-row { display:grid; grid-template-columns: minmax(58px,.7fr) minmax(0,1.3fr) minmax(92px,auto) 36px; gap:6px; align-items:center; margin-bottom:8px; }
+.cal-row .input { padding-left:8px; padding-right:4px; min-width:0; }
+/* The picker opens on tap anyway; the clock icon only costs row width. */
+.cal-row input[type=time]::-webkit-calendar-picker-indicator { display:none; }
+.cal-row .btn-icon { width:36px; height:36px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
+.actions-row { display:flex; gap:8px; flex-wrap:wrap; }
 .rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
 .rev-row:first-child { border-top:none; }
 .saving-pill { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;

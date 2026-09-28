@@ -12,7 +12,7 @@ import pytest
 
 import db
 from tests.plan_fakes import sample_plan
-from tools import plan_service
+from tools import plan_calendar, plan_service
 
 TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
 
@@ -24,7 +24,8 @@ def database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
     monkeypatch.setattr(db, "_pool", None)
     with db.get_conn() as conn, conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS training_plan_workout_state, training_plan_revisions, training_plans")
+        cur.execute("DROP TABLE IF EXISTS training_plan_workout_state, training_plan_revisions, training_plans, "
+                    "calendar_settings")
     db.ensure_schema()
     yield
     db._pool.close()
@@ -106,3 +107,24 @@ def test_activity_brief():
     brief = db.get_activity_brief(5)
     assert brief["activity_type"] == "running"
     assert db.get_activity_brief(6) is None
+
+
+def test_calendar_settings_round_trip():
+    assert db.get_calendar_settings() is None
+    assert plan_calendar.get_settings()["published"] is False
+
+    plan_calendar.save_schedule("5:45", [{"day": "Sunday", "sport": "bike", "time": "07:00"}])
+    published = plan_calendar.publish()
+    key = published["feedPath"].split("key=")[1]
+    assert plan_calendar.key_is_valid(key)
+
+    # Saving the schedule keeps the token; publishing keeps the schedule.
+    plan_calendar.save_schedule("06:00", [])
+    assert plan_calendar.key_is_valid(key)
+    again = plan_calendar.save_schedule("5:45", [{"day": "Sunday", "sport": "bike", "time": "07:00"}])
+    assert again["slots"] == [{"day": "Sunday", "sport": "bike", "time": "07:00"}]
+
+    revoked = plan_calendar.revoke()
+    assert revoked["published"] is False and revoked["publishedAt"] is None
+    assert revoked["defaultTime"] == "05:45"
+    assert not plan_calendar.key_is_valid(key)

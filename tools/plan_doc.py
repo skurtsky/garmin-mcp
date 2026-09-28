@@ -43,6 +43,7 @@ WEEK_FIELDS = {"focus": str, "targetHours": (int, float), "isRecoveryWeek": bool
 
 _DOW = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _MMSS_RE = re.compile(r"(\d+):(\d{1,2})")
+_HHMM_RE = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
 
 
 class PlanError(ValueError):
@@ -50,6 +51,14 @@ class PlanError(ValueError):
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
+
+def parse_clock(value, what="time") -> str:
+    """A 24-hour "H:MM"/"HH:MM" time, normalised to "HH:MM"."""
+    match = _HHMM_RE.match(str(value).strip()) if isinstance(value, str) else None
+    if not match:
+        raise PlanError(f"Invalid {what} {value!r} — use 24-hour HH:MM, e.g. 06:30.")
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
+
 
 def parse_date(value, what="date") -> date:
     try:
@@ -201,6 +210,12 @@ def validate_plan(plan) -> tuple[list[str], list[str]]:
                     text = w.get(field)
                     if isinstance(text, str) and len(text) > budget:
                         warnings.append(f"{wid}: {field} is {len(text)} characters (budget {budget}).")
+                if w.get("startTime") not in (None, ""):
+                    try:
+                        parse_clock(w["startTime"])
+                    except PlanError:
+                        warnings.append(f"{wid}: startTime {w['startTime']!r} isn't HH:MM — "
+                                        "the calendar feed uses the weekly schedule instead.")
     return errors, warnings
 
 
@@ -283,6 +298,10 @@ def _clean_workout_fields(fields: dict, *, adding: bool) -> dict:
     for key in ("name", "type", "description", "keyTargets", "humanReadable", "primaryZone"):
         if key in fields and fields[key] is not None and not isinstance(fields[key], str):
             raise PlanError(f"{key} must be text.")
+    # The calendar feed's start time for this one workout; blank falls back
+    # to the weekly schedule in Settings.
+    if fields.get("startTime") not in (None, ""):
+        fields["startTime"] = parse_clock(fields["startTime"], "startTime")
     return fields
 
 

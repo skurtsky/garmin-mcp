@@ -204,3 +204,14 @@ CREATE TABLE IF NOT EXISTS training_plan_workout_state (
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (plan_id, workout_id)
 );
+
+-- The published calendar feed: the weekly start-time schedule and the
+-- read-only feed token (one row).
+CREATE TABLE IF NOT EXISTS calendar_settings (
+    id                INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+    default_time      TEXT NOT NULL DEFAULT '06:00',
+    slots             JSONB NOT NULL DEFAULT '[]'::jsonb,
+    feed_token        TEXT,
+    token_created_at  TIMESTAMPTZ,
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);

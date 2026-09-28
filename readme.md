@@ -253,11 +253,39 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 | `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; same-id uploads confirm first) |
 | `/training-plan/export.json` | `GET` | The plan JSON as currently edited |
 | `/training-plan/pdf` | `GET` | Printable wall-chart PDF of the stored plan |
+| `/training-plan/calendar.ics` | `GET` | The active plan as a calendar feed — `?key=<feed token>`, not the bearer token (see below) |
 | `/training-plan/api/plan` | `GET` | Plan + version, status, completion (used by the viewer) |
 | `/training-plan/api/operations` | `POST` | `{"operations": [...]}` — the same edit operations as `amend_training_plan` |
 | `/training-plan/api/completion` | `POST` | `{"workout_id", "completed"}` |
 | `/training-plan/api/revisions` | `GET` | Revision history |
 | `/training-plan/api/revisions/{version}/restore` | `POST` | Restore a revision |
+| `/training-plan/api/calendar` | `GET` | Calendar-feed settings: default time, weekly schedule, published link |
+| `/training-plan/api/calendar/{schedule\|publish\|revoke}` | `POST` | Save the schedule (`{"defaultTime", "slots"}`), create / replace the feed token, or revoke it |
+
+### Calendar feed
+
+Settings → **Publish calendar to URL** publishes the active plan as an
+iCalendar feed that Apple Calendar, Google Calendar or Outlook can subscribe
+to, so plan edits show up in the calendar without re-importing anything.
+
+- **Start times.** Plans only date their workouts, so each event starts at the
+  workout's own `startTime` (`"HH:MM"`, set in the edit dialog or by the coach
+  for one-offs like a race start), else the matching row of the weekly
+  schedule (e.g. *Sunday · Bike · 07:00*, *Thursday · Strength · 05:30*), else
+  the default start time. It ends after `durationMinutes`; a workout without a
+  duration is an all-day event, and rest days are left out. Workouts on the
+  same day that would overlap (a brick, two sports sharing a slot) stack one
+  after the other. Times are "floating" — 06:00 wherever you are.
+- **The link has its own read-only key.** Calendar servers fetch and store the
+  URL, so it never contains the bearer token: `?key=` opens the feed and
+  nothing else. **New link** replaces the key (the old link stops working) and
+  **Revoke** removes it. The key is kept so Settings can show the link again.
+- **Always the active plan.** Activating another plan switches the feed; with
+  no active plan it's an empty calendar. The schedule is stored beside the
+  plans (`calendar_settings`), so it carries over to the next plan.
+- **Refresh is up to the calendar app.** Apple Calendar can check every few
+  minutes; Google Calendar refreshes on its own schedule, which can take up to
+  a day.
 
 ### Training plan MCP tools
 
@@ -462,6 +490,7 @@ garmin-mcp/
 │   ├── navbar.py          # the one site nav (bottom pill / desktop rail) on every hosted page
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
 │   ├── profile.py         # get_athlete_profile, get_gear
+│   ├── plan_calendar.py   # the active plan as an iCalendar feed + its start-time schedule and feed key
 │   ├── plan_doc.py        # training-plan document rules: validation, weekly totals, edit operations
 │   ├── plan_service.py    # training-plan storage (PostgreSQL) + completion / Garmin links + auto-matching
 │   ├── plan_today.py      # the active plan as the dashboard's Today / Fitness screens show it
@@ -483,6 +512,7 @@ garmin-mcp/
 │   ├── test_navbar.py
 │   ├── test_performance.py
 │   ├── test_profile.py
+│   ├── test_plan_calendar.py
 │   ├── test_plan_doc.py
 │   ├── test_plan_tools.py
 │   ├── test_training_plan.py

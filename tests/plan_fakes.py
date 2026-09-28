@@ -72,6 +72,7 @@ class FakePlanDB:
         self.revisions = {}   # id -> [revision]
         self.states = {}      # (plan_id, workout_id) -> state
         self.activities = {}  # garmin_id -> brief
+        self.calendar = None  # the calendar_settings row
         self._clock = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
     def _now(self):
@@ -180,6 +181,24 @@ class FakePlanDB:
         }
         return self.activities[garmin_id]
 
+    def get_calendar_settings(self):
+        return copy.deepcopy(self.calendar)
+
+    def _calendar_row(self):
+        if self.calendar is None:
+            self.calendar = {"default_time": "06:00", "slots": [], "feed_token": None,
+                             "token_created_at": None}
+        self.calendar["updated_at"] = self._now()
+        return self.calendar
+
+    def save_calendar_schedule(self, default_time, slots):
+        self._calendar_row().update(default_time=default_time, slots=copy.deepcopy(slots))
+        return copy.deepcopy(self.calendar)
+
+    def set_calendar_token(self, token):
+        self._calendar_row().update(feed_token=token, token_created_at=self._now() if token else None)
+        return copy.deepcopy(self.calendar)
+
     def get_activities_by_ids(self, garmin_ids):
         return {i: dict(self.activities[i]) for i in garmin_ids if i in self.activities}
 
@@ -195,6 +214,7 @@ PATCHED = [
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
     "get_workout_states", "upsert_workout_state", "get_activity_brief",
     "get_activities_by_ids", "get_activities_in_range",
+    "get_calendar_settings", "save_calendar_schedule", "set_calendar_token",
 ]
 
 
