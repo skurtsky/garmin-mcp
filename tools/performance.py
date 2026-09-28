@@ -1,12 +1,13 @@
 # tools/performance.py
 from garmin_client import get_client
 from tools.health import resolve_date
-from datetime import date, timedelta
+from datetime import timedelta
+from tools.local_time import local_today
 
 
 def _default_range(days: int) -> tuple[str, str]:
     """Return (start_date, end_date) ISO strings for the trailing N days."""
-    today = date.today()
+    today = local_today()
     return (today - timedelta(days=days)).isoformat(), today.isoformat()
 
 

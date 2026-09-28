@@ -117,3 +117,24 @@ def test_get_athlete_profile_resting_hr_7day_avg_is_reasonable():
     assert 30 < profile['resting_hr_7day_avg'] < 100, (
         f"Resting HR 7-day avg {profile['resting_hr_7day_avg']} outside expected range"
     )
+
+
+def test_resting_hr_falls_back_to_yesterday_when_today_has_none(monkeypatch):
+    """Before the watch has a resting HR for today (early morning, or the
+    server's date is ahead of the watch's) the profile uses yesterday's."""
+    from datetime import date
+    import tools.profile as profile_mod
+
+    class _Client:
+        def get_user_profile(self):
+            return {"userData": {}}
+
+        def get_cycling_ftp(self):
+            return {}
+
+        def get_user_summary(self, day):
+            return {"lastSevenDaysAvgRestingHeartRate": 48 if day == "2026-09-27" else None}
+
+    monkeypatch.setattr(profile_mod, "get_client", lambda: _Client())
+    monkeypatch.setattr(profile_mod, "local_today", lambda: date(2026, 9, 28))
+    assert profile_mod.get_athlete_profile()["resting_hr_7day_avg"] == 48

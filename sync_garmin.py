@@ -7,6 +7,7 @@ import logging
 import sys
 from argparse import ArgumentParser, ArgumentTypeError
 from datetime import date, timedelta
+from tools.local_time import local_today
 
 from dotenv import load_dotenv
 
@@ -32,7 +33,7 @@ def _date_range(start_date: date, end_date: date) -> list[date]:
 
 def _daily_metric_dates(days: int, start_date: date | None,
                         end_date: date | None) -> list[date]:
-    today = date.today()
+    today = local_today()
     if start_date or end_date:
         end = end_date or today
         start = start_date or end
@@ -96,7 +97,7 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
     import db
 
     if start_date:
-        end = end_date or date.today()
+        end = end_date or local_today()
         logger.info(f"Syncing activities from {start_date.isoformat()} to {end.isoformat()}")
         activities = get_activities(start_date=start_date.isoformat(), end_date=end.isoformat())
     else:
@@ -117,7 +118,7 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
         )
         if inserted:
             new_ids.append(act["id"])
-    db.update_sync_state("activities", date.today().isoformat())
+    db.update_sync_state("activities", local_today().isoformat())
     logger.info(f"Synced {len(activities)} activities ({len(new_ids)} new)")
     sync_plan_matches(new_ids)
 
@@ -177,7 +178,7 @@ def sync_activity_details(limit: int = 10, overwrite: bool = False):
         db.upsert_activity_detail(activity_id, detail, route)
         if n % 25 == 0:
             logger.info(f"  {n}/{len(activity_ids)} done")
-    db.update_sync_state("activity_details", date.today().isoformat())
+    db.update_sync_state("activity_details", local_today().isoformat())
     if failed:
         logger.warning(f"Activity detail sync complete; {len(failed)} skipped after Garmin errors: "
                        + " ".join(str(i) for i in failed))
@@ -193,7 +194,7 @@ def sync_personal_records():
     logger.info("Syncing personal records")
     records = get_personal_records()
     db.upsert_personal_records(records)
-    db.update_sync_state("personal_records", date.today().isoformat())
+    db.update_sync_state("personal_records", local_today().isoformat())
     logger.info("Personal records sync complete")
 
 
@@ -209,8 +210,8 @@ def sync_athlete_profile():
         # Garmin only reports current thresholds — keep a daily copy for the
         # Fitness page's history.
         from tools.history_snapshots import snapshot_garmin_thresholds
-        snapshot_garmin_thresholds(date.today(), profile)
-    db.update_sync_state("athlete_profile", date.today().isoformat())
+        snapshot_garmin_thresholds(local_today(), profile)
+    db.update_sync_state("athlete_profile", local_today().isoformat())
     logger.info("Athlete profile sync complete")
 
 
@@ -222,7 +223,7 @@ def sync_history_snapshots():
     from tools import history_snapshots
     import db
 
-    today = date.today()
+    today = local_today()
     logger.info("Syncing threshold and race-prediction snapshots")
     history_snapshots.snapshot_plan_thresholds(today)
     db.update_sync_state("threshold_snapshots", today.isoformat())
@@ -253,7 +254,7 @@ def sync_gear():
     logger.info("Syncing gear")
     gear = get_gear()
     db.upsert_gear_items(gear)
-    db.update_sync_state("gear", date.today().isoformat())
+    db.update_sync_state("gear", local_today().isoformat())
     logger.info(f"Synced {len(gear)} gear item(s)")
 
 
@@ -266,7 +267,7 @@ def sync_active_goals():
     goals = get_active_goals()
     if goals:
         db.upsert_active_goals(goals)
-    db.update_sync_state("active_goals", date.today().isoformat())
+    db.update_sync_state("active_goals", local_today().isoformat())
     logger.info("Active goals sync complete")
 
 

@@ -23,6 +23,7 @@ use.
 import copy
 import re
 from datetime import date
+from tools.local_time import local_today
 
 # Plan ids end up in URLs and as a primary key — keep them to safe characters.
 PLAN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -400,7 +401,7 @@ def _op_set_zone_validation(plan, op):
         raise PlanError(f"sport must be one of {', '.join(ZONE_SPORTS)}.")
     validated = bool(op.get("validated", True))
     zv = dict(plan.get("zonesValidated") or {})
-    zv[sport] = {"validated": validated, "at": op.get("at") or date.today().isoformat()}
+    zv[sport] = {"validated": validated, "at": op.get("at") or local_today().isoformat()}
     plan["zonesValidated"] = zv
     return f"Marked {sport} zones {'validated' if validated else 'for retest'}", None
 
@@ -451,7 +452,7 @@ def apply_operations(plan: dict, operations: list) -> tuple[dict, list[str], lis
                 touched.append(result[1])
     normalize_plan(plan)
     meta = plan.setdefault("meta", {})
-    meta["updatedAt"] = date.today().isoformat() + "T00:00:00Z"
+    meta["updatedAt"] = local_today().isoformat() + "T00:00:00Z"
     return plan, messages, touched
 
 
@@ -649,7 +650,7 @@ def is_test_workout(workout: dict) -> bool:
 
 
 def current_week_number(plan: dict, today: date | None = None) -> int | None:
-    today = today or date.today()
+    today = today or local_today()
     week = week_for_date(plan, today)
     if week:
         return week.get("weekNumber")

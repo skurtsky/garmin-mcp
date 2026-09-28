@@ -1,7 +1,7 @@
 # tools/workout.py
 import copy
 import re
-from datetime import date
+from tools.local_time import local_today
 from typing import Literal
 
 from garmin_client import get_client
@@ -154,7 +154,7 @@ def _iter_months(months_ahead: int) -> list[tuple[int, int]]:
     if months_ahead < 0:
         raise ValueError("months_ahead must be >= 0")
 
-    start = date.today()
+    start = local_today()
     months: list[tuple[int, int]] = []
 
     for offset in range(months_ahead + 1):
@@ -190,7 +190,7 @@ def get_scheduled_workouts(months_ahead: int = 3) -> list[dict]:
         months_ahead: Number of months ahead to scan, inclusive of current month.
     """
     client = get_client()
-    today_iso = date.today().isoformat()
+    today_iso = local_today().isoformat()
 
     out: list[dict] = []
     for year, month in _iter_months(months_ahead):

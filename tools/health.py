@@ -1,6 +1,7 @@
 # tools/health.py
 from garmin_client import get_client
-from datetime import date, timedelta
+from datetime import timedelta
+from tools.local_time import local_today
 from concurrent.futures import ThreadPoolExecutor
 
 def resolve_date(date_str: str) -> str:
@@ -10,9 +11,9 @@ def resolve_date(date_str: str) -> str:
     should pass today's date, not yesterday's.
     """
     if date_str == 'today':
-        return date.today().isoformat()
+        return local_today().isoformat()
     if date_str == 'yesterday':
-        return (date.today() - timedelta(days=1)).isoformat()
+        return (local_today() - timedelta(days=1)).isoformat()
     return date_str
 
 def get_sleep(date: str) -> dict:
@@ -196,7 +197,7 @@ def get_training_status_daily_history(days: int = 28) -> list[dict]:
     (mirrors tools/trends.py's per-day metric fetch). Powers the Today tab's
     training-status history bar (issue 92).
     """
-    today = date.today()
+    today = local_today()
     dates = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
 
     def fetch_one(d):

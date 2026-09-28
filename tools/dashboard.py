@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
+from tools.local_time import local_now, to_local, utc_offset_hours
 from tools.navbar import ICON_LINKS, render_nav_html
 
 # Coming back to the app once the page is this old (seconds) refreshes it
@@ -102,16 +103,13 @@ def _clear_section_cache():
 
 
 def _tz_offset_hours() -> float:
-    """Local-time offset from UTC, from DASHBOARD_TZ_OFFSET_HOURS (default 0)."""
-    try:
-        return float(os.environ.get("DASHBOARD_TZ_OFFSET_HOURS", "0"))
-    except ValueError:
-        return 0.0
+    """The athlete's current offset from UTC in hours (see tools.local_time)."""
+    return utc_offset_hours()
 
 
 def _local_now() -> datetime:
-    """Current time in the configured local zone."""
-    return datetime.now(timezone.utc) + timedelta(hours=_tz_offset_hours())
+    """Current time in the athlete's local zone."""
+    return local_now()
 
 
 def _safe(fn, *args, **kwargs):
@@ -2360,7 +2358,7 @@ def _gear_service_row(component: dict, service: dict) -> str:
 
 
 def _gear_service_log_modal(component: dict, service: dict, token: str | None) -> str:
-    now_value = datetime.now().strftime("%Y-%m-%dT%H:%M")
+    now_value = local_now().strftime("%Y-%m-%dT%H:%M")
     service_type = service.get("service_type") or component.get("name") or "service"
     return f"""
     <div id="service-{_e(component['id'])}-{_e(service['id'])}" class="gear-modal">
@@ -2945,7 +2943,7 @@ _CHART_JS = """
 """
 
 # Converts the server-rendered "Last sync" time (offset by the operator's
-# configured DASHBOARD_TZ_OFFSET_HOURS) to the viewer's actual local
+# configured LOCAL_TIMEZONE) to the viewer's actual local
 # timezone, using the UTC instant stashed in the element's data attribute.
 _TZ_JS = """
 document.querySelectorAll('[data-sync-utc]').forEach(function (el) {
@@ -3121,7 +3119,7 @@ def _fmt_sync_time(value):
         return None
     if isinstance(value, (int, float)):
         try:
-            dt = (datetime.fromtimestamp(value / 1000, tz=timezone.utc) + timedelta(hours=_tz_offset_hours()))
+            dt = to_local(datetime.fromtimestamp(value / 1000, tz=timezone.utc))
             return dt.strftime("%H:%M")
         except (ValueError, OverflowError, OSError):
             return str(value)
@@ -3134,7 +3132,7 @@ def _sync_time_utc_iso(value):
 
     Returns None if `value` can't be parsed — the caller then falls back to
     the server-rendered `_fmt_sync_time` text (offset by
-    DASHBOARD_TZ_OFFSET_HOURS rather than the viewer's real timezone).
+    LOCAL_TIMEZONE rather than the viewer's real timezone).
     """
     if value is None:
         return None

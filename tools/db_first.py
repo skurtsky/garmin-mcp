@@ -9,7 +9,7 @@ Garmin Connect, and go live only for data the sync job hasn't captured yet.
 
 A synced row is used when it is either:
   - final:  synced after the day ended (local midnight, per
-            DASHBOARD_TZ_OFFSET_HOURS), so the day can no longer change; or
+            LOCAL_TIMEZONE), so the day can no longer change; or
   - fresh:  synced within MCP_DB_MAX_AGE_SECONDS (default 900s) — covers
             today, which is still accumulating.
 
@@ -28,6 +28,7 @@ from typing import Callable, Optional
 from garmin_client import get_client
 from tools import trends
 from tools.health import resolve_date
+from tools.local_time import local_tz
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,6 @@ def _max_age() -> timedelta:
     return timedelta(seconds=seconds)
 
 
-def _local_tz() -> timezone:
-    try:
-        hours = float(os.environ.get("DASHBOARD_TZ_OFFSET_HOURS", "0"))
-    except ValueError:
-        hours = 0.0
-    return timezone(timedelta(hours=hours))
-
-
 def row_is_usable(metric_date: str, synced_at: Optional[datetime],
                   now: Optional[datetime] = None) -> bool:
     """Whether a daily_metrics row synced at `synced_at` can stand in for a
@@ -72,7 +65,7 @@ def row_is_usable(metric_date: str, synced_at: Optional[datetime],
         return False
     now = now or datetime.now(timezone.utc)
     day_end = datetime.combine(date.fromisoformat(metric_date) + timedelta(days=1),
-                               time.min, tzinfo=_local_tz())
+                               time.min, tzinfo=local_tz())
     return synced_at >= day_end or now - synced_at <= _max_age()
 
 
