@@ -445,6 +445,9 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
       {"op": "set_unit", "unit": "metric" | "imperial"}
 
     sport is one of swim, bike, run, brick, strength, race, rest, other.
+    A workout may carry "startTime": "HH:MM" (24-hour) — the calendar feed
+    uses it instead of the athlete's weekly schedule; set it only for one-off
+    times (a race start, a group ride), and "" removes it.
     Follow the coach skill's field budgets (description/keyTargets ≤ 120
     characters) and humanReadable template with zone tokens.
 
@@ -879,6 +882,7 @@ def build_asgi_app():
     from tools.dashboard import (get_activity_week_data, render_activity_calendar, render_activity_panel,
                                  stream_dashboard)
     from tools import training_plan
+    from tools import plan_calendar
     from tools import weekly_summaries
     from tools import gear_tracker
     from tools import activity_detail
@@ -913,6 +917,13 @@ def build_asgi_app():
             response = FileResponse(os.path.join(icons_dir, filename), media_type=media_type,
                                     headers={"Cache-Control": "public, max-age=86400"})
             await response(scope, receive, send)
+            return
+
+        # The calendar feed is fetched by calendar apps and their servers, so
+        # it takes its own read-only ?key= (checked by the route) instead of
+        # the bearer token, which must never end up stored in a calendar.
+        if scope["type"] == "http" and scope.get("path") == plan_calendar.FEED_PATH:
+            await training_plan_app(scope, receive, send)
             return
 
         if bearer and scope["type"] == "http":

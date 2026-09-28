@@ -18,6 +18,9 @@ a plan; without it the active plan is used.
     POST /training-plan/upload           — validate, confirm a same-id replace, store
     GET  /training-plan/export.json      — the plan JSON as currently edited
     GET  /training-plan/pdf              — printable wall-chart PDF
+    GET  /training-plan/calendar.ics     — the active plan as a calendar feed;
+                                           authorised by ?key=<feed token>, not
+                                           the bearer token (see server.py)
 
 JSON API used by the viewer:
 
@@ -26,6 +29,10 @@ JSON API used by the viewer:
     POST /training-plan/api/completion   — {workout_id, completed} → same shape
     GET  /training-plan/api/revisions    — [{version, source, summary, created_at}]
     POST /training-plan/api/revisions/{version}/restore → same shape as /api/plan
+    GET  /training-plan/api/calendar     — {defaultTime, slots, published, feedPath, publishedAt}
+    POST /training-plan/api/calendar/schedule — {defaultTime, slots} → same shape
+    POST /training-plan/api/calendar/publish  — new feed token (replaces any old one)
+    POST /training-plan/api/calendar/revoke   — no feed token; the link stops working
     GET  /training-plan/api/goal-race    — {goal, distances} for Settings' Goal race
     POST /training-plan/api/goal-race    — {name, date, distance, target?, show_on_today} → same shape
     POST /training-plan/api/goal-race/clear → same shape (goal: null)
@@ -43,7 +50,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 import db
-from tools import goal_race, local_time, plan_doc, plan_service
+from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service
 from tools.navbar import ICON_LINKS, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import render_plan_pdf
 from tools.plan_doc import PlanError
@@ -445,6 +452,22 @@ async def serve_plan_pdf(request):
     return await render_plan_pdf(row["plan"])
 
 
+async def serve_calendar(request):
+    """GET /training-plan/calendar.ics — the active plan for calendar apps.
+    Its own read-only key, since calendar servers (Google, Outlook) fetch and
+    store the URL; the bearer token never goes in it."""
+    try:
+        if not plan_calendar.key_is_valid(request.query_params.get("key")):
+            return Response("Unauthorized", status_code=401)
+        body = plan_calendar.feed()
+    except PlanStorageUnavailable as e:
+        return Response(str(e), status_code=503)
+    return Response(body, media_type="text/calendar; charset=utf-8", headers={
+        "Cache-Control": "no-cache",
+        "Content-Disposition": 'inline; filename="training-plan.ics"',
+    })
+
+
 # ── JSON API ──────────────────────────────────────────────────────────────────
 
 def _api_error(exc) -> JSONResponse:
@@ -519,6 +542,30 @@ async def api_restore(request):
     except (PlanStorageUnavailable, LookupError, PlanError, ValueError) as e:
         return _api_error(e)
     return _plan_response(row)
+
+
+async def api_calendar(request):
+    try:
+        return JSONResponse(plan_calendar.get_settings(), headers=_NO_STORE)
+    except PlanStorageUnavailable as e:
+        return _api_error(e)
+
+
+async def api_calendar_action(request):
+    action = request.path_params["action"]
+    try:
+        if action == "schedule":
+            body = await _json_body(request)
+            result = plan_calendar.save_schedule(body.get("defaultTime"), body.get("slots"))
+        elif action == "publish":
+            result = plan_calendar.publish()
+        elif action == "revoke":
+            result = plan_calendar.revoke()
+        else:
+            return JSONResponse({"error": "Unknown action."}, status_code=404)
+    except (PlanStorageUnavailable, PlanError) as e:
+        return _api_error(e)
+    return JSONResponse(result, headers=_NO_STORE)
 
 
 def _goal_race_payload() -> dict | None:
@@ -600,11 +647,14 @@ ROUTES = [
     Route("/training-plan/upload", handle_upload, methods=["POST"]),
     Route("/training-plan/export.json", serve_export, methods=["GET"]),
     Route("/training-plan/pdf", serve_plan_pdf, methods=["GET"]),
+    Route(plan_calendar.FEED_PATH, serve_calendar, methods=["GET"]),
     Route("/training-plan/api/plan", api_get_plan, methods=["GET"]),
     Route("/training-plan/api/operations", api_operations, methods=["POST"]),
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
     Route("/training-plan/api/revisions", api_revisions, methods=["GET"]),
     Route("/training-plan/api/revisions/{version}/restore", api_restore, methods=["POST"]),
+    Route("/training-plan/api/calendar", api_calendar, methods=["GET"]),
+    Route("/training-plan/api/calendar/{action}", api_calendar_action, methods=["POST"]),
     Route("/training-plan/api/goal-race", api_get_goal_race, methods=["GET"]),
     Route("/training-plan/api/goal-race", api_save_goal_race, methods=["POST"]),
     Route("/training-plan/api/goal-race/clear", api_clear_goal_race, methods=["POST"]),

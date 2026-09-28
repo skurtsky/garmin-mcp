@@ -136,6 +136,20 @@ TRAINING_PLAN_SCHEMA = """
     );
 """
 
+# The published calendar feed (tools/plan_calendar.py): one row holding the
+# weekly start-time schedule and the read-only feed token. It lives beside the
+# plans rather than in them, so the schedule carries over to the next plan.
+CALENDAR_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS calendar_settings (
+        id                INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        default_time      TEXT NOT NULL DEFAULT '06:00',
+        slots             JSONB NOT NULL DEFAULT '[]'::jsonb,
+        feed_token        TEXT,
+        token_created_at  TIMESTAMPTZ,
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+"""
+
 
 # The redesigned Activity / Trends / Fitness tabs. Garmin only exposes the
 # current thresholds, race predictions and records, so the sync job keeps a
@@ -354,6 +368,7 @@ def ensure_schema():
                 ON CONFLICT DO NOTHING;
             """)
             cur.execute(TRAINING_PLAN_SCHEMA)
+            cur.execute(CALENDAR_SCHEMA)
             cur.execute(DASHBOARD_HISTORY_SCHEMA)
     logger.info("Database schema verified")
 
@@ -1229,6 +1244,53 @@ def get_activity_brief(garmin_id: int) -> dict | None:
                 """SELECT garmin_id, activity_date, activity_type, name
                    FROM activities WHERE garmin_id = %s""",
                 (garmin_id,),
+            )
+            return cur.fetchone()
+
+
+# ── CALENDAR FEED ─────────────────────────────────────────────────────────────
+
+_CALENDAR_COLUMNS = "default_time, slots, feed_token, token_created_at, updated_at"
+
+
+def get_calendar_settings() -> dict | None:
+    """The calendar-feed settings row, or None before anything was saved."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(f"SELECT {_CALENDAR_COLUMNS} FROM calendar_settings WHERE id = 1")
+            return cur.fetchone()
+
+
+def save_calendar_schedule(default_time: str, slots: list[dict]) -> dict:
+    """Store the weekly start-time schedule, keeping the feed token."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""INSERT INTO calendar_settings (id, default_time, slots)
+                    VALUES (1, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        default_time = EXCLUDED.default_time,
+                        slots = EXCLUDED.slots,
+                        updated_at = now()
+                    RETURNING {_CALENDAR_COLUMNS}""",
+                (default_time, Jsonb(slots)),
+            )
+            return cur.fetchone()
+
+
+def set_calendar_token(token: str | None) -> dict:
+    """Publish (a new token) or revoke (None) the calendar feed."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""INSERT INTO calendar_settings (id, feed_token, token_created_at)
+                    VALUES (1, %s, CASE WHEN %s::text IS NULL THEN NULL ELSE now() END)
+                    ON CONFLICT (id) DO UPDATE SET
+                        feed_token = EXCLUDED.feed_token,
+                        token_created_at = EXCLUDED.token_created_at,
+                        updated_at = now()
+                    RETURNING {_CALENDAR_COLUMNS}""",
+                (token, token),
             )
             return cur.fetchone()
 

@@ -464,7 +464,8 @@ def link_garmin_workout(plan_id: str | None, workout_id: str, garmin_workout_id:
 
 def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) -> dict:
     keys = ["id", "sport", "type", "name", "durationMinutes", "distanceKm", "distanceMeters",
-            "distanceKmRange", "primaryZone", "keyTargets", "terrain", "difficulty", "trainingEffect"]
+            "distanceKmRange", "primaryZone", "keyTargets", "terrain", "difficulty", "trainingEffect",
+            "startTime"]
     if include_details:
         keys += ["description", "humanReadable"]
     out = {k: workout[k] for k in keys if workout.get(k) not in (None, "")}
