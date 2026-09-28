@@ -7,10 +7,10 @@ prediction row). Stored as one JSON value in app_settings under
     {"name": str, "date": "YYYY-MM-DD", "distance": one of DISTANCES,
      "target_sec": int | null, "show_on_today": bool}
 """
-import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 
 import db
+from tools.local_time import local_today
 
 SETTING_KEY = "goal_race"
 
@@ -142,15 +142,6 @@ def describe(goal: dict, today: date) -> dict:
         "phase": phase,
         "show_form": 0 <= days <= FORM_WINDOW_DAYS,
     }
-
-
-def local_today() -> date:
-    """Today in the dashboard's local zone (DASHBOARD_TZ_OFFSET_HOURS)."""
-    try:
-        offset = float(os.environ.get("DASHBOARD_TZ_OFFSET_HOURS", "0"))
-    except ValueError:
-        offset = 0.0
-    return (datetime.now(timezone.utc) + timedelta(hours=offset)).date()
 
 
 def settings_payload(today: date | None = None) -> dict:

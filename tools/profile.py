@@ -1,7 +1,7 @@
 # tools/profile.py
 from concurrent.futures import ThreadPoolExecutor
 from garmin_client import get_client
-from datetime import date as _date
+from tools.local_time import local_today
 
 def get_athlete_profile() -> dict:
     """
@@ -26,7 +26,7 @@ def get_athlete_profile() -> dict:
 
     # 7-day average resting HR from today's user summary
     try:
-        summary = client.get_user_summary(_date.today().isoformat()) or {}
+        summary = client.get_user_summary(local_today().isoformat()) or {}
         resting_hr_7day_avg = summary.get('lastSevenDaysAvgRestingHeartRate')
     except Exception:
         resting_hr_7day_avg = None

@@ -834,7 +834,8 @@ ACTIVITY_JS = """
     if (!box) return;
     var start = box.closest('.tp-activity').getAttribute('data-week-start') || '';
     box.hidden = false;
-    loadMonth(start.slice(0, 7) || new Date().toISOString().slice(0, 7));
+    var now = new Date();
+    loadMonth(start.slice(0, 7) || now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0'));
   }
   function closeCal() { var box = cal(); if (box) box.hidden = true; }
 

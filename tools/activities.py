@@ -8,6 +8,7 @@ from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
 from tools.best_efforts import activity_efforts
 from datetime import date, timedelta
+from tools.local_time import local_today
 
 logger = logging.getLogger(__name__)
 
@@ -1050,7 +1051,7 @@ def week_bounds(week_offset: int = 0) -> tuple[date, date]:
 
     ``week_offset``: 0 = current week, 1 = last week, 2 = two weeks ago, …
     """
-    today = date.today()
+    today = local_today()
     week_monday = today - timedelta(days=today.weekday() + week_offset * 7)
     week_sunday = week_monday + timedelta(days=6)
     # Don't ask for future dates
@@ -1165,7 +1166,7 @@ def get_swim_records(months: int = 6, top_n: int = 5) -> dict:
         top_n:  Number of longest sets to return (default 5).
     """
     client = get_client()
-    today = date.today()
+    today = local_today()
     start = _months_ago(today, months)
 
     swims = client.get_activities_by_date(

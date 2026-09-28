@@ -15,6 +15,7 @@ Threshold metrics, one unit each:
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from tools.local_time import local_today
 
 import db
 from tools import plan_doc
@@ -212,7 +213,7 @@ def backfill_history(client, today: date | None = None, days: int = BACKFILL_DAY
     """Fill the past ``days`` of threshold and prediction history. Each part
     runs on its own, so one unavailable endpoint doesn't stop the rest.
     Returns {part: rows written, or the error}."""
-    end = today or date.today()
+    end = today or local_today()
     start = end - timedelta(days=days)
     parts = {
         "race_predictions": lambda: _backfill_predictions(client, start, end),

@@ -15,6 +15,7 @@ upload or edit (its message is safe to show to the user).
 import json
 import os
 from datetime import date, datetime, timedelta, timezone
+from tools.local_time import local_today
 
 import db
 from tools import plan_doc
@@ -403,7 +404,7 @@ def link_completed_workouts(plan_id: str | None = None, workout_ids: list[str] |
     row = db.get_training_plan(plan_id)
     if row is None or row["status"] != "active":
         return []
-    today = today or date.today()
+    today = today or local_today()
     states = db.get_workout_states(row["id"])
     pending = [
         (d, w) for _, d, w in plan_doc.iter_workouts(row["plan"])
@@ -485,7 +486,7 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
     row = require_plan(plan_id)
     plan = row["plan"]
     states = db.get_workout_states(row["id"])
-    today = today or date.today()
+    today = today or local_today()
 
     weeks = plan.get("weeks") or []
     if week_number is not None:
