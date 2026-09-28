@@ -92,7 +92,10 @@ def completed_map(plan_id: str) -> dict[str, bool]:
 
 def view_payload(row: dict) -> dict:
     """What the viewer needs besides the plan itself: which workouts are
-    complete, and the Garmin activity each one was matched to."""
+    complete, the Garmin activity each one was matched to, and each
+    workout's start time as the calendar feed places it (the viewer orders
+    a day's workouts by it)."""
+    from tools import plan_calendar   # it imports this module
     states = db.get_workout_states(row["id"])
     briefs = db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
     activities = {}
@@ -110,6 +113,7 @@ def view_payload(row: dict) -> dict:
         "readOnly": row["status"] != "active",
         "completed": {wid: True for wid, s in states.items() if s.get("completed")},
         "activities": activities,
+        "startTimes": plan_calendar.start_times(row["plan"]),
     }
 
 

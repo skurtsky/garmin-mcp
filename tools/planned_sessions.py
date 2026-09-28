@@ -69,7 +69,11 @@ def sessions_from_plan(plan: dict, states: dict, start: date, end: date, today: 
             "type": w.get("type"),
             "duration_min": w.get("durationMinutes"),
             "distance_km": w.get("distanceKm") or (round(w["distanceMeters"] / 1000, 2) if w.get("distanceMeters") else None),
+            "distance_meters": w.get("distanceMeters"),
             "primary_zone": w.get("primaryZone"),
+            # What the workout's dialog shows (Activity → Coming up).
+            "description": w.get("description"),
+            "details": plan_doc.resolve_tokens(plan, w.get("humanReadable")) if w.get("humanReadable") else None,
             "is_test": plan_doc.is_test_workout(w),
             "est_load": training_load.estimate_planned_load(w, rates),
             "benefit": training_load.planned_benefit(w),

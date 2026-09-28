@@ -298,3 +298,47 @@ def test_feed_skips_the_bearer_token_but_nothing_else_does(fake_db, monkeypatch)
     assert app.get("/training-plan/api/calendar", params={"token": key}).status_code == 401
     assert app.get("/training-plan", params={"key": key}).status_code == 401
     assert app.get("/training-plan/api/calendar", params={"token": "bearer-secret"}).status_code == 200
+
+
+# ── START TIMES IN THE VIEWER ─────────────────────────────────────────────────
+
+def test_start_times_match_the_feed(fake_db):
+    plan = sample_plan()
+    plan["weeks"][0]["days"][2]["workouts"][0]["startTime"] = "08:15"          # Thu bike
+    plan["weeks"][0]["days"][0]["workouts"].append({"id": "w1-mon-mob", "sport": "other", "name": "Mobility"})
+    plan_calendar.save_schedule("06:00", [{"day": "Tuesday", "sport": "run", "time": "17:30"},
+                                          {"day": "Tuesday", "sport": "strength", "time": "05:30"}])
+
+    times = plan_calendar.start_times(plan)
+
+    assert times == {"w1-mon-swim": "06:00", "w1-tue-run": "17:30", "w1-tue-strength": "05:30",
+                     "w1-thu-bike": "08:15", "w2-tue-run": "17:30"}      # Mobility: no duration, no time
+
+
+def test_viewer_payload_carries_start_times(client, fake_db):
+    plan_service.save_upload(sample_plan())
+    client.post("/training-plan/api/calendar/schedule", params=TOKEN, json={
+        "defaultTime": "06:00", "slots": [{"day": "Tuesday", "sport": "run", "time": "18:00"}]})
+
+    times = client.get("/training-plan/api/plan", params=TOKEN).json()["startTimes"]
+    assert times["w1-tue-run"] == "18:00" and times["w1-tue-strength"] == "06:00"
+
+    # A workout's own start time wins, and edits answer with the new times.
+    ops = {"operations": [{"op": "update_workout", "workout_id": "w1-tue-strength", "fields": {"startTime": "19:00"}}]}
+    times = client.post("/training-plan/api/operations", params=TOKEN, json=ops).json()["startTimes"]
+    assert times["w1-tue-strength"] == "19:00"
+
+    page = client.get("/training-plan", params=TOKEN).text
+    assert '"startTimes"' in page and "byStartTime(" in page
+
+
+def test_activity_week_sessions_carry_start_times(fake_db):
+    from tools import dashboard_activity
+    plan_service.save_upload(sample_plan())
+    plan_calendar.save_schedule("06:00", [{"day": "Tuesday", "sport": "run", "time": "17:30"},
+                                          {"day": "Tuesday", "sport": "strength", "time": "05:30"}])
+
+    extras = dashboard_activity.week_extras("2026-09-14", "2026-09-20", [], date(2026, 9, 14))
+
+    times = {s["workout_id"]: s["start_time"] for s in extras["planned"]}
+    assert times["w1-tue-strength"] == "05:30" and times["w1-tue-run"] == "17:30"

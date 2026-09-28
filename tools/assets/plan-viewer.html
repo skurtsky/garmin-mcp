@@ -213,7 +213,7 @@ function api(path, body) {
 function applyServer(data) {
   PLAN = data.plan;
   SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {},
-    activities: data.activities || {} });
+    activities: data.activities || {}, startTimes: data.startTimes || {} });
   syncStateFromPlan();
   state.revisions = null;
 }
@@ -420,6 +420,16 @@ function allWorkouts() {
   })));
   return out;
 }
+/* A day's workouts, earliest first, by the start time the calendar feed gives
+   each one (its own start time, else the weekly schedule in Settings, else
+   the default — computed on the server). Workouts without one (no duration)
+   follow, in plan order. */
+function startTimeOf(w) { return (SERVER.startTimes || {})[w.id] || ''; }
+function byStartTime(workouts) {
+  return workouts.map((w, i) => ({ w, i, t: startTimeOf(w) }))
+    .sort((a, b) => (a.t && b.t ? a.t.localeCompare(b.t) : (a.t ? -1 : b.t ? 1 : 0)) || a.i - b.i)
+    .map(x => x.w);
+}
 function workoutById(id) { const hit = allWorkouts().find(x => x.wo.id === id); return hit || null; }
 
 function fmtKm(km) { if (km == null) return ''; return state.unit === 'imperial' ? (km*0.621371).toFixed(1)+'mi' : km+'km'; }
@@ -457,7 +467,7 @@ function workoutCard(w, dateStr) {
   const isToday = dateStr === todayStr();
   const faded = done && !isToday;
   const dist = distanceLabel(w);
-  const meta = [fmtDuration(w.durationMinutes), dist, w.primaryZone].filter(Boolean).map(esc).join(' · ');
+  const meta = [startTimeOf(w), fmtDuration(w.durationMinutes), dist, w.primaryZone].filter(Boolean).map(esc).join(' · ');
   return '<div class="card elev-sm wcard' + (isToday ? ' today' : '') + '"' + (READ_ONLY ? '' : ' draggable="true" data-drag-id="' + esc(w.id) + '"') + ' data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (faded ? 0.55 : 1) + ';">'
     + '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
       + '<span class="tag" style="background:' + tint(color) + '; color:' + color + '; font-size:10px;">' + esc(w.sport) + '</span>'
@@ -583,7 +593,7 @@ function planTab() {
   allWorkouts().forEach(x => { if (dayDates.includes(x.date)) (byDate[x.date] = byDate[x.date] || []).push(x.wo); });
 
   h += '<div class="week-grid">' + (wk.days || []).map(day => {
-    const workouts = (byDate[day.date] || []).filter(w => w.sport !== 'rest');
+    const workouts = byStartTime((byDate[day.date] || []).filter(w => w.sport !== 'rest'));
     const isToday = day.date === todayStr();
     return '<div class="day-col" data-day-date="' + esc(day.date) + '">'
       + '<div class="day-head' + (isToday ? ' today' : '') + '"><span style="font-family:var(--font-heading); font-size:14px; font-weight:500;' + (isToday ? ' color:var(--color-accent-300);' : '') + '">'
@@ -844,7 +854,9 @@ function calendarCall(action, body) {
     .finally(() => { state.saving = false; render(); });
 }
 function saveCalendarSchedule(defaultTime, slots) {
-  return calendarCall('schedule', { defaultTime, slots });
+  // The schedule sets the plan's start times (and so each day's order).
+  return calendarCall('schedule', { defaultTime, slots })
+    .then(() => api('plan')).then(applyServer).catch(() => {}).finally(render);
 }
 /* A new row takes the first day + sport not already listed. */
 function nextCalendarSlot(c) {

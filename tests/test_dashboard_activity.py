@@ -134,6 +134,32 @@ def test_coming_up_and_strip():
     assert "act-plan-outline" not in _section(_panel(), "bike")   # plan outlines only under All
 
 
+def test_coming_up_is_collapsed_and_opens_the_workout():
+    all_ = _section(_panel(), "all")
+    block = all_[all_.index('<details class="act-upcoming"'):all_.index("</details>")]
+    assert "Coming up · 1" in block
+    assert "<details class=\"act-upcoming\">" in block            # no open attribute: collapsed
+    assert 'data-plan-workout="w4"' in block                     # tapping opens the plan workout
+    # The missed session in the log isn't part of Coming up.
+    assert 'data-plan-workout="w2"' not in all_
+
+
+def test_coming_up_dialogs_travel_with_the_panel():
+    from tools import dashboard
+    extras = {**EXTRAS, "planned": EXTRAS["planned"] + [
+        {**_session("w5", "2026-09-27", "swim", "Pool swim", "planned", 45, 40),
+         "distance_km": 2.0, "distance_meters": 2000, "description": "Easy aerobic",
+         "details": "WARM-UP: 400m easy"}]}
+    html = dashboard._panel_activity({"activity_week": WEEK, "activity_prev_week": PREV,
+                                      "activity_extras": extras, "date": TODAY.isoformat()}, token="t0k")
+
+    templates = html[html.index('<template id="plan-workout-w4">'):html.rindex("</section>")]
+    assert '<template id="plan-workout-w5">' in templates
+    assert "Sun 27 Sep" in templates and "2,000 m" in templates and "WARM-UP: 400m easy" in templates
+    assert "/training-plan?workout=w5&amp;token=t0k" in templates    # Open in plan
+    assert 'id="plan-workout-w2"' not in html                          # missed: no dialog
+
+
 def test_past_week_header():
     html = _panel(offset=2, extras={})
     assert "Sep 21–27, 2026 · 2 weeks ago" in html
@@ -192,3 +218,12 @@ def test_calendar_route(monkeypatch):
     dashboard.render_activity_calendar("garbage", None)
     today = dashboard._local_now().date()
     assert seen["ym"] == (today.year, today.month)
+
+
+def test_coming_up_lists_a_day_by_start_time():
+    evening = {**_session("w6", "2026-09-26", "run", "Evening run", "planned", 40, 40), "start_time": "17:30"}
+    morning = {**_session("w7", "2026-09-26", "strength", "Gym", "planned", 45, 30), "start_time": "05:30"}
+    extras = {**EXTRAS, "planned": [s for s in EXTRAS["planned"] if s["workout_id"] != "w4"] + [evening, morning]}
+    block = _section(_panel(extras=extras), "all")
+    assert block.index("Gym") < block.index("Evening run")
+    assert "Sat 26 · 05:30 · Zone 2" in block
