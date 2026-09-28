@@ -3,6 +3,7 @@
 When DATABASE_URL is set, the dashboard reads pre-synced data from PostgreSQL
 instead of calling Garmin live. The schema is auto-created on first connect.
 """
+import atexit
 import logging
 import os
 import threading
@@ -67,7 +68,18 @@ def _get_pool() -> ConnectionPool:
         with _pool_lock:
             if _pool is None:
                 _pool = ConnectionPool(database_url, min_size=1, max_size=5, open=True)
+                atexit.register(close_pool)
     return _pool
+
+
+def close_pool():
+    """Close the pool's connections and worker threads. Runs at exit: left
+    to the pool's own finaliser, the threads are joined during interpreter
+    shutdown, which Python 3.14 refuses (PythonFinalizationError)."""
+    global _pool
+    pool, _pool = _pool, None
+    if pool is not None:
+        pool.close()
 
 
 @contextmanager
@@ -136,6 +148,80 @@ CALENDAR_SCHEMA = """
         token_created_at  TIMESTAMPTZ,
         updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+"""
+
+
+# The redesigned Activity / Trends / Fitness tabs. Garmin only exposes the
+# current thresholds, race predictions and records, so the sync job keeps a
+# daily copy of each to chart how they move. Metric values are stored in one
+# unit per metric: watts, bpm, seconds per km (threshold pace), seconds per
+# 100 m (CSS), ml/kg/min (VO2max).
+DASHBOARD_HISTORY_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS threshold_snapshots (
+        snapshot_date  DATE NOT NULL,
+        source         TEXT NOT NULL CHECK (source IN ('garmin', 'plan')),
+        metric         TEXT NOT NULL,
+        value          REAL NOT NULL,
+        synced_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (snapshot_date, source, metric)
+    );
+
+    CREATE TABLE IF NOT EXISTS race_prediction_snapshots (
+        snapshot_date  DATE NOT NULL,
+        distance       TEXT NOT NULL,
+        seconds        INTEGER NOT NULL,
+        synced_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (snapshot_date, distance)
+    );
+
+    -- One row each time a personal record changes, with the value it beat.
+    CREATE TABLE IF NOT EXISTS personal_record_history (
+        id                     SERIAL PRIMARY KEY,
+        sport                  TEXT NOT NULL,
+        record_type            TEXT NOT NULL,
+        value_raw              REAL,
+        value_formatted        TEXT,
+        record_date            DATE,
+        activity_id            BIGINT,
+        previous_value_raw     REAL,
+        previous_formatted     TEXT,
+        previous_record_date   DATE,
+        detected_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_personal_record_history_date
+        ON personal_record_history (record_date DESC);
+
+    -- Best efforts inside each activity (fastest 5K within a run, best
+    -- 20 minutes of a ride, ...), keyed like personal_records, so recent
+    -- efforts close to a record can be found. value: seconds, or watts.
+    CREATE TABLE IF NOT EXISTS activity_best_efforts (
+        garmin_id      BIGINT NOT NULL,
+        sport          TEXT NOT NULL,
+        record_type    TEXT NOT NULL,
+        value          REAL NOT NULL,
+        activity_date  DATE,
+        PRIMARY KEY (garmin_id, record_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_activity_best_efforts_type
+        ON activity_best_efforts (sport, record_type, activity_date DESC);
+
+    -- Manual corrections to automatic per-activity flags (commute detection).
+    CREATE TABLE IF NOT EXISTS activity_overrides (
+        garmin_id   BIGINT PRIMARY KEY,
+        is_commute  BOOLEAN,
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    -- App-wide settings as one JSON value per key (e.g. 'goal_race').
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key         TEXT PRIMARY KEY,
+        value       JSONB NOT NULL,
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    INSERT INTO sync_state (data_type) VALUES
+        ('threshold_snapshots'), ('race_predictions')
+    ON CONFLICT DO NOTHING;
 """
 
 
@@ -283,6 +369,7 @@ def ensure_schema():
             """)
             cur.execute(TRAINING_PLAN_SCHEMA)
             cur.execute(CALENDAR_SCHEMA)
+            cur.execute(DASHBOARD_HISTORY_SCHEMA)
     logger.info("Database schema verified")
 
 
@@ -800,13 +887,58 @@ def upsert_activity_detail(garmin_id: int, detail: dict, route: list | None):
                        synced_at = now()""",
                 (garmin_id, Jsonb(detail), Jsonb(route) if route is not None else None),
             )
+            _replace_best_efforts(cur, garmin_id, (detail or {}).get("best_efforts") or [])
+
+
+def _replace_best_efforts(cur, garmin_id: int, efforts: list[dict]):
+    """Index an activity's best efforts (from its detail row), dated by the
+    activity's local start date."""
+    cur.execute("DELETE FROM activity_best_efforts WHERE garmin_id = %s", (garmin_id,))
+    for effort in efforts:
+        cur.execute(
+            """INSERT INTO activity_best_efforts
+                   (garmin_id, sport, record_type, value, activity_date)
+               SELECT %(id)s, %(sport)s, %(type)s, %(value)s,
+                      (SELECT COALESCE(substring(summary ->> 'date', 1, 10)::date,
+                                       activity_date::date)
+                       FROM activities WHERE garmin_id = %(id)s)
+               ON CONFLICT (garmin_id, record_type) DO UPDATE SET
+                   value = EXCLUDED.value, activity_date = EXCLUDED.activity_date""",
+            {"id": garmin_id, "sport": effort["sport"], "type": effort["record_type"],
+             "value": effort["value"]},
+        )
+
+
+def _record_changed(old: dict, rec: dict) -> bool:
+    old_value, new_value = old.get("value_raw"), rec.get("value_raw")
+    if old_value is None or new_value is None:
+        return old_value != new_value
+    return abs(float(old_value) - float(new_value)) > 1e-6 or old.get("activity_id") != rec.get("activity_id")
 
 
 def upsert_personal_records(records: dict):
+    """Store the current records. When one changes, the value it replaced is
+    logged to personal_record_history first — Garmin only ever returns the
+    current best, so this log is the only record of the improvement."""
     with get_conn() as conn:
-        with conn.cursor() as cur:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT sport, record_type, value_raw, value_formatted, record_date, activity_id "
+                        "FROM personal_records")
+            existing = {(r["sport"], r["record_type"]): r for r in cur.fetchall()}
             for sport, recs in records.items():
                 for rec in recs:
+                    old = existing.get((sport, rec.get("label")))
+                    if old is not None and _record_changed(old, rec):
+                        cur.execute(
+                            """INSERT INTO personal_record_history
+                                   (sport, record_type, value_raw, value_formatted, record_date,
+                                    activity_id, previous_value_raw, previous_formatted,
+                                    previous_record_date)
+                               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                            (sport, rec.get("label"), rec.get("value_raw"), rec.get("value_formatted"),
+                             _date_prefix(rec.get("date")), rec.get("activity_id"), old["value_raw"],
+                             old["value_formatted"], old["record_date"]),
+                        )
                     cur.execute(
                         """INSERT INTO personal_records
                                (sport, record_type, value_raw, value_formatted,
@@ -1161,3 +1293,234 @@ def set_calendar_token(token: str | None) -> dict:
                 (token, token),
             )
             return cur.fetchone()
+
+
+# ── DASHBOARD HISTORY (threshold / prediction snapshots, records, efforts) ────
+
+def upsert_threshold_snapshot(snapshot_date: str, source: str, values: dict):
+    """Store one day's thresholds for a source ('garmin' or 'plan');
+    ``values`` is {metric: value}, None values skipped."""
+    rows = [(snapshot_date, source, metric, float(value))
+            for metric, value in values.items() if value is not None]
+    if not rows:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO threshold_snapshots (snapshot_date, source, metric, value)
+                   VALUES (%s, %s, %s, %s)
+                   ON CONFLICT (snapshot_date, source, metric) DO UPDATE SET
+                       value = EXCLUDED.value, synced_at = now()""",
+                rows,
+            )
+
+
+def get_threshold_snapshots(start_date: str, end_date: str) -> list[dict]:
+    """Snapshots from start_date through end_date, oldest first."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT snapshot_date, source, metric, value FROM threshold_snapshots
+                   WHERE snapshot_date BETWEEN %s AND %s
+                   ORDER BY snapshot_date, source, metric""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
+def upsert_race_predictions(snapshot_date: str, predictions: dict):
+    """Store one day's race predictions: {distance: seconds}."""
+    rows = [(snapshot_date, distance, int(secs))
+            for distance, secs in predictions.items() if secs]
+    if not rows:
+        return
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                """INSERT INTO race_prediction_snapshots (snapshot_date, distance, seconds)
+                   VALUES (%s, %s, %s)
+                   ON CONFLICT (snapshot_date, distance) DO UPDATE SET
+                       seconds = EXCLUDED.seconds, synced_at = now()""",
+                rows,
+            )
+
+
+def get_race_prediction_snapshots(start_date: str, end_date: str) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT snapshot_date, distance, seconds FROM race_prediction_snapshots
+                   WHERE snapshot_date BETWEEN %s AND %s
+                   ORDER BY snapshot_date, distance""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
+def get_personal_record_history(since_date: str) -> list[dict]:
+    """Record changes whose record date is on or after since_date, newest first."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT sport, record_type, value_raw, value_formatted, record_date,
+                          activity_id, previous_value_raw, previous_formatted,
+                          previous_record_date, detected_at
+                   FROM personal_record_history
+                   WHERE record_date >= %s
+                   ORDER BY record_date DESC, detected_at DESC""",
+                (since_date,),
+            )
+            return cur.fetchall()
+
+
+def get_best_efforts(since_date: str) -> list[dict]:
+    """Best efforts from activities on or after since_date, newest first."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT e.garmin_id, e.sport, e.record_type, e.value, e.activity_date, a.name
+                   FROM activity_best_efforts e
+                   LEFT JOIN activities a ON a.garmin_id = e.garmin_id
+                   WHERE e.activity_date >= %s
+                   ORDER BY e.activity_date DESC""",
+                (since_date,),
+            )
+            return cur.fetchall()
+
+
+def get_daily_activity_loads(start_date: str, end_date: str) -> dict[str, float]:
+    """{local date: summed Garmin training load} for activities from
+    start_date through end_date (inclusive), by each activity's local
+    start date."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT day, SUM(load) FROM (
+                       SELECT COALESCE(substring(summary ->> 'date', 1, 10),
+                                       to_char(activity_date, 'YYYY-MM-DD')) AS day,
+                              COALESCE(training_load, (summary ->> 'training_load')::real, 0) AS load
+                       FROM activities
+                       WHERE activity_date >= %s::date - 1 AND activity_date < %s::date + 2
+                   ) t
+                   WHERE day BETWEEN %s AND %s
+                   GROUP BY day""",
+                (start_date, end_date, start_date, end_date),
+            )
+            return {row[0]: float(row[1] or 0) for row in cur.fetchall()}
+
+
+def get_activity_overrides(garmin_ids: list[int]) -> dict[int, dict]:
+    if not garmin_ids:
+        return {}
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT garmin_id, is_commute FROM activity_overrides WHERE garmin_id = ANY(%s)",
+                (list(garmin_ids),),
+            )
+            return {row["garmin_id"]: row for row in cur.fetchall()}
+
+
+def set_commute_override(garmin_id: int, is_commute: bool | None):
+    """Mark an activity as a commute (True) or not (False), overriding the
+    automatic detection; None removes the override."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if is_commute is None:
+                cur.execute("DELETE FROM activity_overrides WHERE garmin_id = %s", (garmin_id,))
+                return
+            cur.execute(
+                """INSERT INTO activity_overrides (garmin_id, is_commute)
+                   VALUES (%s, %s)
+                   ON CONFLICT (garmin_id) DO UPDATE SET
+                       is_commute = EXCLUDED.is_commute, updated_at = now()""",
+                (garmin_id, is_commute),
+            )
+
+
+def get_rides_in_range(start_date: str, end_date: str) -> list[dict]:
+    """Rides (any cycling type) from start_date up to (not including)
+    end_date, with the summary JSON commute detection reads."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""SELECT {_ACTIVITY_BRIEF_COLUMNS} FROM activities
+                    WHERE activity_date >= %s AND activity_date < %s
+                      AND (activity_type ILIKE '%%bik%%' OR activity_type ILIKE '%%cycl%%'
+                           OR activity_type ILIKE '%%ride%%')
+                    ORDER BY activity_date""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
+def get_setting(key: str):
+    """An app setting's JSON value, or None when unset."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+
+def set_setting(key: str, value):
+    """Store (value) or clear (None) an app setting."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            if value is None:
+                cur.execute("DELETE FROM app_settings WHERE key = %s", (key,))
+                return
+            cur.execute(
+                """INSERT INTO app_settings (key, value) VALUES (%s, %s)
+                   ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
+                (key, Jsonb(value)),
+            )
+
+
+def list_plan_revisions_for_thresholds() -> list[dict]:
+    """Every revision of every plan (oldest first) — the plan-side threshold
+    history backfill replays them."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT plan_id, version, plan, created_at FROM training_plan_revisions
+                   ORDER BY created_at, plan_id, version"""
+            )
+            return cur.fetchall()
+
+
+def get_vo2max_history_from_daily_metrics(start_date: str, end_date: str) -> list[dict]:
+    """The VO2max values the daily-metrics sync already stored (in
+    training_status_data), per day."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT metric_date,
+                          (training_status_data -> 'vo2max' ->> 'running')::real AS running,
+                          (training_status_data -> 'vo2max' ->> 'cycling')::real AS cycling
+                   FROM daily_metrics
+                   WHERE metric_date BETWEEN %s AND %s
+                   ORDER BY metric_date""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
+def get_ride_ftp_history(start_date: str, end_date: str) -> list[dict]:
+    """The FTP Garmin recorded on each synced ride (activity_details.detail
+    ftp), one value per day — the fallback FTP history."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT DISTINCT ON (day) day, ftp FROM (
+                       SELECT COALESCE(substring(a.summary ->> 'date', 1, 10),
+                                       to_char(a.activity_date, 'YYYY-MM-DD')) AS day,
+                              (d.detail ->> 'ftp')::real AS ftp, a.activity_date
+                       FROM activities a JOIN activity_details d ON d.garmin_id = a.garmin_id
+                       WHERE d.detail ->> 'ftp' IS NOT NULL
+                   ) t
+                   WHERE day BETWEEN %s AND %s
+                   ORDER BY day, activity_date DESC""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()

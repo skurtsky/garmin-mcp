@@ -211,7 +211,8 @@ Optional environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Offset from UTC for the "today" date and displayed local time (e.g. `-4`) |
+| `LOCAL_TIMEZONE` | — | Your IANA time zone (e.g. `America/Toronto`). Decides what "today" is everywhere — dashboard, MCP tools and the sync job — and follows daylight saving. The server itself runs on UTC, so without a zone the day rolls over at UTC midnight (the evening before, in the Americas). The time zone picked in the app's **Settings → Time zone** (stored in PostgreSQL) takes precedence over this |
+| `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Fixed offset from UTC (e.g. `-4`), used only when `LOCAL_TIMEZONE` is unset. Doesn't follow daylight saving |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | How old the dashboard can get before coming back to the app refreshes it; set `0` to disable |
 | `DASHBOARD_TREND_PERIOD` | `14d` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window. `get_trends` fetches its per-day metrics concurrently, but there's no batch endpoint for most of them, so wider windows still add latency; `1m` (30d) restores the full toggle at the cost of a slower load |
 
@@ -425,7 +426,7 @@ calling Garmin Connect:
 | `get_trends` | `daily_metrics` for every synced day in the window; only the rest are fetched live |
 
 A synced day is used when it's **final** (synced after that day ended in
-local time, per `DASHBOARD_TZ_OFFSET_HOURS`) or **fresh** (synced within
+local time, per `LOCAL_TIMEZONE`) or **fresh** (synced within
 `MCP_DB_MAX_AGE_SECONDS`). Otherwise the tool calls Garmin as before. If that
 live call fails and an older synced copy exists, the older copy is returned,
 marked `"stale": true`. Every response includes a `data_source` block
@@ -440,6 +441,35 @@ The sync job itself always calls Garmin directly.
 |---|---|---|
 | `MCP_DB_FIRST` | `1` | Set `0` to make every tool call Garmin live |
 | `MCP_DB_MAX_AGE_SECONDS` | `900` | How recently today's (still-changing) row must have been synced to be used |
+
+## Dashboard History
+
+Garmin only reports the *current* thresholds, race predictions and personal
+records, so each `sync_garmin.py` run also stores a daily copy (tables
+`threshold_snapshots`, `race_prediction_snapshots`, and
+`personal_record_history` for each record change with the value it beat).
+The activity-detail sync indexes the best efforts inside every activity
+(fastest 1K … marathon and 40K, best 20-minute power, fastest 100 m / 400 m
+swim) in `activity_best_efforts`, for the Fitness page's close calls.
+
+After deploying, run these once to fill the past:
+
+```bash
+# A year of FTP, run LTHR / threshold pace, VO2max, plan thresholds and race predictions
+python sync_garmin.py --backfill-history
+# Re-sync activities so older rows gain the new fields (key metrics, training
+# benefit, start/end points for commute detection) — reach back ~6 months for
+# the fitness/fatigue history
+python sync_garmin.py --activities-only --activities-since 2026-03-01
+# Re-fetch activity details so older activities get their best efforts
+python sync_garmin.py --details-only --detail-limit 999 --overwrite
+```
+
+The Fitness tab's triathlon predictions are estimated from CSS (or, without
+one, the swim records), FTP and threshold pace. Their per-distance
+multipliers can be changed with `TRI_PREDICTOR_CONFIG`, a JSON object such as
+`{"70.3": {"bike_if": 0.8, "run_factor": 1.12}}` (keys: `swim_offset_s`,
+`bike_if`, `run_factor`, `transitions_s`).
 
 ## Testing
 

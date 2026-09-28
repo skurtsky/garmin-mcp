@@ -254,6 +254,7 @@ const ICONS = {
   copy:'<path d="M216 32H88a8 8 0 0 0-8 8v40H40a8 8 0 0 0-8 8v128a8 8 0 0 0 8 8h128a8 8 0 0 0 8-8v-40h40a8 8 0 0 0 8-8V40a8 8 0 0 0-8-8Zm-56 176H48V96h112Zm48-48h-32V88a8 8 0 0 0-8-8H96V48h112Z"/>',
   trash:'<path d="M216 48h-40v-8a24 24 0 0 0-24-24h-48a24 24 0 0 0-24 24v8H40a8 8 0 0 0 0 16h8v144a16 16 0 0 0 16 16h128a16 16 0 0 0 16-16V64h8a8 8 0 0 0 0-16ZM96 40a8 8 0 0 1 8-8h48a8 8 0 0 1 8 8v8H96Zm96 168H64V64h128Zm-80-104v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Zm48 0v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Z"/>',
   plus:'<path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/>',
+  flag:'<path d="M227.32,48.75A8,8,0,0,0,218.76,50c-28,24.22-51.72,12.48-79.21-1.13C111.07,34.76,78.78,18.79,42.76,50A8,8,0,0,0,40,56V224a8,8,0,0,0,16,0V179.77c26.79-21.16,49.87-9.75,76.45,3.41,28.49,14.09,60.77,30.06,96.79-1.13a8,8,0,0,0,2.76-6V56A8,8,0,0,0,227.32,48.75ZM216,71.6v40.65c-14,11.06-27,13.22-40,10.88V79.34A60.05,60.05,0,0,0,216,71.6Zm-56,3.76v43c-6.66-2.67-13.43-6-20.45-9.48-8.82-4.37-18-8.91-27.55-12.18v-43c6.66,2.66,13.43,6,20.45,9.48C141.27,67.55,150.46,72.09,160,75.36ZM96,48.91V92.69a60.06,60.06,0,0,0-40,7.75V59.78C70,48.72,83,46.57,96,48.91ZM86.58,152A60.06,60.06,0,0,0,56,160.43V119.78c14-11.06,27-13.22,40-10.88v43.8A65.61,65.61,0,0,0,86.58,152ZM112,156.67v-43c6.66,2.66,13.43,6,20.45,9.48,8.82,4.37,18,8.9,27.55,12.17v43c-6.66-2.67-13.43-6-20.45-9.48C130.73,164.47,121.54,159.94,112,156.67Zm64,26.45v-43.8a65.61,65.61,0,0,0,9.42.72A60.11,60.11,0,0,0,216,131.57v40.68C202,183.31,189,185.46,176,183.12Z"/>',
   history:'<path d="M136 80v43.5l36.1 21.7a8 8 0 0 1-8.2 13.7l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Zm-8-48a95.4 95.4 0 0 0-67.9 28.1C54 66.3 48.3 72.4 43 78.5V64a8 8 0 0 0-16 0v40a8 8 0 0 0 8 8h40a8 8 0 0 0 0-16H52.1c5.7-6.8 11.4-13.2 19.3-21.2a80 80 0 1 1 1.7 114.8 8 8 0 1 0-11 11.6A96 96 0 1 0 128 32Z"/>'
 };
 function icon(name, size) {
@@ -377,7 +378,12 @@ const state = {
   revisionsError: '',
   calendar: null,
   calendarError: '',
-  calendarCopied: false
+  calendarCopied: false,
+  goal: SERVER.goalRace || null,   // {goal, distances} from the server, or null if unavailable
+  tz: SERVER.timezone || null,     // {timezone, effective, source, now} from the server, or null if unavailable
+  goalDraft: null,                 // the editor's copy while editing; saved only on Save
+  goalError: '',
+  goalSaving: false
 };
 function defaultUnit() {
   const p = PLAN.preferences || {};
@@ -393,12 +399,17 @@ function syncStateFromPlan() {
 }
 syncStateFromPlan();
 
+/* The week holding today. Compared as YYYY-MM-DD strings: comparing Date
+   objects put "now" past a week's endDate (its midnight) on the last day of
+   the week, which fell back to week 1. Before the plan it opens on the first
+   week, after it on the last, and in a gap between weeks on the next one. */
 function startWeek() {
-  const today = new Date();
-  const wk = (PLAN.weeks || []).find(w => d(w.startDate) <= today && today <= d(w.endDate));
-  if (wk) return wk.weekNumber;
-  const first = (PLAN.weeks || [])[0];
-  return first ? first.weekNumber : 1;
+  const weeks = (PLAN.weeks || []).filter(w => w.startDate && w.endDate)
+    .slice().sort((a, b) => a.startDate < b.startDate ? -1 : 1);
+  if (!weeks.length) return ((PLAN.weeks || [])[0] || {}).weekNumber || 1;
+  const today = todayStr();
+  const wk = weeks.find(w => today <= String(w.endDate).slice(0, 10));
+  return (wk || weeks[weeks.length - 1]).weekNumber;
 }
 function weekByNumber(n) { return (PLAN.weeks || []).find(w => w.weekNumber === n); }
 function phaseForWeek(n) { return (PLAN.phases || []).find(p => n >= p.startWeek && n <= p.endWeek) || (PLAN.phases || [])[0] || { name:'Plan', focus:'' }; }
@@ -590,6 +601,8 @@ function settingsTab() {
   const ov = state.overrides;
   const z = PLAN.zones || {};
   let h = '<div style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>';
+  h += goalRaceSection();
+  h += timezoneSection();
 
   const dis = READ_ONLY ? ' disabled' : '';
   h += readOnlyBanner();
@@ -605,12 +618,12 @@ function settingsTab() {
   const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
     + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;"' + dis + '>'
       + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
-  if (z.bike) h += '<div class="sub-label">Bike</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
-    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
-    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
-  if (z.run) h += '<div class="sub-label">Run</div><div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">'
-    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
-    + '<div class="field"><label>Threshold pace (min:sec/km)</label><input class="input" type="text" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
+  if (z.bike) h += '<div class="sub-label">Bike</div><div class="field-pair">'
+    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" inputmode="numeric" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
+    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
+  if (z.run) h += '<div class="sub-label">Run</div><div class="field-pair">'
+    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
+    + '<div class="field"><label>Threshold pace (/km)</label><input class="input" type="text" placeholder="m:ss" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
   if (z.swim) h += '<div class="sub-label">Swim</div><div class="field" style="margin-bottom:10px;"><label>CSS (/100m)</label>'
     + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
   h += '</div>';
@@ -633,6 +646,128 @@ function settingsTab() {
     + '<div class="hr" style="margin:12px 0;"></div>'
     + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
   return h;
+}
+
+/* Goal race: one race for the whole app, stored on the server (not in the
+   plan), read by Today's countdown, Trends' race marker and Fitness'
+   highlighted prediction. Read-only until the pencil opens the editor;
+   edits apply only on Save. The countdown toggle saves straight away. */
+const RACE_FORM_TARGET = '+5 to +15 (Fresh)';
+function goalDistance(key) { return ((state.goal && state.goal.distances) || []).find(x => x.key === key) || null; }
+function goalDateLabel(iso) {
+  return d(iso).toLocaleDateString(undefined, { weekday:'short', month:'short', day:'numeric', year:'numeric' });
+}
+function goalTaperLabel(iso, key) {
+  const dist = goalDistance(key);
+  if (!iso || !dist) return '—';
+  const start = d(iso); start.setDate(start.getDate() - dist.taper_days);
+  return dist.taper_days + ' days · starts ' + start.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+}
+function goalRaceSection() {
+  if (!state.goal) return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Goal race</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px;">Unavailable right now — the goal race needs the database.</div></div>';
+  const g = state.goal.goal, f = state.goalDraft;
+  let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:12px;">'
+      + '<div class="card-title">Goal race</div>'
+      + (f && g ? '<button type="button" class="goal-clear" data-act="goal-clear">Clear</button>' : '')
+      + (!f && g ? '<button type="button" class="btn btn-icon btn-secondary" data-act="goal-edit" aria-label="Edit goal race" title="Edit goal race">' + icon('pencil', 16) + '</button>' : '')
+    + '</div>';
+  if (!g && !f) {
+    return h + '<button type="button" class="goal-add" data-act="goal-add">' + icon('flag', 16) + ' Add a goal race</button>'
+      + '<div class="goal-note">Drives the countdown on Today, the race marker on Trends and the highlighted prediction on Fitness.</div></div>';
+  }
+  if (f) {
+    h += '<div class="field" style="margin-bottom:10px;"><label>Race name</label>'
+      + '<input class="input" type="text" maxlength="120" data-goal-field="name" value="' + esc(f.name) + '"></div>'
+      + '<div style="display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; margin-bottom:10px;">'
+        + '<div class="field"><label>Date</label><input class="input" type="date" data-goal-field="date" value="' + esc(f.date) + '"></div>'
+        + '<div class="field"><label>Target time <span style="color:var(--color-neutral-600);">(optional)</span></label>'
+          + '<input class="input" type="text" inputmode="numeric" placeholder="h:mm:ss" data-goal-field="target" value="' + esc(f.target) + '"></div></div>'
+      + '<div class="field" style="margin-bottom:12px;"><label>Distance</label><div class="goal-dists">'
+        + state.goal.distances.map(x => '<button type="button" class="goal-dist' + (f.distance === x.key ? ' on' : '') + '" data-act="goal-distance" data-key="' + esc(x.key) + '" aria-pressed="' + (f.distance === x.key) + '">' + esc(x.label) + '</button>').join('')
+      + '</div></div>';
+  } else {
+    h += '<div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px;">'
+      + '<div class="goal-tile">' + icon('flag', 20) + '</div>'
+      + '<div style="flex:1; min-width:0;"><div style="font-size:15px; font-weight:500;">' + esc(g.name) + '</div>'
+        + '<div style="font-size:12px; color:var(--color-neutral-500);">' + esc(goalDateLabel(g.date)) + ' · ' + esc(g.distance_long) + '</div>'
+        + (g.target ? '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:2px;">Target ' + esc(g.target) + '</div>' : '')
+      + '</div></div>';
+  }
+  const src = f || g;
+  h += '<div class="goal-info">'
+      + '<div><span>Taper</span><span>' + esc(goalTaperLabel(src.date, src.distance)) + '</span></div>'
+      + '<div><span>Race-day form target</span><span>' + RACE_FORM_TARGET + '</span></div></div>';
+  const on = f ? f.show_on_today : g.show_on_today;
+  h += '<button type="button" class="goal-toggle" data-act="goal-toggle-today" role="switch" aria-checked="' + on + '">'
+      + '<span style="font-size:13px;">Show countdown on Today</span><span class="switch' + (on ? ' on' : '') + '"></span></button>';
+  if (state.goalError) h += '<div class="goal-error">' + esc(state.goalError) + '</div>';
+  if (f) {
+    h += '<div style="display:flex; justify-content:flex-end; gap:8px; margin-top:12px;">'
+      + '<button type="button" class="btn btn-secondary" data-act="goal-cancel">Cancel</button>'
+      + '<button type="button" class="btn btn-primary" data-act="goal-save"' + (state.goalSaving ? ' disabled' : '') + '>' + (state.goalSaving ? 'Saving…' : 'Save') + '</button></div>';
+  }
+  return h + '<div class="goal-note">Also used for the race marker on Trends and the highlighted prediction on Fitness.</div></div>';
+}
+function goalDraftFrom(g) {
+  return g ? { name: g.name, date: g.date, distance: g.distance, target: g.target || '', show_on_today: g.show_on_today }
+    : { name: '', date: '', distance: 'half', target: '', show_on_today: true };
+}
+function goalSubmit(path, body, onDone) {
+  state.goalSaving = true; state.goalError = ''; render();
+  return api(path, body)
+    .then(data => { state.goal = data; if (onDone) onDone(); })
+    .catch(err => { state.goalError = err.message; })
+    .finally(() => { state.goalSaving = false; render(); });
+}
+
+/* Time zone: the server runs on UTC, so this decides when the athlete's day
+   rolls over for everything server-side (Today, Trends, the sync, the coach's
+   tools). Stored on the server like the goal race; saves on change. */
+function deviceZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; }
+}
+function zoneList(extra) {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch (e) { /* older browser: just the known ones */ }
+  extra.forEach(z => { if (z && zones.indexOf(z) < 0) zones = zones.concat([z]); });
+  return zones.slice().sort();
+}
+function zoneNowLabel(tz) {
+  const opts = { weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' };
+  try { return new Date().toLocaleString(undefined, Object.assign({ timeZone: tz.effective }, opts)); }
+  catch (e) { return new Date(tz.now).toLocaleString(undefined, Object.assign({ timeZone: 'UTC' }, opts)) + ' (' + tz.effective + ')'; }
+}
+const TZ_SOURCES = { env: 'the server\'s LOCAL_TIMEZONE', offset: 'the server\'s DASHBOARD_TZ_OFFSET_HOURS', default: 'the server clock (UTC)' };
+function timezoneSection() {
+  const tz = state.tz;
+  let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Time zone</div>';
+  if (!tz) return h + '<div style="color:var(--color-neutral-400); font-size:13px;">Unavailable right now.</div></div>';
+  const device = deviceZone();
+  h += '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">When your day starts — what counts as today on Today, Trends, the plan and the coach\'s tools.</div>';
+  const dflt = tz.source === 'settings' ? 'Server default' : 'Server default (' + tz.effective + ')';
+  h += '<div class="field" style="margin-bottom:12px;"><select class="input" data-tz-select aria-label="Time zone"' + (state.tzSaving ? ' disabled' : '') + '>'
+    + '<option value=""' + (tz.timezone ? '' : ' selected') + '>' + esc(dflt) + '</option>'
+    + zoneList([tz.timezone, device]).map(z => '<option value="' + esc(z) + '"' + (z === tz.timezone ? ' selected' : '') + '>' + esc(z.replace(/_/g, ' ')) + '</option>').join('')
+    + '</select></div>';
+  h += '<div class="goal-info" style="margin-bottom:0;">'
+    + '<div><span>Now in ' + esc(tz.effective) + '</span><span>' + esc(zoneNowLabel(tz)) + '</span></div>'
+    + (tz.source === 'settings' ? '' : '<div><span>Set by</span><span>' + esc(TZ_SOURCES[tz.source] || tz.source) + '</span></div>')
+    + '</div>';
+  if (device && device !== tz.effective) {
+    h += '<button type="button" class="goal-add" style="margin-top:12px;" data-act="tz-device"' + (state.tzSaving ? ' disabled' : '') + '>'
+      + 'Use this device\'s zone (' + esc(device.replace(/_/g, ' ')) + ')</button>';
+  }
+  if (state.tzError) h += '<div class="goal-error">' + esc(state.tzError) + '</div>';
+  return h + '</div>';
+}
+function tzSubmit(zone) {
+  state.tzSaving = true; state.tzError = ''; render();
+  return api('timezone', { timezone: zone || null })
+    .then(data => { state.tz = data; })
+    .catch(err => { state.tzError = err.message; })
+    .finally(() => { state.tzSaving = false; render(); });
 }
 
 function settingsLinkCard(title, text, href, iconName, label) {
@@ -979,6 +1114,27 @@ document.getElementById('app').addEventListener('click', e => {
       return;
     }
   }
+  // The goal race isn't part of the plan, so it stays editable on archived plans.
+  if (a === 'goal-add') { state.goalDraft = goalDraftFrom(null); state.goalError = ''; return render(); }
+  if (a === 'goal-edit') { state.goalDraft = goalDraftFrom(state.goal.goal); state.goalError = ''; return render(); }
+  if (a === 'goal-cancel') { state.goalDraft = null; state.goalError = ''; return render(); }
+  if (a === 'goal-distance') { state.goalDraft.distance = act.getAttribute('data-key'); state.goalError = ''; return render(); }
+  if (a === 'goal-toggle-today') {
+    if (state.goalDraft) { state.goalDraft.show_on_today = !state.goalDraft.show_on_today; return render(); }
+    const g = state.goal.goal;
+    return goalSubmit('goal-race', Object.assign(goalDraftFrom(g), { show_on_today: !g.show_on_today }));
+  }
+  if (a === 'goal-save') {
+    const f = state.goalDraft;
+    if (!f.name.trim()) { state.goalError = 'Give the race a name.'; return render(); }
+    if (!f.date) { state.goalError = 'Pick the race date.'; return render(); }
+    return goalSubmit('goal-race', f, () => { state.goalDraft = null; });
+  }
+  if (a === 'tz-device') return tzSubmit(deviceZone());
+  if (a === 'goal-clear') {
+    if (!confirm('Clear the goal race? Today, Trends and Fitness stop showing it.')) return;
+    return goalSubmit('goal-race/clear', {}, () => { state.goalDraft = null; });
+  }
   if (READ_ONLY) return;
   if (a === 'validate') {
     const sport = act.getAttribute('data-sport');
@@ -1048,9 +1204,20 @@ document.getElementById('app').addEventListener('click', e => {
 document.getElementById('app').addEventListener('input', e => {
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
+  const goalField = e.target.getAttribute && e.target.getAttribute('data-goal-field');
+  if (goalField && state.goalDraft) {
+    state.goalDraft[goalField] = e.target.value;
+    if (state.goalError) { state.goalError = ''; const el = document.querySelector('.goal-error'); if (el) el.remove(); }
+  }
 });
 
 document.getElementById('app').addEventListener('change', e => {
+  if (e.target.hasAttribute && e.target.hasAttribute('data-tz-select')) return tzSubmit(e.target.value);
+  if (e.target.getAttribute && e.target.getAttribute('data-goal-field') === 'date' && state.goalDraft) {
+    state.goalDraft.date = e.target.value;
+    state.goalError = '';
+    return render();
+  }
   if (e.target.id === 'phase-select') {
     const p = (PLAN.phases || []).find(x => x.name === e.target.value);
     if (p) { state.planWeekNumber = p.startWeek; render(); }
@@ -1209,7 +1376,12 @@ document.addEventListener('click', e => {
 render();
 if (state.tab === 'settings') setView('settings');
 </script>
-<style>.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }
+<style>/* Two threshold fields side by side: equal columns that can shrink, and the
+   inputs lined up along the bottom even when one label wraps. */
+.field-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; margin-bottom:10px; align-items:end; }
+.field-pair .field > label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.field-pair .input { height:36px; }
+.sub-label { font-size:12px; text-transform:uppercase; letter-spacing:0.06em; color:var(--color-neutral-500); margin-bottom:8px; }
 .add-btn { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; cursor:pointer;
   border:1px solid var(--color-neutral-700); border-radius:6px; background:transparent; color:var(--color-neutral-400); }
 .add-btn:hover { color: var(--color-accent); border-color: var(--color-accent); }
@@ -1229,6 +1401,31 @@ if (state.tab === 'settings') setView('settings');
 .cal-row input[type=time]::-webkit-calendar-picker-indicator { display:none; }
 .cal-row .btn-icon { width:36px; height:36px; padding:0; display:inline-flex; align-items:center; justify-content:center; }
 .actions-row { display:flex; gap:8px; flex-wrap:wrap; }
+.goal-tile { width:40px; height:40px; flex:0 0 auto; border-radius:10px; display:grid; place-items:center;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent); color: var(--color-accent-400); }
+.goal-add { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; padding:18px; cursor:pointer;
+  border:1px dashed var(--color-neutral-700); border-radius: var(--radius-md); background:transparent; color: var(--color-accent-400);
+  font-family: var(--font-body); font-size:13px; }
+.goal-add:hover { background: color-mix(in srgb, var(--color-text) 5%, transparent); }
+.goal-clear { border:0; background:transparent; padding:0; cursor:pointer; font-family: var(--font-body); font-size:12px; color: var(--color-neutral-500); }
+.goal-clear:hover { color:#cf8a80; }
+.goal-dists { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:6px; }
+.goal-dist { padding:7px 4px; border-radius: var(--radius-md); border:1px solid var(--color-neutral-800); cursor:pointer; white-space:nowrap;
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent); color: var(--color-neutral-400); font-family: var(--font-body); font-size:12px; }
+.goal-dist.on { color: var(--color-accent-200); border-color: var(--color-accent-700); background: color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.goal-info { display:flex; flex-direction:column; gap:4px; padding:10px 12px; margin-bottom:12px; border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent); font-size:12px; color: var(--color-neutral-400); }
+.goal-info > div { display:flex; justify-content:space-between; gap:8px; }
+.goal-info > div > span:first-child { color: var(--color-neutral-500); }
+.goal-toggle { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; padding:0; border:0; cursor:pointer;
+  background:transparent; color: var(--color-text); font-family: var(--font-body); text-align:left; }
+.switch { position:relative; flex:0 0 auto; width:36px; height:20px; border-radius:999px; background: var(--color-neutral-800); transition: background .15s ease; }
+.switch::after { content:''; position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background: var(--color-text); transition: left .15s ease; }
+.switch.on { background: var(--color-accent); }
+.switch.on::after { left:18px; }
+.input[type=date] { color-scheme: dark; }
+.goal-note { margin-top:10px; font-size:12px; color: var(--color-neutral-600); }
+.goal-error { margin-top:10px; font-size:12px; color:#e0736f; }
 .rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
 .rev-row:first-child { border-top:none; }
 .saving-pill { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;

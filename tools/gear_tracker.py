@@ -84,6 +84,7 @@ import re
 import threading
 import uuid as uuid_module
 from datetime import date, timedelta
+from tools.local_time import local_today
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
@@ -492,7 +493,7 @@ def upsert_component(
     if not name:
         raise ValueError("name is required.")
 
-    install_date = _validate_date(install_date or date.today().isoformat(), "install_date")
+    install_date = _validate_date(install_date or local_today().isoformat(), "install_date")
 
     with _lock:
         data = _read()
@@ -567,7 +568,7 @@ def log_maintenance_entry(
     """Record one maintenance action against a tracked component."""
     if not action or not action.strip():
         raise ValueError("action is required.")
-    date_ = _validate_date(date_ or date.today().isoformat())
+    date_ = _validate_date(date_ or local_today().isoformat())
 
     with _lock:
         data = _read()
@@ -1035,7 +1036,7 @@ def _distance_ridden_since(gear_uuid: str, since_date: str) -> float:
     a full get_activity detail fetch (laps/HR/weather/splits) per activity.
     """
     start = date.fromisoformat(since_date) + timedelta(days=1)
-    today = date.today()
+    today = local_today()
     if start > today or (today - start).days > _BACKDATE_LOOKBACK_CAP_DAYS:
         return 0.0
 
@@ -1101,10 +1102,10 @@ async def post_maintenance(request):
 
         action = fields.get("action") or fields.get("service_type") or (service or {}).get("service_type") or ""
         service_datetime = fields.get("service_datetime") or None
-        service_date = fields.get("date") or (service_datetime[:10] if service_datetime else None) or date.today().isoformat()
+        service_date = fields.get("date") or (service_datetime[:10] if service_datetime else None) or local_today().isoformat()
         current_distance = basis_gear.get("distance_km") or 0.0
         distance_at_service = current_distance
-        if service_date < date.today().isoformat():
+        if service_date < local_today().isoformat():
             ridden_since = _distance_ridden_since(basis_gear.get("uuid"), service_date)
             distance_at_service = max(current_distance - ridden_since, 0.0)
 

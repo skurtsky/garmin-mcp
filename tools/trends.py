@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from garmin_client import get_client
 from datetime import date, timedelta
+from tools.local_time import local_today
 from calendar import monthrange
 from typing import Optional
 
@@ -47,7 +48,7 @@ def get_performance_predictions() -> dict:
 
 # ── TRENDS ────────────────────────────────────────────────────────────────────
 def _period_end_dates(period: str, lookback: int) -> list[date]:
-    today = date.today()
+    today = local_today()
     if period == 'weekly':
         # Most recent Sunday <= today
         days_since_sunday = (today.weekday() + 1) % 7
@@ -379,7 +380,7 @@ def get_trends(period: str = '1m', metrics: Optional[list] = None) -> dict:
 def trend_window(period: str) -> list:
     """ISO dates, oldest first, of the trailing `period` ending today."""
     days = _PERIOD_DAYS[period]
-    start = date.today() - timedelta(days=days - 1)
+    start = local_today() - timedelta(days=days - 1)
     return [(start + timedelta(days=i)).isoformat() for i in range(days)]
 
 

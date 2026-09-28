@@ -21,14 +21,14 @@ import html
 import json
 import logging
 import re
-from datetime import timedelta
 
 from starlette.applications import Starlette
 from starlette.responses import HTMLResponse
 from starlette.routing import Route
 
 import db
-from tools.dashboard import _e, _sport_style, _tz_offset_hours
+from tools.dashboard import _e, _sport_style
+from tools.local_time import to_local
 
 API_PREFIX = "/api/activity"
 
@@ -177,7 +177,7 @@ def _resolve_start_iso(row: dict) -> str | None:
     string. Prefers the activities.summary JSONB's own 'date' (Garmin's
     startTimeLocal, already in the athlete's local zone); falls back to
     activities.activity_date (UTC) shifted by the configured
-    DASHBOARD_TZ_OFFSET_HOURS — covers a row synced before 'summary' carried
+    LOCAL_TIMEZONE — covers a row synced before 'summary' carried
     a 'date' key, or any other reason it came back empty, so the header and
     every chart's clock labels never just go blank."""
     iso = row.get("local_start_iso")
@@ -186,7 +186,7 @@ def _resolve_start_iso(row: dict) -> str | None:
     activity_date = row.get("activity_date")
     if not activity_date:
         return None
-    local_dt = activity_date + timedelta(hours=_tz_offset_hours())
+    local_dt = to_local(activity_date)
     return local_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
 

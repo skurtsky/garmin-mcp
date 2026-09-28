@@ -86,7 +86,8 @@ def test_resolve_start_iso_falls_back_to_activity_date(monkeypatch):
     other reason it comes back empty) still gets a timestamp, derived from
     the always-present activity_date column instead of going blank."""
     from datetime import datetime, timezone
-    monkeypatch.setattr(ad, "_tz_offset_hours", lambda: -4)
+    monkeypatch.delenv("LOCAL_TIMEZONE", raising=False)
+    monkeypatch.setenv("DASHBOARD_TZ_OFFSET_HOURS", "-4")
     row = {"local_start_iso": None, "activity_date": datetime(2026, 8, 21, 9, 46, 7, tzinfo=timezone.utc)}
     assert ad._resolve_start_iso(row) == "2026-08-21T05:46:07"
 

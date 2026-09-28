@@ -7,6 +7,7 @@ import logging
 import sys
 from argparse import ArgumentParser, ArgumentTypeError
 from datetime import date, timedelta
+from tools.local_time import local_today
 
 from dotenv import load_dotenv
 
@@ -32,7 +33,7 @@ def _date_range(start_date: date, end_date: date) -> list[date]:
 
 def _daily_metric_dates(days: int, start_date: date | None,
                         end_date: date | None) -> list[date]:
-    today = date.today()
+    today = local_today()
     if start_date or end_date:
         end = end_date or today
         start = start_date or end
@@ -96,7 +97,7 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
     import db
 
     if start_date:
-        end = end_date or date.today()
+        end = end_date or local_today()
         logger.info(f"Syncing activities from {start_date.isoformat()} to {end.isoformat()}")
         activities = get_activities(start_date=start_date.isoformat(), end_date=end.isoformat())
     else:
@@ -117,7 +118,7 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
         )
         if inserted:
             new_ids.append(act["id"])
-    db.update_sync_state("activities", date.today().isoformat())
+    db.update_sync_state("activities", local_today().isoformat())
     logger.info(f"Synced {len(activities)} activities ({len(new_ids)} new)")
     sync_plan_matches(new_ids)
 
@@ -164,15 +165,25 @@ def sync_activity_details(limit: int = 10, overwrite: bool = False):
         else db.get_activity_ids_needing_detail(limit=limit)
     )
     logger.info(f"Syncing detail for {len(activity_ids)} activity(ies)")
-    for activity_id in activity_ids:
+    failed = []
+    for n, activity_id in enumerate(activity_ids, 1):
         try:
             detail, route = get_activity_detail_row(activity_id)
-        except Exception:
-            logger.exception(f"Failed to build detail for activity {activity_id}")
+        except Exception as e:
+            # The stored row (if any) is left as it was; a missing one is
+            # picked up again by the next run.
+            logger.error(f"Skipped detail for activity {activity_id}: {str(e)[:200]}")
+            failed.append(activity_id)
             continue
         db.upsert_activity_detail(activity_id, detail, route)
-    db.update_sync_state("activity_details", date.today().isoformat())
-    logger.info("Activity detail sync complete")
+        if n % 25 == 0:
+            logger.info(f"  {n}/{len(activity_ids)} done")
+    db.update_sync_state("activity_details", local_today().isoformat())
+    if failed:
+        logger.warning(f"Activity detail sync complete; {len(failed)} skipped after Garmin errors: "
+                       + " ".join(str(i) for i in failed))
+    else:
+        logger.info("Activity detail sync complete")
 
 
 def sync_personal_records():
@@ -183,7 +194,7 @@ def sync_personal_records():
     logger.info("Syncing personal records")
     records = get_personal_records()
     db.upsert_personal_records(records)
-    db.update_sync_state("personal_records", date.today().isoformat())
+    db.update_sync_state("personal_records", local_today().isoformat())
     logger.info("Personal records sync complete")
 
 
@@ -196,8 +207,43 @@ def sync_athlete_profile():
     profile = get_athlete_profile()
     if profile:
         db.upsert_athlete_profile(profile)
-    db.update_sync_state("athlete_profile", date.today().isoformat())
+        # Garmin only reports current thresholds — keep a daily copy for the
+        # Fitness page's history.
+        from tools.history_snapshots import snapshot_garmin_thresholds
+        snapshot_garmin_thresholds(local_today(), profile)
+    db.update_sync_state("athlete_profile", local_today().isoformat())
     logger.info("Athlete profile sync complete")
+
+
+def sync_history_snapshots():
+    """Today's plan thresholds and Garmin race predictions, kept daily so
+    their trends can be charted (Garmin thresholds are snapshotted with the
+    athlete profile)."""
+    from garmin_client import get_client
+    from tools import history_snapshots
+    import db
+
+    today = local_today()
+    logger.info("Syncing threshold and race-prediction snapshots")
+    history_snapshots.snapshot_plan_thresholds(today)
+    db.update_sync_state("threshold_snapshots", today.isoformat())
+    predictions = history_snapshots.snapshot_race_predictions(today, get_client())
+    db.update_sync_state("race_predictions", today.isoformat())
+    logger.info(f"Snapshots stored ({len(predictions)} race prediction(s))")
+
+
+def backfill_history(days: int):
+    """One-off: the past year of thresholds and race predictions."""
+    from garmin_client import get_client
+    from tools import history_snapshots
+
+    logger.info(f"Backfilling {days} day(s) of threshold and race-prediction history")
+    results = history_snapshots.backfill_history(get_client(), days=days)
+    for part, result in results.items():
+        logger.info(f"  {part}: {result}")
+    failed = [p for p, r in results.items() if isinstance(r, str)]
+    if failed:
+        raise RuntimeError(f"Backfill failed for: {', '.join(failed)}")
 
 
 def sync_gear():
@@ -208,7 +254,7 @@ def sync_gear():
     logger.info("Syncing gear")
     gear = get_gear()
     db.upsert_gear_items(gear)
-    db.update_sync_state("gear", date.today().isoformat())
+    db.update_sync_state("gear", local_today().isoformat())
     logger.info(f"Synced {len(gear)} gear item(s)")
 
 
@@ -221,7 +267,7 @@ def sync_active_goals():
     goals = get_active_goals()
     if goals:
         db.upsert_active_goals(goals)
-    db.update_sync_state("active_goals", date.today().isoformat())
+    db.update_sync_state("active_goals", local_today().isoformat())
     logger.info("Active goals sync complete")
 
 
@@ -284,6 +330,15 @@ def parse_args(argv: list[str] | None = None):
              "rows don't have yet, e.g. "
              "--details-only --detail-limit 999 --overwrite",
     )
+    parser.add_argument(
+        "--backfill-history", action="store_true",
+        help="one-off: fill threshold (FTP, LTHR, threshold pace, VO2max, plan) "
+             "and race-prediction history from Garmin and the database, then exit",
+    )
+    parser.add_argument(
+        "--history-days", type=int, default=365,
+        help="how many days --backfill-history reaches back (Garmin allows up to 365)",
+    )
     return parser.parse_args(argv)
 
 
@@ -301,7 +356,9 @@ def main(argv: list[str] | None = None):
     )
 
     errors = []
-    if args.details_only:
+    if args.backfill_history:
+        sync_plan = [lambda: backfill_history(args.history_days)]
+    elif args.details_only:
         sync_plan = [lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite)]
     elif args.activities_only:
         sync_plan = [sync_activities_step]
@@ -319,6 +376,7 @@ def main(argv: list[str] | None = None):
                 lambda: sync_activity_details(limit=args.detail_limit, overwrite=args.overwrite),
                 sync_personal_records,
                 sync_athlete_profile,
+                sync_history_snapshots,
                 sync_gear,
                 sync_active_goals,
             ])

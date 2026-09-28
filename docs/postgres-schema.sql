@@ -215,3 +215,72 @@ CREATE TABLE IF NOT EXISTS calendar_settings (
     token_created_at  TIMESTAMPTZ,
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Dashboard history: daily threshold and race-prediction snapshots (Garmin
+-- only exposes current values), personal-record changes, best efforts inside
+-- each activity, manual activity overrides and app settings (goal race).
+CREATE TABLE IF NOT EXISTS threshold_snapshots (
+    snapshot_date  DATE NOT NULL,
+    source         TEXT NOT NULL CHECK (source IN ('garmin', 'plan')),
+    metric         TEXT NOT NULL,
+    value          REAL NOT NULL,
+    synced_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (snapshot_date, source, metric)
+);
+
+CREATE TABLE IF NOT EXISTS race_prediction_snapshots (
+    snapshot_date  DATE NOT NULL,
+    distance       TEXT NOT NULL,
+    seconds        INTEGER NOT NULL,
+    synced_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (snapshot_date, distance)
+);
+
+-- One row each time a personal record changes, with the value it beat.
+CREATE TABLE IF NOT EXISTS personal_record_history (
+    id                     SERIAL PRIMARY KEY,
+    sport                  TEXT NOT NULL,
+    record_type            TEXT NOT NULL,
+    value_raw              REAL,
+    value_formatted        TEXT,
+    record_date            DATE,
+    activity_id            BIGINT,
+    previous_value_raw     REAL,
+    previous_formatted     TEXT,
+    previous_record_date   DATE,
+    detected_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_personal_record_history_date
+    ON personal_record_history (record_date DESC);
+
+-- Best efforts inside each activity (fastest 5K within a run, best
+-- 20 minutes of a ride, ...), keyed like personal_records, so recent
+-- efforts close to a record can be found. value: seconds, or watts.
+CREATE TABLE IF NOT EXISTS activity_best_efforts (
+    garmin_id      BIGINT NOT NULL,
+    sport          TEXT NOT NULL,
+    record_type    TEXT NOT NULL,
+    value          REAL NOT NULL,
+    activity_date  DATE,
+    PRIMARY KEY (garmin_id, record_type)
+);
+CREATE INDEX IF NOT EXISTS idx_activity_best_efforts_type
+    ON activity_best_efforts (sport, record_type, activity_date DESC);
+
+-- Manual corrections to automatic per-activity flags (commute detection).
+CREATE TABLE IF NOT EXISTS activity_overrides (
+    garmin_id   BIGINT PRIMARY KEY,
+    is_commute  BOOLEAN,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- App-wide settings as one JSON value per key (e.g. 'goal_race').
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       JSONB NOT NULL,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO sync_state (data_type) VALUES
+    ('threshold_snapshots'), ('race_predictions')
+ON CONFLICT DO NOTHING;

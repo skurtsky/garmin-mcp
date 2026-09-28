@@ -14,6 +14,7 @@ from datetime import date, timedelta
 
 import db
 from tools import plan_doc
+from tools.best_efforts import best_rolling_power
 from tools.plan_service import activity_day
 
 logger = logging.getLogger(__name__)
@@ -54,29 +55,6 @@ def _phase_for_week(plan: dict, week: dict | None) -> str | None:
     return week.get("phase")
 
 
-def best_rolling_power(series: list[dict], window_sec: int = 1200) -> int | None:
-    """Best average power over any ``window_sec`` stretch of an activity's
-    power samples (``{t_offset_sec, value}``, as stored in activity_details).
-    Each sample holds until the next one, with gaps over 5s (pauses) not
-    counted. None when the ride is shorter than the window."""
-    pts = [(p["t_offset_sec"], p["value"] or 0) for p in series or [] if p.get("t_offset_sec") is not None]
-    if len(pts) < 2 or pts[-1][0] - pts[0][0] < window_sec:
-        return None
-    # (duration, energy) per sample, then a sliding window over time.
-    spans = [(min(pts[i + 1][0] - pts[i][0], 5.0), pts[i][1]) for i in range(len(pts) - 1)]
-    best, lo, dur, energy = None, 0, 0.0, 0.0
-    for dt, watts in spans:
-        dur += dt
-        energy += dt * watts
-        while dur - spans[lo][0] >= window_sec:
-            dur -= spans[lo][0]
-            energy -= spans[lo][0] * spans[lo][1]
-            lo += 1
-        if dur >= window_sec:
-            best = max(best or 0, energy / dur)
-    return round(best) if best is not None else None
-
-
 def _best_20min(activity: dict) -> int | None:
     summary = activity.get("summary") or {}
     if summary.get("max_20min_power"):
@@ -109,6 +87,26 @@ def _workout_view(w: dict, d: dict, state: dict | None, activities: dict) -> dic
         "is_test": plan_doc.is_test_workout(w),
         "activity": _activity_view(activities.get(state.get("activity_id"))) if state.get("completed") else None,
     }
+
+
+def _with_details(plan: dict, view: dict, w: dict) -> dict:
+    """A Today / Tomorrow session plus what its dialog shows: the coach's
+    description and the step-by-step detail with its zone tokens written out."""
+    return {**view, "description": w.get("description"),
+            "details": plan_doc.resolve_tokens(plan, w.get("humanReadable")) if w.get("humanReadable") else None}
+
+
+def _unplanned_today(today: date, linked_ids: set) -> list[dict]:
+    """Today's synced activities that no workout is linked to — on a rest day
+    that's all of them — so Today still shows what was done."""
+    lo, hi = (today - timedelta(days=1)).isoformat(), (today + timedelta(days=2)).isoformat()
+    try:
+        rows = db.get_activities_in_range(lo, hi)
+    except Exception:  # noqa: BLE001 — the plan cards don't depend on it
+        logger.warning("Today's activities unavailable", exc_info=True)
+        return []
+    return [_activity_view(r) for r in rows
+            if activity_day(r) == today.isoformat() and r["garmin_id"] not in linked_ids]
 
 
 def _week_strip(plan_week: dict | None, monday: date, today: date, views_by_day: dict) -> list[dict]:
@@ -206,9 +204,12 @@ def build_plan_context(today: date, athlete: dict | None = None) -> dict | None:
     linked_ids = [s["activity_id"] for s in states.values() if s.get("completed") and s.get("activity_id")]
     activities = db.get_activities_by_ids(linked_ids)
 
+    today_iso, tomorrow = today.isoformat(), (today + timedelta(days=1)).isoformat()
     views, views_by_day = [], {}
     for _, d, w in plan_doc.iter_workouts(plan):
         v = _workout_view(w, d, states.get(w.get("id")), activities)
+        if v["date"] in (today_iso, tomorrow):
+            v = _with_details(plan, v, w)
         views.append(v)
         views_by_day.setdefault(v["date"], []).append(v)
 
@@ -223,7 +224,6 @@ def build_plan_context(today: date, athlete: dict | None = None) -> dict | None:
         plan_hours = sum(v["durationMinutes"] or 0 for v in week_views) / 60
 
     non_rest = [v for v in views if v["sport"] != "rest"]
-    tomorrow = (today + timedelta(days=1)).isoformat()
     meta = plan.get("meta") or {}
     return {
         "id": row["id"],
@@ -235,6 +235,7 @@ def build_plan_context(today: date, athlete: dict | None = None) -> dict | None:
         "phase_color": PHASE_COLORS.get(phase or "", DEFAULT_PHASE_COLOR),
         "today": [v for v in views_by_day.get(today.isoformat(), []) if v["sport"] != "rest"],
         "tomorrow": [v for v in views_by_day.get(tomorrow, []) if v["sport"] != "rest"],
+        "today_activities": _unplanned_today(today, set(linked_ids)),
         "in_plan": week is not None,
         "week": {
             "done_hours": round(done_min / 60, 1),

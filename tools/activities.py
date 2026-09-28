@@ -1,10 +1,14 @@
 # tools/activities.py
 import calendar
 import logging
+import re
+import time
 from collections import Counter
 from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
+from tools.best_efforts import activity_efforts
 from datetime import date, timedelta
+from tools.local_time import local_today
 
 logger = logging.getLogger(__name__)
 
@@ -702,6 +706,37 @@ def _extract_series_and_pauses(
     return hr_series, power_series, pauses
 
 
+_TRANSIENT_RETRY_DELAY_SEC = 10
+_STATUS_RE = re.compile(r"(?:API Error |error \()(\d{3})")
+
+
+def _is_transient(exc: Exception) -> bool:
+    """A Garmin server-side failure worth retrying (5xx, timeouts, dropped
+    connections) — as opposed to a 4xx, which means there is no such data."""
+    status = getattr(getattr(exc, 'response', None), 'status_code', None)
+    if status is None:
+        m = _STATUS_RE.search(str(exc))
+        status = int(m.group(1)) if m else None
+    return status is None or status >= 500
+
+
+def _fetch_detail_part(fetch, activity_id: int):
+    """One required part of an activity's detail: retried once after a pause
+    on a transient Garmin failure, re-raised if it fails again; None when
+    Garmin says the activity has no such data (4xx)."""
+    for attempt in (1, 2):
+        try:
+            return fetch(activity_id)
+        except Exception as e:
+            if not _is_transient(e):
+                return None
+            if attempt == 2:
+                raise
+            logger.warning(f"{fetch.__name__}({activity_id}) failed, retrying in "
+                           f"{_TRANSIENT_RETRY_DELAY_SEC}s: {str(e)[:120]}")
+            time.sleep(_TRANSIENT_RETRY_DELAY_SEC)
+
+
 def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
     """Build the (detail, route) JSONB payloads stored in activity_details for
     the activity-detail page. Everything already covered by columns on
@@ -720,18 +755,16 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
     activity_raw = client.get_activity(activity_id)
     summary = activity_raw.get('summaryDTO') or {}
 
-    try:
-        laps_raw = client.get_activity_splits(activity_id)
-    except Exception:
-        laps_raw = None
+    # Laps and the per-sample details carry most of the page (charts, route,
+    # best efforts). A Garmin outage on either aborts this activity rather
+    # than storing a row without them — that would overwrite a good row on
+    # an --overwrite run, and the next run retries a missing one anyway.
+    laps_raw = _fetch_detail_part(client.get_activity_splits, activity_id)
     try:
         weather_raw = client.get_activity_weather(activity_id)
     except Exception:
         weather_raw = None
-    try:
-        details_raw = client.get_activity_details(activity_id)
-    except Exception:
-        details_raw = None
+    details_raw = _fetch_detail_part(client.get_activity_details, activity_id)
     # Isolated from the fetch through the extraction: Garmin's hrTimeInZones
     # response has been observed to vary by activity (see _extract_hr_zones'
     # docstring) — either half of this failing degrades to "no HR zones"
@@ -746,6 +779,12 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         hr_zones = []
 
     hr_series, power_series, pauses = _extract_series_and_pauses(details_raw)
+    sport = (activity_raw.get('activityTypeDTO') or {}).get('typeKey')
+    try:
+        best_efforts = activity_efforts(sport, details_raw, laps_raw, power_series)
+    except Exception:
+        logger.warning(f"Best efforts unavailable for activity {activity_id}", exc_info=True)
+        best_efforts = []
 
     detail = {
         'duration_elapsed_sec':  summary.get('duration'),
@@ -771,6 +810,10 @@ def get_activity_detail_row(activity_id: int) -> tuple[dict, list[dict] | None]:
         # length" on the activity-detail page means.
         'avg_swolf':               summary.get('averageSWOLF'),
         'avg_strokes_per_length':  round(summary.get('averageStrokes') or 0, 1) or None,
+        # Fastest 5K / 20-min power / 100 m … inside this activity, keyed by
+        # personal-record type — db.upsert_activity_detail indexes them for
+        # the Fitness page's close calls.
+        'best_efforts':            best_efforts,
     }
 
     if _is_multisport(activity_raw):
@@ -869,7 +912,48 @@ def _activity_summary_from_list(a: dict) -> dict:
     # test is scored from (the dashboard's "Update FTP from test").
     if a.get('max20MinPower'):
         out['max_20min_power'] = round(a['max20MinPower'])
+    # What the Activity tab shows per row and groups by: the key metric per
+    # sport (power, pace, HR), Garmin's primary training benefit, and the
+    # start/end points commute detection compares. Absent fields stay out
+    # rather than being stored as None/0.
+    extra = {
+        'avg_speed_kph':         round(a['averageSpeed'] * 3.6, 2) if a.get('averageSpeed') else None,
+        'avg_power':             _round_or_none(a.get('avgPower')),
+        'normalized_power':      _round_or_none(a.get('normPower')),
+        'max_hr':                a.get('maxHR'),
+        'elevation_gain_m':      _round_or_none(a.get('elevationGain')),
+        'moving_duration_min':   round(a['movingDuration'] / 60, 1) if a.get('movingDuration') else None,
+        'pool_length_m':         _pool_length_m(a),
+        'active_lengths':        a.get('activeLengths'),
+        'training_effect_label': a.get('trainingEffectLabel'),
+        'aerobic_te':            _round_or_none(a.get('aerobicTrainingEffect'), 1),
+        'anaerobic_te':          _round_or_none(a.get('anaerobicTrainingEffect'), 1),
+        'event_type':            (a.get('eventType') or {}).get('typeKey'),
+        'start_lat':             a.get('startLatitude'),
+        'start_lon':             a.get('startLongitude'),
+        'end_lat':               a.get('endLatitude'),
+        'end_lon':               a.get('endLongitude'),
+    }
+    out.update({k: v for k, v in extra.items() if v is not None})
     return out
+
+
+def _round_or_none(value, digits: int = 0):
+    if value is None:
+        return None
+    return round(value) if digits == 0 else round(value, digits)
+
+
+def _pool_length_m(a: dict) -> float | None:
+    """Pool length in metres. The activities list reports it in the unit's
+    base (centimetres, with unitOfPoolLength.factor 100) — divide it out."""
+    length = a.get('poolLength')
+    if not length:
+        return None
+    factor = (a.get('unitOfPoolLength') or {}).get('factor') or (100 if length > 100 else 1)
+    return round(length / factor, 2)
+
+
 def get_activities(
     limit: int = 10,
     sport_type: str | None = None,
@@ -967,7 +1051,7 @@ def week_bounds(week_offset: int = 0) -> tuple[date, date]:
 
     ``week_offset``: 0 = current week, 1 = last week, 2 = two weeks ago, …
     """
-    today = date.today()
+    today = local_today()
     week_monday = today - timedelta(days=today.weekday() + week_offset * 7)
     week_sunday = week_monday + timedelta(days=6)
     # Don't ask for future dates
@@ -1082,7 +1166,7 @@ def get_swim_records(months: int = 6, top_n: int = 5) -> dict:
         top_n:  Number of longest sets to return (default 5).
     """
     client = get_client()
-    today = date.today()
+    today = local_today()
     start = _months_ago(today, months)
 
     swims = client.get_activities_by_date(

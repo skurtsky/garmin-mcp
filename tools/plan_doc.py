@@ -23,6 +23,7 @@ use.
 import copy
 import re
 from datetime import date
+from tools.local_time import local_today
 
 # Plan ids end up in URLs and as a primary key — keep them to safe characters.
 PLAN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
@@ -419,7 +420,7 @@ def _op_set_zone_validation(plan, op):
         raise PlanError(f"sport must be one of {', '.join(ZONE_SPORTS)}.")
     validated = bool(op.get("validated", True))
     zv = dict(plan.get("zonesValidated") or {})
-    zv[sport] = {"validated": validated, "at": op.get("at") or date.today().isoformat()}
+    zv[sport] = {"validated": validated, "at": op.get("at") or local_today().isoformat()}
     plan["zonesValidated"] = zv
     return f"Marked {sport} zones {'validated' if validated else 'for retest'}", None
 
@@ -470,7 +471,7 @@ def apply_operations(plan: dict, operations: list) -> tuple[dict, list[str], lis
                 touched.append(result[1])
     normalize_plan(plan)
     meta = plan.setdefault("meta", {})
-    meta["updatedAt"] = date.today().isoformat() + "T00:00:00Z"
+    meta["updatedAt"] = local_today().isoformat() + "T00:00:00Z"
     return plan, messages, touched
 
 
@@ -578,6 +579,51 @@ def zone_rows(plan: dict, sport: str) -> list[dict]:
     return rows
 
 
+_TOKEN_RE = re.compile(r"\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?)\s*\}\}",
+                       re.IGNORECASE)
+
+
+def resolve_tokens(plan: dict, text) -> str:
+    """A workout's humanReadable with its zone tokens ("{{run-pace:5a}}",
+    "{{bike-watts:2}}") written out from the current thresholds — the
+    viewer's resolveTokens, so a workout reads the same on Today as in the
+    plan."""
+    t = effective_thresholds(plan)
+    pace = single_pace_seconds(t.get("thresholdPace"))
+    css = single_pace_seconds(t.get("css"))
+
+    def span(lo, hi, fmt, suffix):
+        a, b = (fmt(v) for v in sorted((lo, hi)))
+        return (a if a == b else f"{a}-{b}") + suffix
+
+    def row(table, code):
+        return next((r for r in table if r[0] == code), None)
+
+    def sub(m):
+        kind, code = m.group(1).lower(), m.group(2).lower()
+        if kind == "run-pace":
+            z = row(RUN_PACE_OFFSET_TABLE, code)
+            return span(pace + z[2], pace + z[3], fmt_mmss, "/km") if z and pace is not None else f"Zone {code} pace"
+        if kind in ("run-hr", "bike-hr"):
+            z = row(HR_PCT_TABLE, code)
+            lthr = t.get("runLthr" if kind == "run-hr" else "bikeLthr")
+            return span(_pct(lthr, z[2]), _pct(lthr, z[3]), str, "bpm") if z and lthr else f"Zone {code} HR"
+        if kind == "bike-watts":
+            z = row(BIKE_POWER_PCT_TABLE, code)
+            ftp = t.get("ftp")
+            return span(_pct(ftp, z[2]), _pct(ftp, z[3]), str, "W") if z and ftp else f"Zone {code}"
+        z = row(SWIM_PACE_OFFSET_TABLE, code)
+        return span(css + z[2], css + z[3], fmt_mmss, "/100m") if z and css is not None else f"Zone {code} pace"
+
+    def safe_sub(m):
+        try:
+            return sub(m)
+        except (TypeError, ValueError):   # a threshold stored in an odd shape
+            return f"Zone {m.group(2).lower()}"
+
+    return _TOKEN_RE.sub(safe_sub, str(text or ""))
+
+
 # Each threshold's sport (for zone validation) and the coach's source note.
 _THRESHOLD_SOURCES = {
     "ftp": ("bike", ("bike", "power", "ftpSource")),
@@ -623,7 +669,7 @@ def is_test_workout(workout: dict) -> bool:
 
 
 def current_week_number(plan: dict, today: date | None = None) -> int | None:
-    today = today or date.today()
+    today = today or local_today()
     week = week_for_date(plan, today)
     if week:
         return week.get("weekNumber")

@@ -1,7 +1,8 @@
 # tools/profile.py
 from concurrent.futures import ThreadPoolExecutor
 from garmin_client import get_client
-from datetime import date as _date
+from datetime import timedelta
+from tools.local_time import local_today
 
 def get_athlete_profile() -> dict:
     """
@@ -24,12 +25,19 @@ def get_athlete_profile() -> dict:
     except Exception:
         ftp = None
 
-    # 7-day average resting HR from today's user summary
-    try:
-        summary = client.get_user_summary(_date.today().isoformat()) or {}
+    # 7-day average resting HR from today's user summary — or yesterday's, if
+    # Garmin hasn't got one for today yet (early morning, or the server's
+    # "today" is ahead of the watch's).
+    resting_hr_7day_avg = None
+    today = local_today()
+    for day in (today, today - timedelta(days=1)):
+        try:
+            summary = client.get_user_summary(day.isoformat()) or {}
+        except Exception:
+            continue
         resting_hr_7day_avg = summary.get('lastSevenDaysAvgRestingHeartRate')
-    except Exception:
-        resting_hr_7day_avg = None
+        if resting_hr_7day_avg is not None:
+            break
 
     return {
         'weight_kg':              round((data.get('weight') or 0) / 1000, 1),

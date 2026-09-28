@@ -3,8 +3,18 @@ import os
 import pytest
 from dotenv import load_dotenv
 from garmin_client import get_client
+from tools import local_time
 
 load_dotenv()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_local_time_cache():
+    """The stored Settings time zone is cached; don't let one test's
+    (fake) database leak into the next."""
+    local_time.clear_cache()
+    yield
+    local_time.clear_cache()
 
 # Known good IDs from notebook exploration — update if needed
 RUN_ACTIVITY_ID     = 22545458432  # Ottawa - 5 x 1K @ 5K effort
