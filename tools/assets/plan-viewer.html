@@ -128,6 +128,7 @@ a:hover { color: var(--color-accent); }
 .plan-head { display:flex; align-items:flex-end; gap:24px; padding:24px 24px 18px; }
 .plan-head-main { flex:1; min-width:0; }
 .plan-head-kicker { font-size:12px; color:var(--color-neutral-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.plan-head-sub { color:var(--color-neutral-600); font-weight:400; white-space:nowrap; }
 .plan-head-week { font-size:24px; font-weight:500; letter-spacing:-0.015em; line-height:1.25; }
 .plan-head-planned { font-size:13px; color:var(--color-neutral-400); margin-top:2px; }
 .plan-head-planned b { color:var(--color-text); font-weight:500; }
@@ -359,9 +360,16 @@ function sportStatus(sport) {
   return 'Estimated';
 }
 
+function storedPlanView() { try { return localStorage.getItem('pv-plan-view') === 'month' ? 'month' : 'week'; } catch (e) { return 'week'; } }
+function persistView() { try { localStorage.setItem('pv-plan-view', state.planView); } catch (e) {} }
+const DESKTOP = window.matchMedia('(min-width: 900px)');
+DESKTOP.addEventListener('change', () => render());
+
 const state = {
   tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
   planWeekNumber: startWeek(),
+  planView: storedPlanView(),                // 'week' | 'month'; month only applies on desktop
+  monthKey: todayStr().slice(0, 7),          // 'YYYY-MM'
   completed: {},
   activities: {},
   unit: 'metric',
@@ -430,6 +438,135 @@ function byStartTime(workouts) {
     .sort((a, b) => (a.t && b.t ? a.t.localeCompare(b.t) : (a.t ? -1 : b.t ? 1 : 0)) || a.i - b.i)
     .map(x => x.w);
 }
+/* ── month view ── */
+const isMonth = () => state.planView === 'month' && DESKTOP.matches;
+function pad2(n) { return String(n).padStart(2, '0'); }
+function dateKey(dt) { return dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()); }
+function addDays(key, n) { const dt = d(key); dt.setDate(dt.getDate() + n); return dateKey(dt); }
+function planMonthRange() {
+  const weeks = (PLAN.weeks || []).filter(w => w.startDate && w.endDate);
+  if (!weeks.length) { const t = todayStr(); return [t, t]; }
+  return [String(weeks[0].startDate).slice(0, 10), String(weeks[weeks.length - 1].endDate).slice(0, 10)];
+}
+/* Rows of 7 dates, Monday first, from the Monday on or before the 1st to the
+   Sunday on or after the month's last day. */
+function monthGrid(key) {
+  const first = key + '-01';
+  const lastDay = new Date(+key.slice(0, 4), +key.slice(5, 7), 0).getDate();
+  const last = key + '-' + pad2(lastDay);
+  const lead = (d(first).getDay() + 6) % 7;
+  const rows = [];
+  let cur = addDays(first, -lead);
+  while (cur <= last) {
+    const row = [];
+    for (let i = 0; i < 7; i++) { row.push(cur); cur = addDays(cur, 1); }
+    rows.push(row);
+  }
+  return rows;
+}
+/* date -> { weekNumber, day }, over every plan week. */
+function dayIndex() {
+  const idx = {};
+  (PLAN.weeks || []).forEach(w => (w.days || []).forEach(day => { idx[day.date] = { weekNumber: w.weekNumber, day }; }));
+  return idx;
+}
+function weekForMonth(key) {
+  const today = todayStr();
+  const weeks = (PLAN.weeks || []).filter(w => w.startDate && w.endDate);
+  if (today.slice(0, 7) === key) {
+    const cur = weeks.find(w => today >= String(w.startDate).slice(0, 10) && today <= String(w.endDate).slice(0, 10));
+    if (cur) return cur.weekNumber;
+  }
+  const hit = weeks.find(w => String(w.endDate).slice(0, 7) >= key);
+  return (hit || weeks[weeks.length - 1] || {}).weekNumber || state.planWeekNumber;
+}
+function monthAtEnd(delta) {
+  const [lo, hi] = planMonthRange();
+  const dt = new Date(+state.monthKey.slice(0, 4), +state.monthKey.slice(5, 7) - 1 + delta, 1);
+  const key = dt.getFullYear() + '-' + pad2(dt.getMonth() + 1);
+  return key < lo.slice(0, 7) || key > hi.slice(0, 7);
+}
+function monthTitle(key) { return new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, 1).toLocaleDateString(undefined, { month:'long', year:'numeric' }); }
+function setPlanView(v) {
+  if (v === state.planView) return;
+  if (v === 'month') {
+    const wk = weekByNumber(state.planWeekNumber);
+    const today = todayStr();
+    const hasToday = wk && wk.startDate && today >= String(wk.startDate).slice(0, 10) && today <= String(wk.endDate).slice(0, 10);
+    state.monthKey = hasToday ? today.slice(0, 7) : (wk && wk.startDate ? String(wk.startDate).slice(0, 7) : state.monthKey);
+  } else if (isMonth()) {
+    state.planWeekNumber = weekForMonth(state.monthKey);
+  }
+  state.planView = v;
+  persistView();
+  render();
+}
+function stepMonth(delta) {
+  const [lo, hi] = planMonthRange();
+  const dt = new Date(+state.monthKey.slice(0, 4), +state.monthKey.slice(5, 7) - 1 + delta, 1);
+  const key = dt.getFullYear() + '-' + pad2(dt.getMonth() + 1);
+  if (key < lo.slice(0, 7) || key > hi.slice(0, 7)) return;
+  state.monthKey = key;
+  render();
+  const wrap = document.querySelector('#app .content-wrap');
+  if (wrap) wrap.classList.add(delta > 0 ? 'slide-from-right' : 'slide-from-left');
+}
+function monthChip(w) {
+  const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
+  const done = !!state.completed[w.id];
+  const race = w.sport === 'race';
+  return '<div class="month-chip' + (done ? ' done' : '') + (race ? ' race' : '') + '" data-open="' + esc(w.id) + '" style="--c:' + color + ';">'
+    + (done ? icon('check', 11) : race ? icon('flag', 11) : '')
+    + '<span class="month-chip-txt"><span class="month-chip-name">' + esc(w.name || w.title || w.sport) + '</span>'
+    + (w.durationMinutes ? '<span class="month-chip-dur">' + esc(fmtDuration(w.durationMinutes)) + '</span>' : '') + '</span></div>';
+}
+function monthGridHtml() {
+  const key = state.monthKey;
+  const idx = dayIndex();
+  const today = todayStr();
+  const [planFirst] = planMonthRange();
+  const byDate = {};
+  allWorkouts().forEach(x => { (byDate[x.date] = byDate[x.date] || []).push(x.wo); });
+  const dows = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  let h = '<div class="month"><div class="month-row month-dow"><span>Week</span>' + dows.map(x => '<span>' + x + '</span>').join('') + '</div>';
+  monthGrid(key).forEach(row => {
+    const wkNums = [...new Set(row.map(dt => idx[dt] && idx[dt].weekNumber).filter(Boolean))];
+    const wkNum = wkNums.includes(state.planWeekNumber) ? state.planWeekNumber : wkNums[0];
+    const wk = wkNum ? weekByNumber(wkNum) : null;
+    h += '<div class="month-row">';
+    if (wk) {
+      const mins = (wk.days || []).flatMap(day => (day.workouts || []).filter(x => x.sport !== 'rest')).reduce((sum, x) => sum + (Number(x.durationMinutes) || 0), 0);
+      const pc = PHASE_COLORS[phaseForWeek(wkNum).name] || '#7c8194';
+      h += '<button type="button" class="month-wk" data-act="open-week" data-week="' + wkNum + '" style="border-left-color:' + pc + ';">'
+        + '<span class="month-wk-n' + (wkNum === startWeek() ? ' current' : '') + '">W' + wkNum + '</span>'
+        + '<span class="month-wk-h">' + esc(fmtDuration(mins) || '–') + '</span>'
+        + (wk.isRecoveryWeek ? '<span class="month-wk-rec" title="Recovery week">Rec.</span>' : '') + '</button>';
+    } else h += '<div></div>';
+    row.forEach(dt => {
+      const info = idx[dt];
+      const inMonth = dt.slice(0, 7) === key;
+      const ws = byStartTime((byDate[dt] || []).filter(w => w.sport !== 'rest'));
+      const isRace = ws.some(w => w.sport === 'race');
+      const cls = 'month-day' + (inMonth ? '' : ' out') + (info ? '' : ' off-plan') + (dt === today ? ' today' : '') + (isRace ? ' race' : '');
+      const dn = d(dt);
+      const note = dt === today ? 'Today' : dt === planFirst ? 'Plan starts' : dn.getDate() === 1 ? dn.toLocaleDateString(undefined, { month:'short' }) : '';
+      h += '<div class="' + cls + '"' + (info ? ' data-act="open-week" data-week="' + info.weekNumber + '"' : '') + '>'
+        + '<div class="month-day-top"><span class="month-day-n">' + dn.getDate() + '</span><span class="month-day-note">' + esc(note) + '</span></div>';
+      if (ws.length) {
+        h += ws.slice(0, 3).map(monthChip).join('');
+        if (ws.length > 3) h += '<span class="month-more" data-act="open-week" data-week="' + info.weekNumber + '">+' + (ws.length - 3) + ' more</span>';
+      } else if (info) h += '<span class="month-rest">Rest</span>';
+      h += '</div>';
+    });
+    h += '</div>';
+  });
+  return h + '</div>';
+}
+function monthStats(key) {
+  const ws = allWorkouts().filter(x => x.date.slice(0, 7) === key && x.wo.sport !== 'rest');
+  return { min: ws.reduce((sum, x) => sum + (Number(x.wo.durationMinutes) || 0), 0), n: ws.length, done: ws.filter(x => state.completed[x.wo.id]).length };
+}
+
 function workoutById(id) { const hit = allWorkouts().find(x => x.wo.id === id); return hit || null; }
 
 function fmtKm(km) { if (km == null) return ''; return state.unit === 'imperial' ? (km*0.621371).toFixed(1)+'mi' : km+'km'; }
@@ -538,7 +675,8 @@ function resolveTokens(text) {
 }
 
 function planTab() {
-  const n = state.planWeekNumber;
+  const month = isMonth();
+  const n = month ? weekForMonth(state.monthKey) : state.planWeekNumber;
   const wk = weekByNumber(n);
   const phase = phaseForWeek(n);
   const phaseColor = PHASE_COLORS[phase.name] || '#7c8194';
@@ -554,11 +692,18 @@ function planTab() {
   const weekWorkouts = wk ? (wk.days || []).flatMap(day => (day.workouts || []).filter(x => x.sport !== 'rest')) : [];
   const plannedMin = weekWorkouts.reduce((sum, x) => sum + (Number(x.durationMinutes) || 0), 0);
 
+  const monthHeadHtml = () => {
+    const st = monthStats(state.monthKey);
+    const nums = [...new Set(monthGrid(state.monthKey).flat().map(dt => (dayIndex()[dt] || {}).weekNumber).filter(Boolean))];
+    return '<div class="plan-head-week">' + esc(monthTitle(state.monthKey))
+      + (nums.length ? ' <span class="plan-head-sub">· Weeks ' + nums[0] + (nums.length > 1 ? '–' + nums[nums.length - 1] : '') + '</span>' : '') + '</div>'
+      + '<div class="plan-head-planned"><b>' + esc(st.min ? fmtDuration(st.min) : '0min') + '</b> planned · ' + st.n + ' session' + (st.n === 1 ? '' : 's') + ' · ' + st.done + ' done</div>';
+  };
   let h = readOnlyBanner() + '<div class="plan-head">'
     + '<div class="plan-head-main">'
       + '<div class="plan-head-kicker">' + esc(PLAN.meta.event) + esc(race) + '</div>'
-      + '<div class="plan-head-week">Week ' + n + ' <span style="color:var(--color-neutral-600); font-weight:400;">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>'
-      + (wk ? '<div class="plan-head-planned"><b>' + esc(plannedMin ? fmtDuration(plannedMin) : '0min') + '</b> planned'
+      + (month ? monthHeadHtml() : '<div class="plan-head-week">Week ' + n + ' <span class="plan-head-sub">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>')
+      + (month ? '' : wk ? '<div class="plan-head-planned"><b>' + esc(plannedMin ? fmtDuration(plannedMin) : '0min') + '</b> planned'
           + ' · ' + weekWorkouts.length + ' session' + (weekWorkouts.length === 1 ? '' : 's') + '</div>' : '')
     + '</div>'
     + '<div class="plan-head-progress">'
@@ -571,12 +716,20 @@ function planTab() {
       + '<div class="plan-bar"><div style="width:' + Math.max(pctDone, doneCount ? 2 : 0) + '%;"></div></div>'
     + '</div>'
     + '<div class="plan-head-nav">'
-      + '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + ' aria-label="Previous week">' + icon('left') + '</button>'
-      + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last ? ' disabled' : '') + ' aria-label="Next week">' + icon('right') + '</button>'
+      + '<div class="seg view-seg" role="group" aria-label="Plan view">'
+        + '<button type="button" class="seg-opt' + (month ? '' : ' on') + '" data-act="view-week" aria-pressed="' + !month + '">Week</button>'
+        + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '">Month</button></div>'
+      + (month
+        ? '<button type="button" class="btn btn-icon" data-act="prev"' + (monthAtEnd(-1) ? ' disabled' : '') + ' aria-label="Previous month">' + icon('left') + '</button>'
+          + '<button type="button" class="btn btn-icon" data-act="next"' + (monthAtEnd(1) ? ' disabled' : '') + ' aria-label="Next month">' + icon('right') + '</button>'
+        : '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + ' aria-label="Previous week">' + icon('left') + '</button>'
+          + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last ? ' disabled' : '') + ' aria-label="Next week">' + icon('right') + '</button>')
     + '</div></div>';
 
+  if (month) return h + monthGridHtml();
+
   const focus = wk ? wk.focus : phase.focus;
-  if (focus || (wk && wk.isRecoveryWeek)) {
+  if (!month && (focus || (wk && wk.isRecoveryWeek))) {
     h += '<div class="plan-focus" data-act="toggle-focus" title="Show the whole note">' + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2" style="margin-right:8px;">Recovery week</span>' : '')
       + esc(focus || '') + '</div>';
   }
@@ -1093,8 +1246,11 @@ document.getElementById('app').addEventListener('click', e => {
   }
   if (!act) return;
   if (a === 'backdrop' && e.target !== act) return;
-  if (a === 'prev') return stepWeek(-1);
-  if (a === 'next') return stepWeek(1);
+  if (a === 'view-week' || a === 'view-month') return setPlanView(a.slice(5));
+  /* Browsing a week is not an edit, so archived plans can do it too. */
+  if (a === 'open-week') { state.planView = 'week'; persistView(); state.planWeekNumber = +act.dataset.week; return render(); }
+  if (a === 'prev') return isMonth() ? stepMonth(-1) : stepWeek(-1);
+  if (a === 'next') return isMonth() ? stepMonth(1) : stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
@@ -1232,7 +1388,12 @@ document.getElementById('app').addEventListener('change', e => {
   }
   if (e.target.id === 'phase-select') {
     const p = (PLAN.phases || []).find(x => x.name === e.target.value);
-    if (p) { state.planWeekNumber = p.startWeek; render(); }
+    if (p) {
+      state.planWeekNumber = p.startWeek;
+      const w = weekByNumber(p.startWeek);
+      if (w && w.startDate) state.monthKey = String(w.startDate).slice(0, 7);
+      render();
+    }
     return;
   }
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
@@ -1445,6 +1606,45 @@ if (state.tab === 'settings') setView('settings');
 select.input { appearance:auto; }
 @keyframes pv-from-left { from { opacity:0; transform:translateX(-28px); } to { opacity:1; transform:none; } }
 @keyframes pv-from-right { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
+/* — month view (desktop) — */
+.month { display:flex; flex-direction:column; gap:8px; padding:0 18px 24px; }
+.month-row { display:grid; grid-template-columns:48px repeat(7, minmax(0,1fr)); gap:6px; }
+.month-dow { border-bottom:1px solid var(--color-neutral-800); }
+.month-dow span { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-500); padding:0 2px 6px; }
+.month-wk { display:flex; flex-direction:column; align-items:flex-start; gap:1px; padding:8px 4px 8px 7px; border:0; border-left:3px solid; border-radius:0 6px 6px 0; background:transparent; color:var(--color-text); font:inherit; text-align:left; cursor:pointer; }
+.month-wk:hover { background:color-mix(in srgb, var(--color-text) 6%, transparent); }
+.month-wk-n { font-size:13px; font-weight:500; } .month-wk-n.current { color:var(--color-accent-300); }
+.month-wk-h { font-size:11px; color:var(--color-neutral-500); line-height:1.3; }
+.month-wk-rec { font-size:10px; margin-top:4px; max-width:100%; white-space:nowrap; padding:1px 5px; border-radius:4px; background:var(--color-accent-2-800); color:var(--color-accent-2-100); }
+.month-day { display:flex; flex-direction:column; gap:4px; min-height:124px; min-width:0; padding:8px; border-radius:var(--radius-md); background:var(--color-surface); box-shadow:var(--shadow-sm); cursor:pointer; }
+.month-day:hover { box-shadow:var(--shadow-md); }
+.month-day.today { box-shadow:0 0 0 1px var(--color-accent); }
+.month-day.race { box-shadow:0 0 0 1px #d9b35a; }
+.month-day.out { opacity:.42; }
+.month-day.off-plan { background:transparent; box-shadow:none; border:1px dashed var(--color-neutral-800); cursor:default; }
+.month-day-top { display:flex; justify-content:space-between; align-items:center; gap:6px; min-height:22px; }
+.month-day-n { font-size:13px; font-weight:500; padding-left:2px; }
+.month-day.today .month-day-n { display:inline-grid; place-items:center; min-width:22px; height:22px; padding:0 5px; border-radius:999px; background:var(--color-accent); color:var(--color-surface); font-size:12.5px; font-weight:600; }
+.month-day-note { font-size:11px; color:var(--color-neutral-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.month-day.today .month-day-note { color:var(--color-accent-300); }
+.month-chip { display:flex; align-items:flex-start; gap:4px; min-width:0; padding:3px 5px; border-radius:4px; font-size:11.5px; line-height:1.35;
+  color:var(--c); border-left:2px solid var(--c); background:color-mix(in srgb, var(--c) 14%, transparent); cursor:pointer; }
+.month-chip:hover { box-shadow:0 0 0 1px var(--c); }
+.month-chip svg { flex:0 0 auto; margin-top:2px; }
+.month-chip-txt { display:flex; flex-direction:column; flex:1; min-width:0; }
+.month-chip-name { color:var(--color-text); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.month-chip.done { opacity:.55; } .month-chip.done .month-chip-name { text-decoration:line-through; }
+.month-chip.race { background:color-mix(in srgb, var(--c) 26%, transparent); } .month-chip.race .month-chip-name { font-weight:600; }
+.month-chip-dur { font-size:10.5px; color:var(--color-neutral-400); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.month-more { font-size:11px; color:var(--color-neutral-500); padding-left:4px; width:fit-content; }
+.month-more:hover { color:var(--color-accent-300); text-decoration:underline; }
+.month-rest { font-size:11px; color:var(--color-neutral-600); padding-left:2px; }
+.view-seg { margin-right:6px; }
+.view-seg .seg-opt { background:transparent; border:0; color:inherit; font:inherit; font-size:13px; }
+.view-seg .seg-opt + .seg-opt { border-left:1px solid var(--color-divider); }
+.view-seg .seg-opt.on { color:var(--color-accent); box-shadow:inset 0 0 0 1px var(--color-accent); }
+.plan-head-nav { align-items:center; }
+@media (max-width: 899px) { .view-seg { display:none; } }
 .slide-from-left { animation: pv-from-left .22s ease-out; }
 .slide-from-right { animation: pv-from-right .22s ease-out; }
 /* Tap feedback: a quick press so a tap visibly registered. */
