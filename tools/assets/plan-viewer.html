@@ -1043,7 +1043,12 @@ function calendarSection() {
           + '<input class="input" type="time" data-cal-field="time" data-index="' + i + '" value="' + esc(slot.time) + '" aria-label="Start time"' + lock + '>'
           + '<button type="button" class="btn btn-icon btn-secondary" data-act="cal-remove" data-index="' + i + '" title="Remove row" aria-label="Remove row"' + lock + '>' + icon('trash', 16) + '</button>'
         + '</div>').join('') + '</div>').join('')
-      + '<button type="button" class="btn btn-secondary" data-act="cal-add" style="font-size:12px; padding:5px 10px; margin-top:4px;"' + lock + '>' + icon('plus', 14) + ' Add sport</button>'
+      /* Pick which sport to add a row for; sports already listed add days with their own "+ Day". */
+      + (CAL_SPORTS.some(sp => !c.slots.some(sl => sl.sport === sp))
+        ? '<select class="input" data-cal-addsport aria-label="Add a sport" style="margin-top:4px; max-width:220px;"' + lock + '>'
+          + '<option value="" selected>+ Add sport…</option>'
+          + CAL_SPORTS.filter(sp => !c.slots.some(sl => sl.sport === sp)).map(sp => '<option value="' + sp + '">' + esc(capitalize(sp)) + '</option>').join('')
+          + '</select>' : '')
       + '<div class="hr" style="margin:14px 0;"></div>'
       + calendarPublish(c);
   }
@@ -1486,6 +1491,12 @@ document.getElementById('app').addEventListener('change', e => {
   if (state.calendar && state.saving && e.target.closest && e.target.closest('[data-cal-default], [data-cal-field]')) return;
   if (state.calendar && e.target.hasAttribute && e.target.hasAttribute('data-cal-default')) {
     if (e.target.value) saveCalendarSchedule(e.target.value, state.calendar.slots);
+    return;
+  }
+  if (state.calendar && e.target.hasAttribute && e.target.hasAttribute('data-cal-addsport')) {
+    const slot = e.target.value ? nextCalendarSlot(state.calendar, e.target.value) : null;
+    if (slot) saveCalendarSchedule(state.calendar.defaultTime, state.calendar.slots.concat([slot]));
+    else render();
     return;
   }
   const calField = e.target.getAttribute && e.target.getAttribute('data-cal-field');

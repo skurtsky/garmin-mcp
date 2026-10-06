@@ -158,17 +158,19 @@ def _json_for_script(value) -> str:
     return json.dumps(value, ensure_ascii=False).replace("<", "\\u003c")
 
 
-def render_viewer_html(row: dict, token: str | None = None) -> str:
+def render_viewer_html(row: dict, token: str | None = None, goal_future=None, tz_future=None) -> str:
     """The viewer template with the plan and its server state filled in, and
     the site nav (its Plan and Settings items switch the viewer's views)."""
     with open(TEMPLATE_PATH, encoding="utf-8") as f:
         page = f.read()
     page = page.replace("__PLAN_TITLE__", _e(plan_doc.plan_title(row["plan"])))
-    # Three independent reads: overlap their database round trips rather than
-    # adding them up (this is the page-open wait).
+    # Independent reads: overlap their database round trips rather than adding
+    # them up (this is the page-open wait). The caller may already have started
+    # the goal-race and time-zone reads while the plan itself was loading.
     with ThreadPoolExecutor(max_workers=3) as pool:
         payload = pool.submit(plan_service.view_payload, row)
-        goal, tz = pool.submit(_goal_race_payload), pool.submit(_timezone_payload)
+        goal = goal_future or pool.submit(_goal_race_payload)
+        tz = tz_future or pool.submit(_timezone_payload)
         server = {**payload.result(), "goalRace": goal.result(), "timezone": tz.result()}
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
@@ -357,8 +359,11 @@ async def serve_plan(request):
     plan_id = _plan_param(request)
 
     def build():
-        row = plan_service.get_plan(plan_id)
-        return row, (render_viewer_html(row, token) if row is not None else None)
+        # The goal race and time zone don't depend on the plan: read them while it loads.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            goal, tz = pool.submit(_goal_race_payload), pool.submit(_timezone_payload)
+            row = plan_service.get_plan(plan_id)
+            return row, (render_viewer_html(row, token, goal, tz) if row is not None else None)
 
     try:
         # The reads block on the database: keep them off the event loop so one

@@ -67,7 +67,7 @@ def _get_pool() -> ConnectionPool:
     if _pool is None:
         with _pool_lock:
             if _pool is None:
-                _pool = ConnectionPool(database_url, min_size=1, max_size=5, open=True)
+                _pool = ConnectionPool(database_url, min_size=3, max_size=8, open=True)
                 atexit.register(close_pool)
     return _pool
 
