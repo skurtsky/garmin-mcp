@@ -80,7 +80,9 @@ THEME_BOOT = (
     "document.documentElement.dataset.theme=v==='system'?(m.matches?'light':'dark'):v;}"
     "a();if(t==='system')m.addEventListener('change',a);}catch(e){}})();</script>"
 )
-_NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+# Despite the name (kept for callers) pinch-zoom is allowed: the tag only
+# pins the viewport to the device width and extends it under the notch.
+_NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
 
 # Phosphor icons (regular, plus the filled variant shown while active).
 _ICON_PATHS = {
@@ -144,7 +146,9 @@ html[data-theme=light] #gm-nav, html[data-theme=light] .gm-nav-more-sheet, html[
 #gm-nav .gm-nav__icon { display: grid; }
 #gm-nav .gm-nav__icon svg { width: 19px; height: 19px; display: block; grid-area: 1 / 1; }
 #gm-nav .gm-nav__icon .gm-nav__on { visibility: hidden; }
-#gm-nav .gm-nav__label { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+#gm-nav .gm-nav__label { font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+#gm-nav .gm-nav__link:focus-visible, #gm-nav .gm-nav__more-btn:focus-visible, .gm-nav-more-item:focus-visible {
+  outline: 2px solid var(--gm-active-text); outline-offset: -2px; }
 #gm-nav .gm-nav__title, #gm-nav .gm-nav__rail, #gm-nav .gm-nav__divider, #gm-nav .gm-nav__spacer { display: none; }
 #gm-nav .gm-nav__link:hover, #gm-nav .gm-nav__more-btn:hover {
   color: var(--gm-hover-text); background: var(--gm-hover-bg);
@@ -262,7 +266,8 @@ def _item(key: str, active: str | None, token: str | None, tabs: dict, extra_cla
     current = ' aria-current="page"' if is_active else ""
     inner = f'{_icon(icon)}<span class="gm-nav__label">{_e(label)}</span>'
     if key in tabs:
-        return f'<label class="{classes}" for="{_e(tabs[key])}" data-nav="{key}">{inner}</label>'
+        return (f'<label class="{classes}" for="{_e(tabs[key])}" data-nav="{key}" tabindex="0" '
+                f'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){{event.preventDefault();this.click()}}">{inner}</label>')
     return f'<a class="{classes}" href="{_e(_url(path, token))}" data-nav="{key}"{current}>{inner}</a>'
 
 
@@ -271,7 +276,8 @@ def _more_item(key: str, token: str | None, tabs: dict) -> str:
     inner = f"{_svg(icon)}<span>{_e(label)}</span>"
     if key in tabs:
         # Picking a tab also closes the sheet.
-        return (f'<label class="gm-nav-more-item" for="{_e(tabs[key])}" data-nav="{key}" '
+        return (f'<label class="gm-nav-more-item" for="{_e(tabs[key])}" data-nav="{key}" tabindex="0" '
+                f'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){{event.preventDefault();this.click()}}" '
                 f'onclick="document.getElementById(\'{_MORE_TOGGLE_ID}\').checked=false">{inner}</label>')
     download = " download" if key == "plan-pdf" else ""
     return f'<a class="gm-nav-more-item" href="{_e(_url(path, token))}" data-nav="{key}"{download}>{inner}</a>'

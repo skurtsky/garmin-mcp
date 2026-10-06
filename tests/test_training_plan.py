@@ -66,7 +66,7 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     assert r.status_code == 200
     assert "<title>Test Block — Alex</title>" in r.text
     assert "__PLAN" not in r.text
-    assert 'maximum-scale=1, user-scalable=no' in r.text
+    assert 'user-scalable' not in r.text and 'maximum-scale' not in r.text
     plan = _embedded(r.text, "plan-data")
     server = _embedded(r.text, "plan-server")
     assert plan["meta"]["id"] == "test-block-2026"

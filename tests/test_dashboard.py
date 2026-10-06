@@ -209,7 +209,7 @@ def test_render_is_a_complete_document():
 
 def test_render_includes_mobile_app_metadata():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    assert 'maximum-scale=1' in html
+    assert 'viewport-fit=cover' in html and 'user-scalable' not in html
     assert 'apple-mobile-web-app-capable' in html
     assert 'rel="manifest"' in html
 
@@ -1595,3 +1595,38 @@ def test_render_includes_theme_boot_and_light_tokens():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert html.count(THEME_BOOT) == 1
     assert "html[data-theme=light]" in html
+
+
+def test_several_sessions_today_are_one_swipeable_card_next_unfinished_first():
+    import copy
+    plan = copy.deepcopy(PLAN_CONTEXT)
+    base = plan["today"][0]
+    plan["today"] = [
+        {**base, "id": "w-done", "name": "Morning swim", "completed": True, "startTime": "06:30"},
+        {**base, "id": "w-eve", "name": "Core & mobility", "completed": False, "activity": None, "startTime": "18:30"},
+        {**base, "id": "w-noon", "name": "Lunch run", "completed": False, "activity": None, "startTime": "12:00"},
+    ]
+    today = _section(dashboard.render_dashboard_html({**SAMPLE, "plan": plan}), "tp-today")
+
+    assert today.count('class="sess-slide"') == 3
+    assert today.index("Lunch run") < today.index("Core &amp; mobility") < today.index("Morning swim")
+    assert "Today&rsquo;s session &middot; 1 of 3" in today and today.count("data-sess-dot=") == 3
+    assert "18:30 · " in today
+
+
+def test_one_session_today_has_no_carousel():
+    today = _section(dashboard.render_dashboard_html(_with_plan()), "tp-today")
+    assert "sess-slide" not in today and "data-sess-dot" not in today
+
+
+def test_today_lays_out_in_two_columns_with_in_focus_beneath():
+    today = _section(dashboard.render_dashboard_html(_with_plan()), "tp-today")
+    assert today.count('class="today-col"') == 2
+    assert today.index(">Readiness<") < today.index(">Tomorrow<") < today.index('class="focus"')
+
+
+def test_desktop_shell_drops_the_phone_width_cap_and_phone_chrome():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "@media (min-width: 900px)" in html and ".topbar { position:static" in html
+    assert "max-width:560px" in html.split("@media (max-width: 899px)", 2)[2].split("}", 1)[0]
+    assert 'class="topbar-back"' in html

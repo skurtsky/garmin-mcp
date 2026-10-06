@@ -820,7 +820,7 @@ def _chart(series: dict, label: str, unit: str, lower_better: bool, days: int,
     unit_suffix = f" {unit}" if unit else ""
     points = [
         {"x": x, "y": y, "d": _short_date(sliced[i].get("date")) or "",
-         "v": f"{f(filled[i])}{unit_suffix}"}
+         "v": f"{f(filled[i])}{unit_suffix}", "n": f(filled[i])}
         for i, (x, y) in enumerate(s["points"])
     ]
     delta_str = f"{'+' if delta > 0 else ''}{f(delta)}" if delta is not None else ""
@@ -1062,7 +1062,7 @@ h1,h2,h3,h4 { font-family:var(--font-heading); font-weight:500; margin:0; }
 .card { display:flex; flex-direction:column; gap:8px; padding:12px; border-radius:var(--radius-md);
         background:var(--color-surface); }
 .muted { color:var(--color-neutral-500); }
-.kicker { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
+.kicker { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
 .section-title { font-size:11px; letter-spacing:.12em; text-transform:uppercase;
                   color:var(--color-neutral-500); margin-bottom:8px; }
 .err { color:#cf8a80; font-size:12px; padding:12px; }
@@ -1121,15 +1121,31 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #tab-you:checked ~ .topbar .topbar-fitness { display:flex; }
 .week-pill { display:flex; align-items:center; gap:6px; flex:0 0 auto; font-size:11px; padding:4px 10px; border-radius:999px;
   background:rgba(124,129,148,.16); color:var(--color-neutral-300); text-decoration:none; white-space:nowrap; }
-.tabpanels { max-width:1120px; margin:0 auto; padding:16px; }
-/* Today and Fitness are single phone-width columns, on a desktop too. */
-#tab-today:checked ~ .tabpanels, #tab-you:checked ~ .tabpanels { max-width:560px; padding-top:14px; }
+.tabpanels { max-width:1280px; margin:0 auto; padding:16px; }
+/* Today and Fitness are single phone-width columns up to a tablet; from 900px
+   the desktop shell (rail + fluid main, 1280px, 24px padding) takes over. */
+@media (max-width: 899px) {
+  #tab-today:checked ~ .tabpanels, #tab-you:checked ~ .tabpanels { max-width:560px; padding-top:14px; }
+}
+.today-grid { display:flex; flex-direction:column; gap:12px; }
+.today-col { display:contents; }
+.t-desc { font-size:13px; color:var(--color-neutral-300); }
+.sess-track { display:flex; align-items:flex-start; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory;
+  scrollbar-width:none; overscroll-behavior-x:contain; }
+.sess-track::-webkit-scrollbar { display:none; }
+.sess-track { padding:1px; margin:-1px; }
+.sess-slide { flex:0 0 100%; min-width:0; scroll-snap-align:start; display:flex; align-self:flex-start; }
+.sess-track { transition:height .2s ease; }
+.sess-slide > .t-card { flex:1; min-width:0; }
+.sess-nav { display:none; width:28px; height:28px; border-radius:50%; border:1px solid var(--color-divider); background:transparent;
+  color:var(--color-neutral-400); cursor:pointer; place-items:center; padding:0; }
+.sess-nav:hover { color:var(--color-text); background:var(--color-neutral-900); }
 
 /* ── Today (design 3a/3b) ── */
 .phi { display:block; flex:0 0 auto; }
 .t-card { background:var(--color-surface); border-radius:10px; padding:14px; box-shadow:var(--shadow-sm); }
 .t-session { box-shadow:0 0 0 1px var(--color-neutral-700); display:flex; flex-direction:column; gap:10px; }
-.t-kick { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
+.t-kick { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
 .t-sub { font-size:12px; color:var(--color-neutral-400); }
 .t-ring { width:52px; height:52px; border-radius:50%; flex:0 0 auto; display:grid; place-items:center; font-size:20px; font-weight:500; }
 .t-tile { width:44px; height:44px; flex:0 0 auto; border-radius:10px; display:grid; place-items:center; }
@@ -1155,10 +1171,38 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   cursor:pointer; transition:width .2s ease, background .2s ease; }
 .focus-dot.on { width:18px; background:var(--color-accent); }
 
+.fit-grid, .fit-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+.fit-col { display:contents; }
+.topbar-back { display:grid; cursor:pointer; color:var(--color-neutral-500); }
+.topbar-title { font-size:15px; font-weight:500; line-height:1.2; }
+
+/* ── Desktop (≥900px): the rail is the only chrome; the date, sync and week
+   pill become the page header, and pages use two columns. ── */
+@media (min-width: 900px) {
+  .topbar { position:static !important; backdrop-filter:none !important; background:none !important; border-bottom:0 !important; }
+  .topbar-inner { max-width:1280px; padding:24px 24px 0; }
+  .topbar-title { font-size:24px; letter-spacing:-.015em; }
+  .topbar-back { display:none; }
+  /* Trends, Activity and Gear carry their own heading: keep just the sync line. */
+  #tab-trends:checked ~ .topbar .topbar-title, #tab-activity:checked ~ .topbar .topbar-title,
+  #tab-gear:checked ~ .topbar .topbar-title { display:none; }
+  #tab-trends:checked ~ .topbar .week-pill, #tab-activity:checked ~ .topbar .week-pill,
+  #tab-gear:checked ~ .topbar .week-pill { display:none; }
+  .tabpanels { padding:20px 24px 32px; }
+  .today-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; align-items:start; }
+  .today-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+  .sess-nav { display:grid; }
+  .focus-track { margin:0; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; overflow:visible; }
+  .focus-card { width:auto; height:auto; min-height:280px; }
+  .focus .focus-dot, .focus .focus-title { display:none; }
+  .fit-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; align-items:start; }
+  .fit-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+}
+
 /* ── Fitness (design 4a) ── */
 .f-row { display:grid; grid-template-columns:minmax(0,1fr) 64px 86px; gap:8px; align-items:center; padding:11px 14px; }
 .f-ellipsis { font-size:11px; color:var(--color-neutral-600); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.f-tag { font-size:9px; letter-spacing:.08em; text-transform:uppercase; padding:2px 7px; border-radius:999px; white-space:nowrap; }
+.f-tag { font-size:10px; letter-spacing:.08em; text-transform:uppercase; padding:2px 7px; border-radius:999px; white-space:nowrap; }
 .f-seg { display:flex; border-radius:8px; overflow:hidden; box-shadow:inset 0 0 0 1px var(--color-divider); font-size:12px; }
 .f-seg label { padding:5px 11px; color:var(--color-neutral-500); cursor:pointer; }
 #fz-swim:checked ~ .f-seg-row label[for=fz-swim],
@@ -1170,7 +1214,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .f-zone4 { display:grid; grid-template-columns:30px minmax(0,1fr) 76px 62px; }
 .f-zones-run .f-zone4 { grid-template-columns:30px minmax(0,1fr) 62px 80px; }
 .f-zone3 { display:grid; grid-template-columns:30px minmax(0,1fr) 100px; }
-.f-zhead { padding:8px 12px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-600);
+.f-zhead { padding:8px 12px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-600);
   border-bottom:1px solid var(--color-divider-soft); }
 .f-zrow { padding:9px 12px; font-size:13px; align-items:center; }
 .f-prs { border-radius:10px; box-shadow:var(--shadow-sm); }
@@ -1331,10 +1375,21 @@ html { -webkit-tap-highlight-color:transparent; }
   border:none; background:var(--color-neutral-900); color:var(--color-neutral-400); font-size:15px;
   line-height:1; cursor:pointer; z-index:1; }
 .activity-modal-body { overflow-y:auto; padding:8px 16px 28px; -webkit-overflow-scrolling:touch; }
+/* Desktop, from the Activity tab: the detail is a panel beside the list, not a
+   sheet over it. It opens on a click and closes on the same click again. */
+@media (min-width: 900px) {
+  .activity-modal.as-panel { pointer-events:none; }
+  .activity-modal.as-panel .activity-modal-backdrop, .activity-modal.as-panel .activity-modal-draghandle { display:none; }
+  .activity-modal.as-panel .activity-modal-sheet { pointer-events:auto; left:auto; right:24px; top:24px; bottom:auto; margin:0;
+    width:420px; max-height:calc(100vh - 48px); border-radius:12px; transform:none; box-shadow:var(--shadow-sm); }
+  .activity-modal.as-panel .activity-modal-body { padding-top:20px; }
+  body.act-panel .tabpanels { max-width:none; margin:0; padding-right:468px; }
+}
+.actcard-click.is-open { box-shadow:0 0 0 1px var(--color-accent-700); }
 .ad-stat-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
 .ad-zone-row { display:grid; grid-template-columns:48px 64px 1fr 44px; align-items:center; gap:8px;
                font-size:11px; padding:4px 0; }
-.ad-zone-row-head { font-size:9px; letter-spacing:.05em; text-transform:uppercase; }
+.ad-zone-row-head { font-size:10px; letter-spacing:.05em; text-transform:uppercase; }
 .ad-zone-bar { height:6px; border-radius:999px; background:var(--color-neutral-800); overflow:hidden; }
 .ad-zone-bar > div { height:100%; }
 .ad-te-track { position:relative; height:6px; border-radius:999px; margin:8px 0 2px; }
@@ -1554,7 +1609,39 @@ def _today_activities_card(acts: list[dict], rest_day: bool) -> str:
     </div>"""
 
 
-def _session_card(w: dict, ftp_test: dict | None) -> str:
+def _session_line(w: dict, planned_prefix: bool = False) -> str:
+    """The plan's start time ahead of :func:`_workout_line`: "18:30 · 25 min"."""
+    line = _workout_line(w, planned_prefix)
+    start = _e(w["startTime"]) if w.get("startTime") else ""
+    return f"{start} · {line}" if start and line else (start or line)
+
+
+def _sessions_card(workouts: list[dict], ftp_test: dict | None) -> str:
+    """Today's sessions as one swipeable card: the next unfinished session
+    first (by start time), completed ones after, dots showing the position.
+    A single session is just its card."""
+    if len(workouts) == 1:
+        return _session_card(workouts[0], ftp_test)
+    ordered = sorted(enumerate(workouts), key=lambda iw: (
+        bool(iw[1].get("completed")), iw[1].get("startTime") or "99:99", iw[0]))
+    n = len(ordered)
+    cards = "".join(
+        f'<div class="sess-slide">{_session_card(w, ftp_test, f"Today&rsquo;s session &middot; {i} of {n}")}</div>'
+        for i, (_, w) in enumerate(ordered, 1))
+    dots = "".join(f'<button type="button" class="focus-dot{" on" if i == 0 else ""}" data-sess-dot="{i}" '
+                   f'aria-label="Session {i + 1} of {n}"></button>' for i in range(n))
+    return f"""
+    <div class="sessions" style="display:flex;flex-direction:column;gap:8px;min-width:0">
+      <div class="sess-track" tabindex="0" aria-label="Today&rsquo;s sessions">{cards}</div>
+      <div style="display:flex;justify-content:center;align-items:center;gap:10px">
+        <button type="button" class="sess-nav" data-sess-step="-1" aria-label="Previous session">{_ph("caret-left", 13)}</button>
+        <div style="display:flex;gap:6px">{dots}</div>
+        <button type="button" class="sess-nav" data-sess-step="1" aria-label="Next session">{_ph("caret-right", 13)}</button>
+      </div>
+    </div>"""
+
+
+def _session_card(w: dict, ftp_test: dict | None, kick: str = "Today&rsquo;s session") -> str:
     color = _plan_color(w["sport"])
     done = w.get("completed")
     status = (f'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:{_DONE_COLOR}">'
@@ -1584,14 +1671,15 @@ def _session_card(w: dict, ftp_test: dict | None) -> str:
         else:
             ftp_row = (f'<button type="button" class="t-btn" data-ftp-open>{_ph("gauge", 15)}Update FTP from test</button>')
     open_attrs = _plan_workout_attrs(w)
+    desc_row = (f'<div class="t-desc">{_e(w["description"])}</div>' if w.get("description") else "")
     return f"""
     <div class="t-card t-session{' t-link' if open_attrs else ''}"{open_attrs} style="border-left:3px solid {color}">
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div class="t-kick" style="color:var(--color-accent)">Today&rsquo;s session</div>{status}
+        <div class="t-kick" style="color:var(--color-accent)">{kick}</div>{status}
       </div>
       <div><div style="font-size:17px;font-weight:500">{_e(w.get("name"))}</div>
-        <div class="t-sub">{_workout_line(w, planned_prefix=bool(act))}</div></div>
-      {act_row}{ftp_row}
+        <div class="t-sub">{_session_line(w, planned_prefix=bool(act))}</div></div>
+      {desc_row}{act_row}{ftp_row}
     </div>"""
 
 
@@ -1903,31 +1991,36 @@ def _goal_card(g: dict) -> str:
 
 
 def _panel_today(data: dict, token: str | None = None) -> str:
+    """Two columns on a desktop (race + readiness | sessions, tomorrow, week)
+    with In focus as a full-width row beneath; one column on a phone."""
     plan = data.get("plan")
     goal = (data.get("redesign") or {}).get("goal")
-    cards = [_goal_card(goal)] if goal and goal.get("show_on_today") else []
-    cards.append(_readiness_card(data))
+    left = [_goal_card(goal)] if goal and goal.get("show_on_today") else []
+    left.append(_readiness_card(data))
+    right, templates = [], []
     rest_day = False
     if plan and plan.get("in_plan"):
         ftp_test = plan.get("ftp_test")
         if plan.get("today"):
-            cards += [_session_card(w, ftp_test) for w in plan["today"]]
+            right.append(_sessions_card(plan["today"], ftp_test))
         else:
             rest_day = True
-            cards.append(_rest_day_card())
+            right.append(_rest_day_card())
         if plan.get("today_activities"):
-            cards.append(_today_activities_card(plan["today_activities"], rest_day))
+            right.append(_today_activities_card(plan["today_activities"], rest_day))
         tomorrow = plan.get("tomorrow") or []
-        cards += [_tomorrow_card(tomorrow), _week_card(plan.get("week") or {})]
-        cards += [_plan_workout_template(w, "Today", token) for w in plan.get("today") or [] if w.get("id")]
-        cards += [_plan_workout_template(w, "Tomorrow", token) for w in tomorrow[:1] if w.get("id")]
+        right += [_tomorrow_card(tomorrow), _week_card(plan.get("week") or {})]
+        templates += [_plan_workout_template(w, "Today", token) for w in plan.get("today") or [] if w.get("id")]
+        templates += [_plan_workout_template(w, "Tomorrow", token) for w in tomorrow[:1] if w.get("id")]
     elif not plan:
-        cards.append(_no_plan_card(token))
+        right.append(_no_plan_card(token))
     # A rest day opens In Focus on Recovery; a session day on Training status.
-    cards.append(_in_focus(data, 1 if rest_day else 0))
+    focus = _in_focus(data, 1 if rest_day else 0)
     return (
         '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:12px">'
-        + "".join(cards) + "</section>"
+        f'<div class="today-grid"><div class="today-col">{"".join(left)}</div>'
+        f'<div class="today-col">{"".join(right)}</div></div>'
+        + "".join(templates) + focus + "</section>"
     )
 
 
@@ -1953,9 +2046,10 @@ def _chart_card_html(c: dict) -> str:
         <div class="kicker">{html.escape(c["label"])}</div>
         <div style="font-size:11px;color:{c["deltaColor"]}">{c["delta"]}</div>
       </div>
-      <div style="display:flex;align-items:baseline;gap:5px">
-        <div style="font-family:var(--font-heading);font-size:26px;line-height:1">{c["value"]}</div>
+      <div style="display:flex;align-items:baseline;gap:5px" data-cc>
+        <div class="cc-val" style="font-family:var(--font-heading);font-size:26px;line-height:1" data-avg="{c["value"]}">{c["value"]}</div>
         <div style="font-size:11px;color:var(--color-neutral-500)">{html.escape(c["unit"])}</div>
+        <div class="cc-tag" style="font-size:11px;color:var(--color-neutral-500);margin-left:auto" data-avg="avg">avg</div>
       </div>
       <svg class="js-linechart" id="{c["id"]}" data-points="{c["points_json"]}"
           viewBox="0 0 300 78" preserveAspectRatio="none" style="width:100%;height:66px;display:block">
@@ -2240,11 +2334,17 @@ def _panel_fitness(data: dict) -> str:
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         {vo2_card("Running", vo2.get("running"))}{vo2_card("Cycling", vo2.get("cycling"))}
       </div>
-      {dashboard_fitness.thresholds(plan, athlete, redesign.get("thresholds"))}
-      {_plan_zones(plan) if plan else _garmin_hr_zones(athlete)}
-      {dashboard_fitness.predictions(redesign.get("predictions"), redesign.get("goal"))}
-      {dashboard_fitness.records(redesign.get("records"), today)}
-      {_personal_records_row(data.get("personal_records"))}
+      <div class="fit-grid">
+        <div class="fit-col">
+          {dashboard_fitness.thresholds(plan, athlete, redesign.get("thresholds"))}
+          {_plan_zones(plan) if plan else _garmin_hr_zones(athlete)}
+        </div>
+        <div class="fit-col">
+          {dashboard_fitness.predictions(redesign.get("predictions"), redesign.get("goal"))}
+          {dashboard_fitness.records(redesign.get("records"), today)}
+          {_personal_records_row(data.get("personal_records"))}
+        </div>
+      </div>
     </section>"""
 
 
@@ -2857,11 +2957,23 @@ _CHART_JS = """
         activeBar = null;
         activeLine = { crosshair: crosshair, dot: dot };
         showTip(p.clientX, p.clientY, pt.d, pt.v, true);
+        readout(pt);
+      }
+
+      // A metric card's big number is the range average until a day is
+      // hovered or touched, then that day's value (and its date).
+      var big = svg.parentNode && svg.parentNode.querySelector('.cc-val');
+      var tag = svg.parentNode && svg.parentNode.querySelector('.cc-tag');
+      function readout(pt) {
+        if (!big || (pt && pt.n === undefined)) return;
+        big.textContent = pt ? pt.n : big.getAttribute('data-avg');
+        if (tag) tag.textContent = pt ? pt.d : tag.getAttribute('data-avg');
       }
 
       hit.addEventListener('mousemove', update);
       hit.addEventListener('mousedown', update);
-      hit.addEventListener('mouseleave', hideAll);
+      hit.addEventListener('mouseleave', function () { hideAll(); readout(null); });
+      hit.addEventListener('touchend', function () { readout(null); });
       hit.addEventListener('touchstart', function (e) { e.preventDefault(); update(e); }, { passive: false });
       hit.addEventListener('touchmove', function (e) { e.preventDefault(); update(e); }, { passive: false });
     });
@@ -3054,9 +3166,29 @@ _ACTIVITY_MODAL_JS = """
     leafletMap = map;
   }
 
+  var wide = window.matchMedia('(min-width: 900px)');
+  var openId = null;
+  function panelMode() { var t = document.getElementById('tab-activity'); return wide.matches && !!t && t.checked; }
+  function markOpen() {
+    document.querySelectorAll('.actcard-click.is-open').forEach(function (el) { el.classList.remove('is-open'); });
+    if (openId == null || !modal.classList.contains('as-panel')) return;
+    document.querySelectorAll('.tp-activity .actcard-click').forEach(function (el) {
+      if ((el.getAttribute('onclick') || '').indexOf('openActivityModal(' + openId + ')') === 0) el.classList.add('is-open');
+    });
+  }
+
   window.openActivityModal = function (id) {
+    var asPanel = panelMode();
+    if (asPanel && modal.classList.contains('open') && modal.classList.contains('as-panel') && String(openId) === String(id)) {
+      window.closeActivityModal();
+      return;
+    }
+    openId = id;
+    modal.classList.toggle('as-panel', asPanel);
+    document.body.classList.toggle('act-panel', asPanel);
     modal.classList.add('open');
-    document.body.style.overflow = 'hidden';
+    document.body.style.overflow = asPanel ? '' : 'hidden';
+    markOpen();
     body.innerHTML = '<div class="muted" style="padding:32px 20px;text-align:center;font-size:13px">Loading…</div>';
     var url = '/api/activity/' + id + (token() ? '?token=' + encodeURIComponent(token()) : '');
     fetch(url).then(function (res) { return res.text(); }).then(function (responseHtml) {
@@ -3075,6 +3207,10 @@ _ACTIVITY_MODAL_JS = """
     var tpl = document.getElementById('plan-workout-' + id);
     if (!tpl) return;
     destroyMap();
+    openId = null;
+    modal.classList.remove('as-panel');
+    document.body.classList.remove('act-panel');
+    markOpen();
     body.innerHTML = '';
     body.appendChild(tpl.content.cloneNode(true));
     body.scrollTop = 0;
@@ -3097,7 +3233,10 @@ _ACTIVITY_MODAL_JS = """
   });
 
   window.closeActivityModal = function () {
-    modal.classList.remove('open');
+    modal.classList.remove('open', 'as-panel');
+    document.body.classList.remove('act-panel');
+    openId = null;
+    markOpen();
     document.body.style.overflow = '';
     destroyMap();
     if (returnOnClose) { returnOnClose = false; history.back(); }
@@ -3121,6 +3260,14 @@ _ACTIVITY_MODAL_JS = """
   })();
 
   backdrop.addEventListener('click', window.closeActivityModal);
+  // The side panel belongs to the Activity tab: leaving it (or shrinking the
+  // window to a phone) closes it.
+  document.addEventListener('change', function (e) {
+    if (e.target && e.target.name === 'tab' && modal.classList.contains('as-panel')) window.closeActivityModal();
+  });
+  if (wide.addEventListener) wide.addEventListener('change', function () {
+    if (modal.classList.contains('as-panel')) window.closeActivityModal();
+  });
   var closeBtn = modal.querySelector('.activity-modal-close');
   if (closeBtn) closeBtn.addEventListener('click', window.closeActivityModal);
   document.addEventListener('keydown', function (e) {
@@ -3439,6 +3586,38 @@ _TODAY_JS = """
     document.addEventListener('change', function (e) { if (e.target && e.target.id === 'tab-today') place(); });
   });
 
+  // ── Today's sessions: dots follow the swipe; the arrows (desktop) step ──
+  document.querySelectorAll('.sessions').forEach(function (box) {
+    var track = box.querySelector('.sess-track');
+    var slides = track.querySelectorAll('.sess-slide');
+    var dots = box.querySelectorAll('[data-sess-dot]');
+    function step() { return slides.length > 1 ? slides[1].offsetLeft - slides[0].offsetLeft : 1; }
+    function current() { return Math.max(0, Math.min(slides.length - 1, Math.round(track.scrollLeft / step()))); }
+    // The track is as tall as the session in view, not the tallest one.
+    function fit(i) { if (slides[i] && track.offsetWidth) track.style.height = slides[i].offsetHeight + 'px'; }
+    function show(i) { dots.forEach(function (d, j) { d.classList.toggle('on', j === i); }); fit(i); }
+    function go(i) { track.scrollTo({ left: step() * Math.max(0, Math.min(slides.length - 1, i)), behavior: 'smooth' }); }
+    var ticking = false;
+    track.addEventListener('scroll', function () {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(function () { ticking = false; show(current()); });
+    }, { passive: true });
+    dots.forEach(function (d) {
+      d.addEventListener('click', function () { go(parseInt(d.getAttribute('data-sess-dot'), 10)); });
+    });
+    box.querySelectorAll('[data-sess-step]').forEach(function (b) {
+      b.addEventListener('click', function () { go(current() + parseInt(b.getAttribute('data-sess-step'), 10)); });
+    });
+    fit(0);
+    window.addEventListener('resize', function () { track.style.height = ''; fit(current()); });
+    document.addEventListener('change', function (e) { if (e.target && e.target.id === 'tab-today') fit(current()); });
+    track.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight') { e.preventDefault(); go(current() + 1); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); go(current() - 1); }
+    });
+  });
+
   // ── Trends: remember the range picked last (per device) ──
   var RANGE_KEY = 'dash-trend-range';
   try {
@@ -3548,7 +3727,7 @@ def _dashboard_head(token: str | None) -> str:
         "<!doctype html>"
         '<html lang="en"><head>'
         '<meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
@@ -3644,17 +3823,17 @@ def render_dashboard_body(data: dict, token: str | None = None,
       background:color-mix(in srgb, var(--color-bg) 78%, transparent);border-bottom:1px solid var(--color-divider)">
     <div class="topbar-main topbar-inner">
       <div style="flex:1;min-width:0">
-        <div style="font-size:15px;font-weight:500;line-height:1.2">{_e(weekday_line)}</div>
-        <div style="font-size:11px;color:var(--color-neutral-500)">{sync_line}</div>
+        <div class="topbar-title">{_e(weekday_line)}</div>
+        <div style="font-size:12px;color:var(--color-neutral-500)">{sync_line}</div>
       </div>
       <span id="dash-updating" class="dash-updating" hidden><span class="dash-spin"></span>Updating</span>
       {week_pill}
     </div>
     <div class="topbar-fitness topbar-inner">
-      <label for="tab-today" aria-label="Back to Today" style="display:grid;cursor:pointer;color:var(--color-neutral-500)">{_ph("caret-left", 20)}</label>
+      <label for="tab-today" class="topbar-back" aria-label="Back to Today">{_ph("caret-left", 20)}</label>
       <div style="flex:1;min-width:0">
-        <div style="font-size:15px;font-weight:500;line-height:1.2">Fitness</div>
-        <div style="font-size:11px;color:var(--color-neutral-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(fitness_sub)}</div>
+        <div class="topbar-title">Fitness</div>
+        <div style="font-size:12px;color:var(--color-neutral-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{_e(fitness_sub)}</div>
       </div>
     </div>
   </div>
