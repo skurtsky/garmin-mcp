@@ -221,10 +221,10 @@ def latest_week() -> dict | None:
 
 _NAV_STYLE = """
 .gm-week-nav {
-  --wn-bg:#171a21; --wn-fg:#e6e8eb; --wn-line:#232833; --wn-field:#0f1115; --wn-link:#5aa9e6; --wn-muted:#8b93a1;
+  --wn-bg:#232532; --wn-fg:#e9e9ed; --wn-line:#3f424d; --wn-field:#161826; --wn-link:#b5abfc; --wn-muted:#9397ab;
 }
 html[data-theme=light] .gm-week-nav {
-  --wn-bg:#ffffff; --wn-fg:#1c1e2a; --wn-line:#e2e5f0; --wn-field:#f4f4f8; --wn-link:#3a6fb0; --wn-muted:#6b6f82;
+  --wn-bg:#ffffff; --wn-fg:#1c1e2a; --wn-line:#e2e5f0; --wn-field:#f4f4f8; --wn-link:#6e61c2; --wn-muted:#6b6f82;
 }
 .gm-week-nav {
   box-sizing: border-box; display: flex; flex-wrap: wrap; gap: .6rem;
@@ -247,20 +247,24 @@ html[data-theme=light] .gm-week-nav {
 _STYLE = """
 :root {
   color-scheme: dark;
-  --bg:#0f1115; --fg:#e6e8eb; --muted:#8b93a1; --card-bg:#171a21; --card-border:#232833;
-  --accent:#5aa9e6;
+  /* The Nocturne tokens the dashboard and plan viewer use. */
+  --bg:#161826; --fg:#e9e9ed; --muted:#9397ab; --card-bg:#232532; --card-border:#3f424d;
+  --accent:#b5abfc;
 }
 html[data-theme=light] {
   color-scheme: light;
-  --bg:#f5f6f8; --fg:#1a1d23; --muted:#6b7280; --card-bg:#fff; --card-border:#e4e7ec; --accent:#3a6fb0;
+  --bg:#f4f4f8; --fg:#1c1e2a; --muted:#6b6f82; --card-bg:#ffffff; --card-border:#e2e5f0; --accent:#6e61c2;
 }
 * { box-sizing: border-box; }
 body {
   margin:0; padding:0; background:var(--bg); color:var(--fg); line-height:1.5;
-  font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-family:'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 /* Padding lives on main, not body, so the nav bar spans the full width. */
-main { max-width:640px; margin:0 auto; padding:2rem 1.5rem; }
+/* The shared shell: fluid main up to 1280px with 24px padding; the report itself
+   stays at a readable 720px. */
+main { max-width:1280px; margin:0 auto; padding:24px; }
+main > .card, main > p, main > .meta, main > h1, main > .links { max-width:720px; }
 h1 { font-size:1.4rem; margin:0 0 .35rem; }
 .meta { color:var(--muted); font-size:.85rem; margin-bottom:1.5rem; }
 .card {
@@ -288,7 +292,7 @@ def _page(title: str, body: str, token: str | None = None) -> str:
     return (
         "<!doctype html>"
         '<html lang="en"><head><meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'

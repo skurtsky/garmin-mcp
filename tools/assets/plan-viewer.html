@@ -395,6 +395,7 @@ const DESKTOP = window.matchMedia('(min-width: 900px)');
 DESKTOP.addEventListener('change', () => render());
 
 const state = {
+  settingsCat: null,               // the open Settings category (null: the list, on a phone)
   tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
   planWeekNumber: startWeek(),
   planView: storedPlanView(),                // 'week' | 'month'; month only applies on desktop
@@ -789,61 +790,95 @@ function planTab() {
   return h;
 }
 
-function settingsTab() {
+/* Settings are grouped by what they belong to: General (this device and
+   units), Training (goal race, zones), Plan (the active plan, its files and
+   history), Calendar and About. On a desktop a category list sits beside the
+   form; on a phone it's a grouped list with value summaries that drills into
+   a page with a back arrow. */
+const SETTINGS_CATS = [['general', 'General', 'gear'], ['training', 'Training', 'flag'], ['plan', 'Plan', 'list'],
+  ['calendar', 'Calendar', 'calendar'], ['about', 'About', 'history']];
+function settingsSummary(key) {
+  const ov = state.overrides;
+  if (key === 'general') return [capitalize(theme()), state.unit === 'imperial' ? 'Imperial' : 'Metric', state.tz && state.tz.effective].filter(Boolean).join(' · ');
+  if (key === 'training') return [state.goal && state.goal.goal ? state.goal.goal.name : 'No goal race', ov.ftp ? 'FTP ' + ov.ftp + ' W' : ''].filter(Boolean).join(' · ');
+  if (key === 'plan') return [PLAN.meta.title || PLAN.meta.id, 'v' + SERVER.version].join(' · ');
+  if (key === 'calendar') return state.calendar && state.calendar.defaultTime ? 'Default start ' + state.calendar.defaultTime : 'Publish to a calendar app';
+  return 'Garmin + ' + (PLAN.meta.generatedBy || 'Claude Coach');
+}
+function settingsPane(key) {
   const ov = state.overrides;
   const z = PLAN.zones || {};
-  let h = '<div style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>';
-  h += goalRaceSection();
-  h += timezoneSection();
-  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
-    + '<div class="card-title" style="margin-bottom:2px;">Appearance</div>'
-    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">Dark or light, for every page of the app — Today, the plan, the weekly reports. System follows this device\'s setting.</div>'
-    + '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;"><div class="seg" role="radiogroup" aria-label="Theme">'
-    + ['dark','light','system'].map(t => '<label class="seg-opt"><input type="radio" name="theme" data-theme-pick="' + t + '"' + (theme() === t ? ' checked' : '') + '>' + capitalize(t) + '</label>').join('')
-    + '</div><span style="font-size:12px; color:var(--color-neutral-500);">' + (theme() === 'system' ? 'Following this device — currently ' + document.documentElement.dataset.theme + '.' : 'Saved on this device.') + '</span></div></div>';
-
   const dis = READ_ONLY ? ' disabled' : '';
-  h += readOnlyBanner();
-  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:10px;">Units</div>'
-    + '<div class="seg">'
-    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="metric"' + (state.unit === 'metric' ? ' checked' : '') + dis + '>Metric (km/m)</label>'
-    + '<label class="seg-opt"><input type="radio" name="unit" data-unit="imperial"' + (state.unit === 'imperial' ? ' checked' : '') + dis + '>Imperial (mi/yd)</label>'
-    + '</div></div>';
-
-  h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
-    + '<div class="card-title" style="margin-bottom:2px;">Zones &amp; thresholds</div>'
-    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the plan zones on Fitness, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
-  const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
-    + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;"' + dis + '>'
-      + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
-  if (z.bike) h += '<div class="sub-label">Bike</div><div class="field-pair">'
-    + '<div class="field"><label>FTP (W)</label><input class="input" type="number" inputmode="numeric" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
-    + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
-  if (z.run) h += '<div class="sub-label">Run</div><div class="field-pair">'
-    + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
-    + '<div class="field"><label>Threshold pace (/km)</label><input class="input" type="text" placeholder="m:ss" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
-  if (z.swim) h += '<div class="sub-label">Swim</div><div class="field" style="margin-bottom:10px;"><label>CSS (/100m)</label>'
-    + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
-  h += '</div>';
-
-  h += calendarSection();
-
-  h += settingsLinkCard('Plan PDF', 'A printable wall chart of the whole plan, with the current zones.',
-    appLink('/training-plan/pdf'), 'down', 'Download');
-  h += settingsLinkCard('All plans', 'Switch the active plan, or open an archived plan read-only.',
-    appLink('/training-plan/plans'), 'list', 'View plans');
-  h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach. A new plan id becomes the active plan; the same id replaces this plan after a confirmation.',
-    appLink('/training-plan/upload'), 'up', 'Upload');
-  h += historySection();
-
-  h += '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">'
-    + '<div class="card-title" style="margin-bottom:4px;">About this plan</div>'
-    + '<div style="font-size:13px; color:var(--color-neutral-300); line-height:1.6;">Generated by ' + esc(PLAN.meta.generatedBy || 'Claude Coach')
-      + ' on ' + esc(new Date(PLAN.meta.createdAt).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })) + '.'
-      + (PLAN.meta.pilot ? '<br>' + esc(PLAN.meta.pilot) : '') + '</div>'
-    + '<div class="hr" style="margin:12px 0;"></div>'
-    + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
+  let h = readOnlyBanner();
+  if (key === 'general') {
+    h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+      + '<div class="card-title" style="margin-bottom:2px;">Appearance</div>'
+      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">Dark or light, for every page of the app — Today, the plan, the weekly reports. System follows this device\'s setting.</div>'
+      + '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;"><div class="seg" role="radiogroup" aria-label="Theme">'
+      + ['dark','light','system'].map(t => '<label class="seg-opt"><input type="radio" name="theme" data-theme-pick="' + t + '"' + (theme() === t ? ' checked' : '') + '>' + capitalize(t) + '</label>').join('')
+      + '</div><span style="font-size:12px; color:var(--color-neutral-500);">' + (theme() === 'system' ? 'Following this device — currently ' + document.documentElement.dataset.theme + '.' : 'Saved on this device.') + '</span></div></div>';
+    h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:2px;">Units</div>'
+      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:10px;">Distances in this plan.</div>'
+      + '<div class="seg">'
+      + '<label class="seg-opt"><input type="radio" name="unit" data-unit="metric"' + (state.unit === 'metric' ? ' checked' : '') + dis + '>Metric (km/m)</label>'
+      + '<label class="seg-opt"><input type="radio" name="unit" data-unit="imperial"' + (state.unit === 'imperial' ? ' checked' : '') + dis + '>Imperial (mi/yd)</label>'
+      + '</div></div>';
+    h += timezoneSection();
+  } else if (key === 'training') {
+    h += goalRaceSection();
+    h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+      + '<div class="card-title" style="margin-bottom:2px;">Zones &amp; thresholds</div>'
+      + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the plan zones on Fitness, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
+    const validateRow = sport => '<div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">' + statusTag(sport)
+      + '<button type="button" class="btn btn-secondary" data-act="validate" data-sport="' + sport + '" style="margin-left:auto; font-size:12px; padding:5px 10px;"' + dis + '>'
+        + (sportStatus(sport) === 'Validated' ? 'Mark for retest' : 'Validate zones') + '</button></div>';
+    if (z.bike) h += '<div class="sub-label">Bike</div><div class="field-pair">'
+      + '<div class="field"><label>FTP (W)</label><input class="input" type="number" inputmode="numeric" data-ov="ftp" value="' + esc(ov.ftp) + '"' + dis + '></div>'
+      + '<div class="field"><label>Cycling LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="bikeLthr" value="' + esc(ov.bikeLthr) + '"' + dis + '></div></div>' + validateRow('bike');
+    if (z.run) h += '<div class="sub-label">Run</div><div class="field-pair">'
+      + '<div class="field"><label>Run LTHR (bpm)</label><input class="input" type="number" inputmode="numeric" data-ov="runLthr" value="' + esc(ov.runLthr) + '"' + dis + '></div>'
+      + '<div class="field"><label>Threshold pace (/km)</label><input class="input" type="text" placeholder="m:ss" data-ov="thresholdPace" value="' + esc(ov.thresholdPace) + '"' + dis + '></div></div>' + validateRow('run');
+    if (z.swim) h += '<div class="sub-label">Swim</div><div class="field" style="margin-bottom:10px;"><label>CSS (/100m)</label>'
+      + '<input class="input" type="text" data-ov="cssLabel" value="' + esc(ov.cssLabel) + '"' + dis + '></div>' + validateRow('swim');
+    h += '</div>';
+  } else if (key === 'plan') {
+    h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+      + '<div class="card-title" style="margin-bottom:4px;">Active plan</div>'
+      + '<div style="font-size:13px; color:var(--color-neutral-300); line-height:1.6;">Generated by ' + esc(PLAN.meta.generatedBy || 'Claude Coach')
+        + ' on ' + esc(new Date(PLAN.meta.createdAt).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })) + '.'
+        + (PLAN.meta.pilot ? '<br>' + esc(PLAN.meta.pilot) : '') + '</div>'
+      + '<div class="hr" style="margin:12px 0;"></div>'
+      + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
+    h += settingsLinkCard('Plan PDF', 'A printable wall chart of the whole plan, with the current zones.',
+      appLink('/training-plan/pdf'), 'down', 'Download');
+    h += settingsLinkCard('All plans', 'Switch the active plan, or open an archived plan read-only.',
+      appLink('/training-plan/plans'), 'list', 'View plans');
+    h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach. A new plan id becomes the active plan; the same id replaces this plan after a confirmation.',
+      appLink('/training-plan/upload'), 'up', 'Upload');
+    h += historySection();
+  } else if (key === 'calendar') {
+    h += calendarSection();
+  } else {
+    h += '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">'
+      + '<div class="card-title" style="margin-bottom:4px;">About</div>'
+      + '<div style="font-size:13px; color:var(--color-neutral-300); line-height:1.6;">Garmin dashboard and ' + esc(PLAN.meta.generatedBy || 'Claude Coach') + ' plan viewer.</div></div>';
+  }
   return h;
+}
+function settingsTab() {
+  const cat = state.settingsCat;
+  const cur = cat || 'general';            // a desktop always shows a pane
+  const info = SETTINGS_CATS.find(c => c[0] === cur) || SETTINGS_CATS[0];
+  const list = SETTINGS_CATS.map(c => '<button type="button" class="set-cat' + (c[0] === cur ? ' on' : '') + '" data-act="settings-cat" data-cat="' + c[0] + '"' + (c[0] === cur ? ' aria-current="true"' : '') + '>'
+    + '<span class="set-tile">' + icon(c[2], 18) + '</span>'
+    + '<span class="set-cat-text"><span class="set-cat-name">' + esc(c[1]) + '</span><span class="set-cat-sum">' + esc(settingsSummary(c[0])) + '</span></span>'
+    + '<span class="set-caret">' + icon('right', 14) + '</span></button>').join('');
+  return '<div class="set-wrap' + (cat ? '' : ' set-root') + '">'
+    + '<div class="set-title" style="padding:24px 18px 8px;"><h1 style="font-size:22px; margin:0;">Settings</h1></div>'
+    + '<div class="set-pagehead"><button type="button" class="btn btn-icon" data-act="settings-back" aria-label="Back to settings">' + icon('left') + '</button>'
+      + '<h1 style="font-size:20px; margin:0;">' + esc(info[1]) + '</h1></div>'
+    + '<div class="set-grid"><div class="set-list" role="navigation" aria-label="Settings categories">' + list + '</div>'
+    + '<div class="set-pane">' + settingsPane(cur) + '</div></div></div>';
 }
 
 /* Goal race: one race for the whole app, stored on the server (not in the
@@ -1292,6 +1327,8 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'next') return isMonth() ? stepMonth(1) : stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
+  if (a === 'settings-cat') { state.settingsCat = act.dataset.cat; render(); window.scrollTo(0, 0); return; }
+  if (a === 'settings-back') { state.settingsCat = null; render(); window.scrollTo(0, 0); return; }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
   /* The calendar settings aren't part of the plan, so they stay editable
      while viewing an archived plan. */
@@ -1545,6 +1582,7 @@ document.addEventListener('keydown', e => {
    Settings are this page, so they switch views in place — and highlight. */
 function setView(view) {
   state.tab = view;
+  if (view === 'settings') state.settingsCat = null;
   try {
     const url = new URL(location.href);
     if (view === 'settings') url.searchParams.set('view', 'settings'); else url.searchParams.delete('view');
@@ -1588,7 +1626,35 @@ document.addEventListener('click', e => {
 render();
 if (state.tab === 'settings') setView('settings');
 </script>
-<style>/* Two threshold fields side by side: equal columns that can shrink, and the
+<style>/* Settings: category list + form pane on a desktop; on a phone the list, then
+   one category's page with a back arrow. */
+.set-pagehead { display:none; align-items:center; gap:10px; padding:18px 18px 4px; }
+.set-list { display:flex; flex-direction:column; gap:8px; padding:12px 18px; }
+.set-cat { display:flex; align-items:center; gap:12px; width:100%; padding:12px; border:0; border-radius:10px; text-align:left;
+  background:var(--color-surface); box-shadow:var(--shadow-sm); color:var(--color-text); font:inherit; cursor:pointer; }
+.set-cat:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
+.set-tile { width:36px; height:36px; flex:0 0 36px; border-radius:10px; display:grid; place-items:center;
+  background:var(--color-neutral-900); color:var(--color-accent-300); }
+.set-cat-text { flex:1; min-width:0; display:flex; flex-direction:column; }
+.set-cat-name { font-size:14px; }
+.set-cat-sum { font-size:12px; color:var(--color-neutral-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.set-caret { color:var(--color-neutral-600); display:grid; }
+@media (max-width: 899px) {
+  .set-root .set-pane, .set-root .set-pagehead { display:none; }
+  .set-wrap:not(.set-root) .set-list, .set-wrap:not(.set-root) .set-title { display:none; }
+  .set-wrap:not(.set-root) .set-pagehead { display:flex; }
+}
+@media (min-width: 900px) {
+  .set-grid { display:grid; grid-template-columns:280px minmax(0,720px); gap:8px 16px; align-items:start; padding:0 6px; }
+  .set-list { padding:12px 0 12px 18px; gap:4px; position:sticky; top:12px; }
+  .set-cat { background:transparent; box-shadow:none; }
+  .set-cat:hover { background:var(--color-neutral-900); }
+  .set-cat.on { background:color-mix(in srgb, var(--color-accent) 16%, transparent); }
+  .set-caret { display:none; }
+  .set-pane .seg { display:inline-flex; }
+  .set-pane .card { margin-left:0 !important; margin-right:0 !important; }
+}
+/* Two threshold fields side by side: equal columns that can shrink, and the
    inputs lined up along the bottom even when one label wraps. */
 .field-pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; margin-bottom:10px; align-items:end; }
 .field-pair .field > label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

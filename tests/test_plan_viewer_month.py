@@ -40,3 +40,12 @@ def test_viewer_has_appearance_card_and_light_tokens():
     assert "data-theme-pick" in html
     assert "html[data-theme=light]" in html
     assert html.index("data-theme-pick'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")
+
+
+def test_settings_are_grouped_into_categories_with_a_phone_drill_down():
+    html = _html()
+    for cat in ("'general'", "'training'", "'plan'", "'calendar'", "'about'"):
+        assert cat in html.split("const SETTINGS_CATS", 1)[1].split("];", 1)[0]
+    assert 'data-act="settings-cat"' in html and 'data-act="settings-back"' in html
+    assert ".set-root .set-pane" in html          # phone: the list, then a page with a back arrow
+    assert html.index("a === 'settings-cat'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")

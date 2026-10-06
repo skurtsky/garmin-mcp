@@ -83,7 +83,8 @@ def _workout_view(w: dict, d: dict, state: dict | None, activities: dict) -> dic
         "id": w.get("id"), "date": _day(d), "name": w.get("name"), "sport": w.get("sport") or "other",
         "type": w.get("type"), "durationMinutes": w.get("durationMinutes"),
         "distanceKm": w.get("distanceKm"), "distanceMeters": w.get("distanceMeters"),
-        "primaryZone": w.get("primaryZone"), "completed": bool(state.get("completed")),
+        "primaryZone": w.get("primaryZone"), "startTime": w.get("startTime") or None,
+        "completed": bool(state.get("completed")),
         "is_test": plan_doc.is_test_workout(w),
         "activity": _activity_view(activities.get(state.get("activity_id"))) if state.get("completed") else None,
     }

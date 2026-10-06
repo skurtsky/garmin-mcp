@@ -56,7 +56,7 @@ def test_nav_becomes_a_side_rail_on_desktop():
 def test_dashboard_tabs_are_labels_that_follow_their_radio():
     nav = navbar.render_nav_html(None, "t0k", tabs={"today": "tab-today", "fitness": "tab-you"})
 
-    assert '<label class="gm-nav__link" for="tab-today" data-nav="today">' in nav
+    assert '<label class="gm-nav__link" for="tab-today" data-nav="today" tabindex="0"' in nav
     assert 'class="gm-nav-more-item" for="tab-you"' in nav
     assert "#tab-today:checked ~ #gm-nav [data-nav=today]" in nav
     # A More-sheet tab lights the phone's More button.
@@ -180,8 +180,8 @@ def test_inject_nav_replaces_existing_viewport_with_no_zoom():
     page = '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body></body></html>'
     out = navbar.inject_nav(page, "training-plan")
 
-    assert 'maximum-scale=1' in out
-    assert 'user-scalable=no' in out
+    assert 'viewport-fit=cover' in out
+    assert 'user-scalable' not in out and 'maximum-scale' not in out
     assert out.count('name="viewport"') == 1
 
 
@@ -189,8 +189,8 @@ def test_inject_no_zoom_meta_applies_the_no_zoom_viewport_without_a_nav_bar():
     page = '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body></body></html>'
     out = navbar.inject_no_zoom_meta(page)
 
-    assert 'maximum-scale=1' in out
-    assert 'user-scalable=no' in out
+    assert 'viewport-fit=cover' in out
+    assert 'user-scalable' not in out and 'maximum-scale' not in out
     assert 'id="gm-nav"' not in out
 
 

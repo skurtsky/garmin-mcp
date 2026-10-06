@@ -333,7 +333,7 @@ def _summary(items, prev_items, key: str, plan_total) -> str:
     return f"""
       <div class="card act-summary">
         {kicker}
-        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 12px">
+        <div class="act-stats">
           {_stat("Distance", f'{cur["km"]:.2f}<span style="font-size:12px;color:var(--color-neutral-500)"> km</span>', km_c, up(cur["km"], (prev or {}).get("km", 0)))}
           {_stat("Time", dur(cur["min"]), time_c, up(cur["min"], (prev or {}).get("min", 0)))}
           {_stat("Load", str(cur["load"]), load_c, up(cur["load"], (prev or {}).get("load", 0)), planned)}
@@ -716,6 +716,8 @@ def render_calendar(year: int, month: int, today: date, cal: dict, filter_key: s
 # ── STYLE / SCRIPT ───────────────────────────────────────────────────────────
 
 ACTIVITY_CSS = """
+.act-stats { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 12px; }
+@media (min-width:900px) { .act-stats { grid-template-columns:repeat(4,minmax(0,1fr)); } }
 .act-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
 .act-circle { width:28px; height:28px; flex:0 0 auto; border-radius:999px; border:1px solid var(--color-divider);
   background:transparent; color:var(--color-text); display:grid; place-items:center; cursor:pointer; padding:0;
