@@ -239,6 +239,8 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
   delete it, or add one with a day's **+** button — save to the server
   immediately. Zone thresholds and validation flags on Settings are stored with
   the plan, so the PDF and the coach see them too.
+- **Week / Month view.** On desktop the Plan tab has a Week / Month switch; in
+  month view a workout opens its details and a day opens its week.
 - **Weekly totals** (sessions, hours, km per sport) are recomputed from the
   workouts on every upload and edit, never taken from the file.
 - **History.** Every change (upload, edit, MCP amendment, restore) is saved as
