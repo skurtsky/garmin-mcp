@@ -309,7 +309,102 @@ def render(fit: dict | None, goal: dict | None, trends: dict | None, days: int, 
     </div>"""
 
 
+# ── desktop compare chart ────────────────────────────────────────────────────
+# (key, label, unit, lower is better, colour); fitness / fatigue / form come
+# from the load series, the rest from the trends metrics.
+COMPARE_LINES = (
+    ("fitness", "Fitness", "", False, FITNESS_COLOR),
+    ("fatigue", "Fatigue", "", True, FATIGUE_COLOR),
+    ("form", "Form", "", False, FRESH),
+    ("hrv", "HRV", "ms", False, "#7fc9b0"),
+    ("rhr", "Resting HR", "bpm", True, "#cf5a4e"),
+    ("sleep_score", "Sleep score", "/100", False, "#6f9ce8"),
+    ("training_load", "Acute load", "", True, "#b5abfc"),
+    ("stress", "Stress", "avg", True, AMBER),
+    ("steps", "Steps", "", False, "#4fae72"),
+)
+COMPARE_DEFAULT = ("fitness", "fatigue", "hrv")
+
+
+def _pct_over_range(daily: dict[str, float], dates: list[str]) -> str:
+    """"+18% over the range": this range's average against the range before."""
+    cur = [daily[d] for d in dates if daily.get(d) is not None]
+    if not cur or not dates:
+        return ""
+    first = date.fromisoformat(dates[0])
+    prev = [v for d, v in daily.items() if v is not None and 1 <= (first - date.fromisoformat(d)).days <= len(dates)]
+    if not prev or not sum(prev):
+        return ""
+    pct = round((sum(cur) / len(cur) - sum(prev) / len(prev)) / abs(sum(prev) / len(prev)) * 100)
+    return f"{'+' if pct > 0 else ''}{pct}% over the range"
+
+
+def compare(fit: dict | None, trends: dict | None, days: int) -> str:
+    """Desktop Trends: any mix of the nine lines on one chart, each scaled to
+    its own range so they can be compared, with a tile per line below that
+    reads the range average, or the day under the cursor."""
+    series = (fit or {}).get("series") or []
+    today = (fit or {}).get("today")
+    daily = {key: _metric_daily(trends, key) for key, *_ in COMPARE_LINES[3:]}
+    daily.update({"fitness": {}, "fatigue": {}, "form": {}})
+    if series and today:
+        actual = [p for p in series if p["date"] <= today]
+        for key, field in (("fitness", "fitness"), ("fatigue", "fatigue"), ("form", "form")):
+            daily[key] = {p["date"]: p[field] for p in actual}
+    dates = sorted(set().union(*[set(v) for v in daily.values()]))
+    if today:
+        dates = [d for d in dates if d <= today]
+    dates = dates[-days:]
+    if len(dates) < 2:
+        return ""
+    lines = []
+    for key, label, unit, lower_better, color in COMPARE_LINES:
+        vals = [daily[key].get(d) for d in dates]
+        present = [v for v in vals if v is not None]
+        lines.append({
+            "key": key, "label": label, "unit": unit, "color": color, "vals": vals,
+            "avg": round(sum(present) / len(present)) if present else None,
+            "sub": _pct_over_range(daily[key], dates) if present else "No data in this range",
+        })
+    blob = json.dumps({"dates": dates, "lines": lines, "default": list(COMPARE_DEFAULT)}).replace("<", "\\u003c")
+    chips = "".join(
+        f'<button type="button" class="tc-chip" data-tc-key="{l["key"]}" style="--c:{l["color"]}"'
+        f'{" disabled" if l["avg"] is None else ""}><span></span>{_e(l["label"])}</button>' for l in lines)
+    return f"""
+    <div class="tr-compare" data-tc>
+      <script type="application/json" class="tc-data">{blob}</script>
+      <div class="card" style="padding:16px;gap:14px">
+        <div class="tc-chips">{chips}</div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px">
+          <div style="font-size:12px;color:var(--color-neutral-500)">Each line is scaled to its own range so trends can be compared. Hover to read a day.</div>
+          <div class="tc-date" style="font-size:12px;color:var(--color-neutral-300)"></div></div>
+        <div class="tc-chart"></div>
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--color-neutral-600)">
+          <span>{_mon_day(dates[0])}</span><span>{_mon_day(dates[len(dates) // 2])}</span><span>{_mon_day(dates[-1])}</span></div>
+      </div>
+      <div class="tc-tiles"></div>
+    </div>"""
+
+
 TRENDS_CSS = """
+.tr-compare { display:none; flex-direction:column; gap:12px; }
+.tc-chips { display:flex; flex-wrap:wrap; gap:8px; }
+.tc-chip { display:inline-flex; align-items:center; gap:7px; padding:6px 12px; border-radius:999px; border:1px solid var(--color-divider);
+  background:transparent; color:var(--color-neutral-400); font:inherit; font-size:12px; cursor:pointer; }
+.tc-chip span { width:8px; height:8px; border-radius:50%; background:var(--c); }
+.tc-chip.on { color:var(--color-text); border-color:var(--c); background:color-mix(in srgb, var(--c) 14%, transparent); }
+.tc-chip:disabled { opacity:.4; cursor:default; }
+.tc-chart { height:340px; cursor:crosshair; }
+.tc-chart svg { width:100%; height:100%; display:block; }
+.tc-tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; }
+.tc-tile { display:flex; flex-direction:column; gap:6px; padding:14px; border-radius:8px; background:var(--color-surface);
+  box-shadow:var(--shadow-sm); border-top:3px solid var(--c); }
+@media (min-width: 900px) {
+  .tr-compare { display:flex; }
+  .tr-more-title { display:block !important; }
+}
+.tr-more-title { display:none; }
+
 .ff-wrap { grid-column:1/-1; display:flex; flex-direction:column; gap:12px; }
 .ff-card { padding:16px; gap:12px; box-shadow:0 0 0 1px var(--color-accent-700); }
 .ff-key { display:flex; align-items:center; gap:5px; }
@@ -332,6 +427,77 @@ TRENDS_CSS = """
 """
 
 TRENDS_JS = """
+(function () {
+  // Desktop compare chart: chips pick the lines, the chart draws each scaled
+  // to its own range, the tiles read the range average or the hovered day.
+  var KEY = 'dash-trend-lines';
+  var sel = null;
+  function load(def) {
+    if (sel) return sel;
+    try { var v = JSON.parse(localStorage.getItem(KEY) || 'null'); if (Array.isArray(v)) sel = v; } catch (e) { /* no storage */ }
+    return (sel = sel || def.slice());
+  }
+  function save() { try { localStorage.setItem(KEY, JSON.stringify(sel)); } catch (e) { /* no storage */ } }
+  function fmtDate(iso) {
+    var d = new Date(iso + 'T00:00:00');
+    return d.toLocaleDateString('en-US', { weekday: 'short' }) + ' ' + d.toLocaleDateString('en-US', { month: 'short' }) + ' ' + d.getDate();
+  }
+  var blocks = [];
+  function fmtVal(v) { return v == null ? '\u2014' : Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : String(Math.round(v)); }
+  document.querySelectorAll('[data-tc]').forEach(function (box) {
+    var data = JSON.parse(box.querySelector('.tc-data').textContent);
+    var chart = box.querySelector('.tc-chart'), tiles = box.querySelector('.tc-tiles'), dateEl = box.querySelector('.tc-date');
+    var hover = null;
+    var W = 800, H = 300, n = data.dates.length;
+    function x(i) { return i / (n - 1) * W; }
+    function draw() {
+      var on = data.lines.filter(function (l) { return sel.indexOf(l.key) >= 0 && l.avg !== null; });
+      box.querySelectorAll('.tc-chip').forEach(function (c) { c.classList.toggle('on', sel.indexOf(c.getAttribute('data-tc-key')) >= 0); });
+      var svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">';
+      [20, 100, 180, 260].forEach(function (y) {
+        svg += '<line x1="0" x2="' + W + '" y1="' + y + '" y2="' + y + '" stroke="var(--color-divider-soft)" vector-effect="non-scaling-stroke"></line>';
+      });
+      on.forEach(function (l) {
+        var present = l.vals.filter(function (v) { return v != null; });
+        var lo = Math.min.apply(null, present), hi = Math.max.apply(null, present), d = '', started = false;
+        l.vals.forEach(function (v, i) {
+          if (v == null) { started = false; return; }
+          var y = 20 + (1 - (v - lo) / ((hi - lo) || 1)) * 240;
+          d += (started ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y.toFixed(1);
+          started = true;
+        });
+        svg += '<path d="' + d + '" fill="none" stroke="' + l.color + '" stroke-width="2" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>';
+      });
+      if (hover !== null) svg += '<line x1="' + x(hover) + '" x2="' + x(hover) + '" y1="0" y2="' + H + '" stroke="var(--color-neutral-400)" vector-effect="non-scaling-stroke"></line>';
+      chart.innerHTML = svg + '</svg>';
+      dateEl.textContent = hover !== null ? fmtDate(data.dates[hover]) : '';
+      tiles.innerHTML = on.map(function (l) {
+        var v = hover !== null ? l.vals[hover] : l.avg;
+        return '<div class="tc-tile" style="--c:' + l.color + '"><div class="kicker">' + l.label + '</div>'
+          + '<div style="display:flex;align-items:baseline;gap:5px"><div style="font-size:30px;line-height:1">' + fmtVal(v) + '</div>'
+          + '<div style="font-size:11px;color:var(--color-neutral-500)">' + l.unit + '</div></div>'
+          + '<div style="font-size:11px;color:var(--color-neutral-500)">' + (hover !== null ? (l.vals[hover] == null ? 'No reading' : 'on this day') : l.sub) + '</div></div>';
+      }).join('');
+    }
+    function at(e) {
+      var r = chart.getBoundingClientRect();
+      return Math.max(0, Math.min(n - 1, Math.round((e.clientX - r.left) / r.width * (n - 1))));
+    }
+    chart.addEventListener('mousemove', function (e) { var i = at(e); if (i !== hover) { hover = i; draw(); } });
+    chart.addEventListener('mouseleave', function () { hover = null; draw(); });
+    box.querySelectorAll('.tc-chip').forEach(function (c) {
+      c.addEventListener('click', function () {
+        var k = c.getAttribute('data-tc-key'), i = sel.indexOf(k);
+        if (i >= 0) sel.splice(i, 1); else sel.push(k);
+        save(); blocks.forEach(function (b) { b(); });
+      });
+    });
+    load(data.default);
+    blocks.push(draw);
+    draw();
+  });
+})();
+
 (function () {
   function fmtDate(iso) {
     var d = new Date(iso + 'T00:00:00');

@@ -1032,13 +1032,18 @@ function calendarSection() {
       + '<input class="input" type="time" data-cal-default value="' + esc(c.defaultTime) + '" style="max-width:140px;"' + lock + '></div>'
       + '<div class="sub-label">Weekly schedule</div>'
       + (c.slots.length ? '' : '<div style="font-size:13px; color:var(--color-neutral-400); margin-bottom:8px;">No rows yet — every workout starts at the default time.</div>')
-      + c.slots.map((slot, i) => '<div class="cal-row">'
-        + '<select class="input" data-cal-field="day" data-index="' + i + '" aria-label="Day"' + lock + '>' + opts(CAL_DAYS, slot.day, v => v.slice(0, 3)) + '</select>'
-        + '<select class="input" data-cal-field="sport" data-index="' + i + '" aria-label="Sport"' + lock + '>' + opts(CAL_SPORTS, slot.sport, capitalize) + '</select>'
-        + '<input class="input" type="time" data-cal-field="time" data-index="' + i + '" value="' + esc(slot.time) + '" aria-label="Start time"' + lock + '>'
-        + '<button type="button" class="btn btn-icon btn-secondary" data-act="cal-remove" data-index="' + i + '" title="Remove row" aria-label="Remove row"' + lock + '>' + icon('trash', 16) + '</button>'
-      + '</div>').join('')
-      + '<button type="button" class="btn btn-secondary" data-act="cal-add" style="font-size:12px; padding:5px 10px; margin-top:4px;"' + lock + '>' + icon('plus', 14) + ' Add row</button>'
+      /* Grouped by sport: one block per sport, a row per day. Rows keep their
+         index in the flat list, which is what the edit and remove handlers use. */
+      + CAL_SPORTS.filter(sp => c.slots.some(sl => sl.sport === sp)).map(sp =>
+        '<div class="cal-group"><div class="cal-group-head"><span class="cal-dot" style="background:' + (SPORT_COLORS[sp] || SPORT_COLORS.rest) + ';"></span>'
+          + '<span class="cal-group-name">' + esc(capitalize(sp)) + '</span>'
+          + '<button type="button" class="btn btn-secondary" data-act="cal-add" data-sport="' + sp + '" style="font-size:12px; padding:3px 10px;"' + lock + '>+ Day</button></div>'
+        + c.slots.map((slot, i) => slot.sport !== sp ? '' : '<div class="cal-row cal-row-grouped">'
+          + '<select class="input" data-cal-field="day" data-index="' + i + '" aria-label="Day"' + lock + '>' + opts(CAL_DAYS, slot.day, v => v.slice(0, 3)) + '</select>'
+          + '<input class="input" type="time" data-cal-field="time" data-index="' + i + '" value="' + esc(slot.time) + '" aria-label="Start time"' + lock + '>'
+          + '<button type="button" class="btn btn-icon btn-secondary" data-act="cal-remove" data-index="' + i + '" title="Remove row" aria-label="Remove row"' + lock + '>' + icon('trash', 16) + '</button>'
+        + '</div>').join('') + '</div>').join('')
+      + '<button type="button" class="btn btn-secondary" data-act="cal-add" style="font-size:12px; padding:5px 10px; margin-top:4px;"' + lock + '>' + icon('plus', 14) + ' Add sport</button>'
       + '<div class="hr" style="margin:14px 0;"></div>'
       + calendarPublish(c);
   }
@@ -1082,8 +1087,8 @@ function saveCalendarSchedule(defaultTime, slots) {
     .then(() => api('plan')).then(applyServer).catch(() => {}).finally(render);
 }
 /* A new row takes the first day + sport not already listed. */
-function nextCalendarSlot(c) {
-  for (const day of CAL_DAYS) for (const sport of CAL_SPORTS) {
+function nextCalendarSlot(c, onlySport) {
+  for (const day of CAL_DAYS) for (const sport of (onlySport ? [onlySport] : CAL_SPORTS)) {
     if (!c.slots.some(s => s.day === day && s.sport === sport)) return { day, sport, time: c.defaultTime };
   }
   return null;
@@ -1335,7 +1340,7 @@ document.getElementById('app').addEventListener('click', e => {
   if (a && a.startsWith('cal-') && state.calendar && !state.saving) {
     const c = state.calendar;
     if (a === 'cal-add') {
-      const slot = nextCalendarSlot(c);
+      const slot = nextCalendarSlot(c, act.getAttribute('data-sport'));
       return slot ? saveCalendarSchedule(c.defaultTime, c.slots.concat([slot])) : undefined;
     }
     if (a === 'cal-remove') {
@@ -1674,6 +1679,11 @@ if (state.tab === 'settings') setView('settings');
 .wmenu-pop button:hover { background: color-mix(in srgb, var(--color-text) 8%, transparent); }
 .wmenu-pop button.danger { color:var(--color-danger); }
 .cal-row { display:grid; grid-template-columns: minmax(58px,.7fr) minmax(0,1.3fr) minmax(92px,auto) 36px; gap:6px; align-items:center; margin-bottom:8px; }
+.cal-group { display:flex; flex-direction:column; gap:0; padding:10px; margin-bottom:10px; border-radius:8px; background:var(--color-neutral-900); }
+.cal-group-head { display:flex; align-items:center; gap:8px; margin-bottom:8px; }
+.cal-group-name { flex:1; font-size:13px; font-weight:500; }
+.cal-dot { width:8px; height:8px; border-radius:50%; display:inline-block; }
+.cal-row-grouped { grid-template-columns:minmax(0,1fr) minmax(0,1fr) 36px; margin-bottom:6px; }
 .cal-row .input { padding-left:8px; padding-right:4px; min-width:0; }
 /* The picker opens on tap anyway; the clock icon only costs row width. */
 .cal-row input[type=time]::-webkit-calendar-picker-indicator { display:none; }
