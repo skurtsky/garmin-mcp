@@ -80,9 +80,7 @@ THEME_BOOT = (
     "document.documentElement.dataset.theme=v==='system'?(m.matches?'light':'dark'):v;}"
     "a();if(t==='system')m.addEventListener('change',a);}catch(e){}})();</script>"
 )
-# Despite the name (kept for callers) pinch-zoom is allowed: the tag only
-# pins the viewport to the device width and extends it under the notch.
-_NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+_NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
 
 # Phosphor icons (regular, plus the filled variant shown while active).
 _ICON_PATHS = {

@@ -209,7 +209,7 @@ def test_render_is_a_complete_document():
 
 def test_render_includes_mobile_app_metadata():
     html = dashboard.render_dashboard_html(SAMPLE, token="t0k")
-    assert 'viewport-fit=cover' in html and 'user-scalable' not in html
+    assert 'maximum-scale=1' in html
     assert 'apple-mobile-web-app-capable' in html
     assert 'rel="manifest"' in html
 

@@ -1051,6 +1051,7 @@ html[data-theme=light] {
   --color-divider-soft:rgba(28,30,42,.08); --color-inset:#eef0f7; --color-backdrop:rgba(28,30,42,.35); --color-danger:#c4524d;
 }
 * { box-sizing: border-box; }
+html { touch-action: manipulation; -webkit-text-size-adjust:100%; }
 /* The sticky header's blurred backdrop extends up under the notch / Dynamic
    Island (black-translucent status bar), with its content pushed below it. */
 @media (max-width: 899px) {
@@ -1130,12 +1131,11 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .today-grid { display:flex; flex-direction:column; gap:12px; }
 .today-col { display:contents; }
 .t-desc { font-size:13px; color:var(--color-neutral-300); }
-.sess-track { display:flex; align-items:flex-start; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory;
-  scrollbar-width:none; overscroll-behavior-x:contain; }
+.sess-track { margin:0 -16px; padding:2px 16px; display:flex; align-items:stretch; gap:10px; overflow-x:auto; overflow-y:hidden;
+  scroll-snap-type:x mandatory; scroll-padding:0 16px; scrollbar-width:none; overscroll-behavior-x:contain; touch-action:pan-x pan-y; }
 .sess-track::-webkit-scrollbar { display:none; }
-.sess-track { padding:1px; margin:-1px; }
-.sess-slide { flex:0 0 100%; min-width:0; scroll-snap-align:start; display:flex; align-self:flex-start; }
-.sess-track { transition:height .2s ease; }
+.sess-track:focus:not(:focus-visible) { outline:none; }
+.sess-slide { flex:0 0 calc(100% - 32px); min-width:0; scroll-snap-align:start; scroll-snap-stop:always; display:flex; }
 .sess-slide > .t-card { flex:1; min-width:0; }
 .sess-nav { display:none; width:28px; height:28px; border-radius:50%; border:1px solid var(--color-divider); background:transparent;
   color:var(--color-neutral-400); cursor:pointer; place-items:center; padding:0; }
@@ -1192,6 +1192,8 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   .today-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; align-items:start; }
   .today-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
   .sess-nav { display:grid; }
+  .sess-track { margin:0; padding:2px 1px; }
+  .sess-slide { flex-basis:100%; }
   .focus-track { margin:0; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; overflow:visible; }
   .focus-card { width:auto; height:auto; min-height:280px; }
   .focus .focus-dot, .focus .focus-title { display:none; }
@@ -2100,8 +2102,11 @@ def _panel_trends(data: dict) -> str:
             ) if chart is not None
         )
         fitness = dashboard_trends.render(redesign.get("fitness"), redesign.get("goal"), trends, r, f"r{r}")
+        compare = dashboard_trends.compare(redesign.get("fitness"), trends, r)
+        more = '<div class="tr-more-title section-title" style="grid-column:1/-1;margin:8px 0 -4px">Fitness, status and details</div>' if compare else ""
         range_sets += (
             f'<div class="range-set rs-{r}" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">'
+            f'<div style="grid-column:1/-1;display:grid">{compare}</div>{more}'
             f'<div style="grid-column:1/-1;display:grid">{_training_status_card(data, r)}</div>{fitness}{cards}</div>'
         )
 
@@ -3593,9 +3598,7 @@ _TODAY_JS = """
     var dots = box.querySelectorAll('[data-sess-dot]');
     function step() { return slides.length > 1 ? slides[1].offsetLeft - slides[0].offsetLeft : 1; }
     function current() { return Math.max(0, Math.min(slides.length - 1, Math.round(track.scrollLeft / step()))); }
-    // The track is as tall as the session in view, not the tallest one.
-    function fit(i) { if (slides[i] && track.offsetWidth) track.style.height = slides[i].offsetHeight + 'px'; }
-    function show(i) { dots.forEach(function (d, j) { d.classList.toggle('on', j === i); }); fit(i); }
+    function show(i) { dots.forEach(function (d, j) { d.classList.toggle('on', j === i); }); }
     function go(i) { track.scrollTo({ left: step() * Math.max(0, Math.min(slides.length - 1, i)), behavior: 'smooth' }); }
     var ticking = false;
     track.addEventListener('scroll', function () {
@@ -3609,9 +3612,6 @@ _TODAY_JS = """
     box.querySelectorAll('[data-sess-step]').forEach(function (b) {
       b.addEventListener('click', function () { go(current() + parseInt(b.getAttribute('data-sess-step'), 10)); });
     });
-    fit(0);
-    window.addEventListener('resize', function () { track.style.height = ''; fit(current()); });
-    document.addEventListener('change', function (e) { if (e.target && e.target.id === 'tab-today') fit(current()); });
     track.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowRight') { e.preventDefault(); go(current() + 1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(current() - 1); }
@@ -3727,7 +3727,7 @@ def _dashboard_head(token: str | None) -> str:
         "<!doctype html>"
         '<html lang="en"><head>'
         '<meta charset="utf-8">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
