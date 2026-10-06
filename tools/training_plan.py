@@ -43,9 +43,11 @@ import html
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
@@ -162,8 +164,12 @@ def render_viewer_html(row: dict, token: str | None = None) -> str:
     with open(TEMPLATE_PATH, encoding="utf-8") as f:
         page = f.read()
     page = page.replace("__PLAN_TITLE__", _e(plan_doc.plan_title(row["plan"])))
-    server = {**plan_service.view_payload(row), "goalRace": _goal_race_payload(),
-              "timezone": _timezone_payload()}
+    # Three independent reads: overlap their database round trips rather than
+    # adding them up (this is the page-open wait).
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        payload = pool.submit(plan_service.view_payload, row)
+        goal, tz = pool.submit(_goal_race_payload), pool.submit(_timezone_payload)
+        server = {**payload.result(), "goalRace": goal.result(), "timezone": tz.result()}
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
     athlete = (row["plan"].get("meta") or {}).get("athlete")
@@ -348,16 +354,24 @@ def _unavailable(request, exc):
 async def serve_plan(request):
     """GET /training-plan — the viewer for the active (or ?plan=) plan."""
     token = _token(request)
+    plan_id = _plan_param(request)
+
+    def build():
+        row = plan_service.get_plan(plan_id)
+        return row, (render_viewer_html(row, token) if row is not None else None)
+
     try:
-        row = plan_service.get_plan(_plan_param(request))
+        # The reads block on the database: keep them off the event loop so one
+        # slow page open doesn't hold up every other request.
+        row, page = await run_in_threadpool(build)
     except PlanStorageUnavailable as e:
         return _unavailable(request, e)
     if row is None:
-        if _plan_param(request):
+        if plan_id:
             return HTMLResponse(render_message_html("Plan not found", "No plan with that id.", token),
                                 status_code=404, headers=_NO_STORE)
         return HTMLResponse(render_no_plan_html(token), headers=_NO_STORE)
-    return HTMLResponse(render_viewer_html(row, token), headers=_NO_STORE)
+    return HTMLResponse(page, headers=_NO_STORE)
 
 
 async def serve_plans(request):

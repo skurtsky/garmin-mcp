@@ -54,6 +54,11 @@ function cacheDashboard(key, response) {
   });
 }
 
+// A dashboard page without the moment it was rendered, for comparing two copies.
+function normalizeDashboard(text) {
+  return text.replace(/"renderedAt":\s*\d+/, "");
+}
+
 function offlineFallback(request) {
   return caches.match(request, { ignoreSearch: true })
     .then((cached) => cached || caches.match("/dashboard", { ignoreSearch: true }));
@@ -102,12 +107,21 @@ self.addEventListener("message", (event) => {
   const data = event.data || {};
   if (data.type !== "refresh-dashboard" || !data.url) return;
   const key = dashboardKey(data.url);
-  const reply = (ok) => event.source && event.source.postMessage({ type: "dashboard-refreshed", ok });
+  const reply = (ok, same) => event.source && event.source.postMessage({ type: "dashboard-refreshed", ok, same: !!same });
   if (!key) { reply(false); return; }
   event.waitUntil(
     fetch(data.url, { cache: "no-store", credentials: "same-origin" })
-      .then((response) => (response.ok ? cacheDashboard(key, response) : false))
-      .catch(() => false)
-      .then(reply)
+      .then((response) => {
+        if (!response.ok) return { ok: false };
+        // Compare with the copy being shown (ignoring the render timestamp):
+        // when nothing changed the page needn't reload at all.
+        return Promise.all([caches.open(CACHE_NAME).then((c) => c.match(key)).then((c) => (c ? c.text() : null)), response.clone().text()])
+          .then(([before, after]) => {
+            const same = before !== null && normalizeDashboard(before) === normalizeDashboard(after);
+            return cacheDashboard(key, response).then((ok) => ({ ok, same: ok && same }));
+          });
+      })
+      .catch(() => ({ ok: false }))
+      .then((r) => reply(r.ok, r.same))
   );
 });

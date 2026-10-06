@@ -974,43 +974,6 @@ def _training_status_day_segments(days_slice: list[dict], gap: bool) -> str:
 _RANGE_LABELS = {30: "1 month", 90: "3 months"}
 
 
-def _training_status_card(data: dict, days: int) -> str:
-    """The current training status over a strip of the last ``days`` days —
-    one per Trends range, so it follows the range picked at the top."""
-    ts = data.get("training_status") or {}
-    history = (data.get("training_status_daily_history") or [])[-days:]
-    if not ts and not history and data.get("training_status_err"):
-        return f'<div class="card err">Training status unavailable — {_e(data.get("training_status_err"))}</div>'
-
-    status_raw = ts.get("status")
-    label, color = _training_status_info(status_raw)
-    icon = _training_status_icon(status_raw)
-    load_focus = _label(ts.get("load_balance")) if ts.get("load_balance") else None
-    gap = days <= 14
-    bar = _training_status_day_segments(history, gap=gap)
-    since = _mon_day(history[0]["date"]) if history else None
-    bar_style = "gap:3px" if gap else "border-radius:5px;overflow:hidden"
-
-    return f"""
-    <div class="card ts-card" style="padding:16px;gap:14px;grid-column:1/-1">
-      <div style="display:flex;align-items:center;gap:6px;color:var(--color-neutral-500)">
-        {_stroke_icon(icon, 14)}<div class="kicker">Training status</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:12px">
-        <div style="width:40px;height:40px;flex:0 0 auto;border-radius:10px;display:grid;place-items:center;
-            background:color-mix(in srgb, {color} 18%, transparent);color:{color}">{_stroke_icon(icon, 20)}</div>
-        <div>
-          <div style="font-family:var(--font-heading);font-size:24px;color:{color};line-height:1.2">{_e(label)}</div>
-          {f'<div style="font-size:12px;color:var(--color-neutral-500);margin-top:2px">Load Focus &middot; {load_focus}</div>' if load_focus else ""}
-        </div>
-      </div>
-      <div style="display:flex;{bar_style}">{bar or '<div class="muted" style="font-size:12px">No recent history.</div>'}</div>
-      <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-500)">
-        <span>Last {_RANGE_LABELS.get(days, f"{days}d")}</span><span>{f"Since {since}" if since else ""}</span>
-      </div>
-    </div>"""
-
-
 def _acwr_gauge_pct(acwr):
     if acwr is None:
         return None
@@ -1624,16 +1587,18 @@ def _sessions_card(workouts: list[dict], ftp_test: dict | None) -> str:
     A single session is just its card."""
     if len(workouts) == 1:
         return _session_card(workouts[0], ftp_test)
-    ordered = sorted(enumerate(workouts), key=lambda iw: (
-        bool(iw[1].get("completed")), iw[1].get("startTime") or "99:99", iw[0]))
+    # Session 1 is the earliest scheduled; the card opens on the first one not
+    # yet done (or the last, once they all are).
+    ordered = sorted(enumerate(workouts), key=lambda iw: (iw[1].get("startTime") or "99:99", iw[0]))
     n = len(ordered)
+    start = next((i for i, (_, w) in enumerate(ordered) if not w.get("completed")), n - 1)
     cards = "".join(
         f'<div class="sess-slide">{_session_card(w, ftp_test, f"Today&rsquo;s session &middot; {i} of {n}")}</div>'
         for i, (_, w) in enumerate(ordered, 1))
-    dots = "".join(f'<button type="button" class="focus-dot{" on" if i == 0 else ""}" data-sess-dot="{i}" '
+    dots = "".join(f'<button type="button" class="focus-dot{" on" if i == start else ""}" data-sess-dot="{i}" '
                    f'aria-label="Session {i + 1} of {n}"></button>' for i in range(n))
     return f"""
-    <div class="sessions" style="display:flex;flex-direction:column;gap:8px;min-width:0">
+    <div class="sessions" data-sess-start="{start}" style="display:flex;flex-direction:column;gap:8px;min-width:0">
       <div class="sess-track" tabindex="0" aria-label="Today&rsquo;s sessions">{cards}</div>
       <div style="display:flex;justify-content:center;align-items:center;gap:10px">
         <button type="button" class="sess-nav" data-sess-step="-1" aria-label="Previous session">{_ph("caret-left", 13)}</button>
@@ -1758,12 +1723,12 @@ def _no_plan_card(token: str | None) -> str:
 
 
 def _focus_card(title: str, body: str, gap: int = 14) -> str:
-    # The caret opens Trends, where each of these has its longer view.
+    # The caret is a placeholder for a longer view to come; it goes nowhere yet.
     return f"""
       <div class="focus-card" data-title="{_e(title)}" style="gap:{gap}px">
-        <label for="tab-trends" style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+        <div style="display:flex;align-items:center;justify-content:space-between">
           <div style="font-size:15px;font-weight:500">{_e(title)}</div>{_ph("caret-right", 16, "var(--color-neutral-600)")}
-        </label>
+        </div>
         {body}
       </div>"""
 
@@ -2107,7 +2072,7 @@ def _panel_trends(data: dict) -> str:
         range_sets += (
             f'<div class="range-set rs-{r}" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">'
             f'<div style="grid-column:1/-1;display:grid">{compare}</div>{more}'
-            f'<div style="grid-column:1/-1;display:grid">{_training_status_card(data, r)}</div>{fitness}{cards}</div>'
+            f'{fitness}{cards}</div>'
         )
 
     return f"""
@@ -3518,15 +3483,16 @@ _APP_JS = """
     var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
     if (!sw) { location.reload(); return; }
     var done = false;
-    function finish(ok) {
+    function finish(ok, same) {
       if (done) return;
       done = true;
       navigator.serviceWorker.removeEventListener('message', onMessage);
+      if (ok && same) { renderedAt = Date.now(); refreshing = false; if (chip) chip.hidden = true; return; }   // nothing changed: no reload
       if (ok) { location.reload(); return; }        // now served, fresh, from the SW cache
       refreshing = false;
       if (chip) chip.hidden = true;                 // offline / failed: keep what's shown
     }
-    function onMessage(e) { if (e.data && e.data.type === 'dashboard-refreshed') finish(!!e.data.ok); }
+    function onMessage(e) { if (e.data && e.data.type === 'dashboard-refreshed') finish(!!e.data.ok, !!e.data.same); }
     navigator.serviceWorker.addEventListener('message', onMessage);
     sw.postMessage({ type: 'refresh-dashboard', url: location.href });
     setTimeout(function () { finish(false); }, 30000);
@@ -3612,6 +3578,18 @@ _TODAY_JS = """
     box.querySelectorAll('[data-sess-step]').forEach(function (b) {
       b.addEventListener('click', function () { go(current() + parseInt(b.getAttribute('data-sess-step'), 10)); });
     });
+    // Open on the session the server picked (the first not yet done) once the
+    // Today tab is showing: a hidden track has no width to scroll.
+    var placed = false;
+    function place() {
+      if (placed || !track.offsetWidth) return;
+      placed = true;
+      var i = parseInt(box.getAttribute('data-sess-start'), 10) || 0;
+      track.scrollLeft = step() * i;
+      show(i);
+    }
+    place();
+    document.addEventListener('change', function (e) { if (e.target && e.target.id === 'tab-today') place(); });
     track.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowRight') { e.preventDefault(); go(current() + 1); }
       else if (e.key === 'ArrowLeft') { e.preventDefault(); go(current() - 1); }

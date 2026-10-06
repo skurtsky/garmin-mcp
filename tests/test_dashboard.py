@@ -583,59 +583,6 @@ def test_training_status_widget_has_no_blurb_or_sport():
     assert "ideal competitive form" not in card.lower()
 
 
-def test_trends_training_status_follows_the_range_picker():
-    html = dashboard.render_dashboard_html(SAMPLE)
-    trends = _section(html, "tp-trends")
-    # No toggle of its own: one card per range set, each with that range's strip.
-    assert 'name="ts-range"' not in html
-    for r in (7, 14, 30):
-        rs = trends.split(f'class="range-set rs-{r}"', 1)[1].split('class="range-set', 1)[0]
-        assert rs.count('class="card ts-card"') == 1
-
-
-def test_training_status_kicker_lives_inside_the_card_not_outside():
-    html = dashboard.render_dashboard_html(SAMPLE)
-    # the "Training status" label is the kicker inside .card.ts-card, not a
-    # sibling .section-title sitting above/outside the card.
-    assert '<div class="card ts-card"' in html
-    before, after = html.split('<div class="card ts-card"', 1)
-    card_and_after = '<div class="card ts-card"' + after
-    assert 'Training status</div>' in card_and_after.split("Load ratio", 1)[0]
-    # and it is *not* rendered as a section-title before the card opens
-    assert 'section-title">Training status' not in html
-
-
-def test_training_status_widget_shows_icon_and_load_focus():
-    html = dashboard.render_dashboard_html(SAMPLE)
-    card = html.split('<div class="card ts-card"', 1)[1].split("Load ratio", 1)[0]
-
-    assert card.count("<svg") >= 2  # header kicker icon + coloured badge icon
-    assert "Load Focus" in card
-    assert "Balanced" in card
-
-
-def test_training_status_widget_shows_range_captions():
-    trends = _section(dashboard.render_dashboard_html(SAMPLE), "tp-trends")
-    card_7 = trends.split('class="range-set rs-7"', 1)[1].split('class="card ts-card"', 1)[1]
-    card_30 = trends.split('class="range-set rs-30"', 1)[1].split('class="card ts-card"', 1)[1]
-
-    assert "Last 7d" in card_7 and "Since Jul 11" in card_7      # 7 days back from 2026-07-17
-    assert "Last 1 month" in card_30 and "Since Jun 20" in card_30  # all 28 days on hand
-
-
-def test_training_status_widget_renders_one_segment_per_day_of_the_range():
-    trends = _section(dashboard.render_dashboard_html(SAMPLE), "tp-trends")
-
-    def strip(r):
-        rs = trends.split(f'class="range-set rs-{r}"', 1)[1]
-        return rs.split('class="card ts-card"', 1)[1].split("Last ", 1)[0]
-
-    assert strip(7).count('class="js-bar"') == 7
-    assert strip(14).count('class="js-bar"') == 14
-    assert strip(30).count('class="js-bar"') == 28   # only 28 days of history exist
-    assert "Maintaining" in strip(30) and "Strained" in strip(30)
-
-
 def test_trends_defaults_to_7d_and_remembers_the_last_range():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert 'id="range-7" checked' in html
@@ -1597,7 +1544,7 @@ def test_render_includes_theme_boot_and_light_tokens():
     assert "html[data-theme=light]" in html
 
 
-def test_several_sessions_today_are_one_swipeable_card_next_unfinished_first():
+def test_several_sessions_today_are_ordered_by_start_time_and_open_on_the_first_unfinished():
     import copy
     plan = copy.deepcopy(PLAN_CONTEXT)
     base = plan["today"][0]
@@ -1609,8 +1556,9 @@ def test_several_sessions_today_are_one_swipeable_card_next_unfinished_first():
     today = _section(dashboard.render_dashboard_html({**SAMPLE, "plan": plan}), "tp-today")
 
     assert today.count('class="sess-slide"') == 3
-    assert today.index("Lunch run") < today.index("Core &amp; mobility") < today.index("Morning swim")
+    assert today.index("Morning swim") < today.index("Lunch run") < today.index("Core &amp; mobility")
     assert "Today&rsquo;s session &middot; 1 of 3" in today and today.count("data-sess-dot=") == 3
+    assert 'data-sess-start="1"' in today          # the swim is done: open on the lunch run
     assert "18:30 · " in today
 
 
@@ -1630,3 +1578,11 @@ def test_desktop_shell_drops_the_phone_width_cap_and_phone_chrome():
     assert "@media (min-width: 900px)" in html and ".topbar { position:static" in html
     assert "max-width:560px" in html.split("@media (max-width: 899px)", 2)[2].split("}", 1)[0]
     assert 'class="topbar-back"' in html
+
+
+def test_trends_has_no_training_status_card_and_in_focus_cards_do_not_redirect():
+    html = dashboard.render_dashboard_html(SAMPLE)
+    trends = _section(html, "tp-trends")
+    assert "ts-card" not in trends and "Training status" not in trends
+    focus = _section(html, "tp-today").split('class="focus"', 1)[1]
+    assert 'for="tab-trends"' not in focus and "<label" not in focus.split("data-title", 1)[1].split("</div>", 1)[0]
