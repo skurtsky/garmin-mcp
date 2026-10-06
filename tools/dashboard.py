@@ -1094,11 +1094,11 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .today-grid { display:flex; flex-direction:column; gap:12px; }
 .today-col { display:contents; }
 .t-desc { font-size:13px; color:var(--color-neutral-300); }
-.sess-track { margin:0 -16px; padding:2px 16px; display:flex; align-items:stretch; gap:10px; overflow-x:auto; overflow-y:hidden;
-  scroll-snap-type:x mandatory; scroll-padding:0 16px; scrollbar-width:none; overscroll-behavior-x:contain; touch-action:pan-x pan-y; }
+.sess-track { margin:0 -16px; padding:2px 28px; display:flex; align-items:stretch; gap:10px; overflow-x:auto; overflow-y:hidden;
+  scroll-snap-type:x mandatory; scrollbar-width:none; overscroll-behavior-x:contain; touch-action:pan-x pan-y; }
 .sess-track::-webkit-scrollbar { display:none; }
 .sess-track:focus:not(:focus-visible) { outline:none; }
-.sess-slide { flex:0 0 calc(100% - 32px); min-width:0; scroll-snap-align:start; scroll-snap-stop:always; display:flex; }
+.sess-slide { flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always; display:flex; }
 .sess-slide > .t-card { flex:1; min-width:0; }
 .sess-nav { display:none; width:28px; height:28px; border-radius:50%; border:1px solid var(--color-divider); background:transparent;
   color:var(--color-neutral-400); cursor:pointer; place-items:center; padding:0; }
@@ -1124,10 +1124,10 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .pw { display:flex; flex-direction:column; gap:12px; padding-top:4px; }
 .pw-details { font-size:13px; white-space:pre-wrap; line-height:1.6; padding:12px; border-radius:8px;
   background:var(--color-neutral-900); box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
-.focus-track { margin:0 -16px; padding:2px 16px; display:flex; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory;
-  scroll-padding:0 16px; scrollbar-width:none; overscroll-behavior-x:contain; }
+.focus-track { margin:0 -16px; padding:2px 28px; display:flex; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory;
+  scrollbar-width:none; overscroll-behavior-x:contain; }
 .focus-track::-webkit-scrollbar { display:none; }
-.focus-card { width:min(340px, calc(100vw - 50px)); height:280px; flex:0 0 auto; scroll-snap-align:start;
+.focus-card { width:100%; height:280px; flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always;
   background:var(--color-surface); border-radius:14px; padding:16px; box-shadow:var(--shadow-sm);
   display:flex; flex-direction:column; overflow:hidden; }
 .focus-dot { width:6px; height:6px; padding:0; border:0; border-radius:999px; background:var(--color-neutral-700);
@@ -1158,7 +1158,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   .sess-track { margin:0; padding:2px 1px; }
   .sess-slide { flex-basis:100%; }
   .focus-track { margin:0; padding:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; overflow:visible; }
-  .focus-card { width:auto; height:auto; min-height:280px; }
+  .focus-card { width:auto; flex:initial; height:auto; min-height:280px; }
   .focus .focus-dot, .focus .focus-title { display:none; }
   .fit-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; align-items:start; }
   .fit-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
@@ -1885,7 +1885,7 @@ def _in_focus(data: dict, start: int) -> str:
         <div class="section-title" style="margin:0">In focus</div>
         <div class="focus-title" style="font-size:11px;color:var(--color-neutral-600)">{titles[start]}</div>
       </div>
-      <div class="focus-track">{"".join(cards)}<div style="flex:0 0 6px"></div></div>
+      <div class="focus-track">{"".join(cards)}</div>
       <div style="display:flex;justify-content:center;gap:6px">{dots}</div>
     </div>"""
 
