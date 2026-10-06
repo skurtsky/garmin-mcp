@@ -1588,3 +1588,10 @@ def test_rest_tomorrow_is_not_a_link():
 def test_activity_parameter_opens_the_activity_detail():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "q.get('activity')" in html and "returnOnClose = q.get('from') === 'plan'" in html
+
+
+def test_render_includes_theme_boot_and_light_tokens():
+    from tools.navbar import THEME_BOOT
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert html.count(THEME_BOOT) == 1
+    assert "html[data-theme=light]" in html

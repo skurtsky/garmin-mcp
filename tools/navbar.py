@@ -71,6 +71,15 @@ ICON_LINKS = (
   '<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">'
   '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">'
 )
+# Runs before first paint so a light-theme device never flashes dark. The theme
+# is a per-device choice (Settings → Appearance), kept in localStorage.
+THEME_BOOT = (
+    "<script>(function(){try{var t=localStorage.getItem('gm-theme')||'dark';"
+    "var m=matchMedia('(prefers-color-scheme: light)');"
+    "function a(){var v=localStorage.getItem('gm-theme')||'dark';"
+    "document.documentElement.dataset.theme=v==='system'?(m.matches?'light':'dark'):v;}"
+    "a();if(t==='system')m.addEventListener('change',a);}catch(e){}})();</script>"
+)
 _NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
 
 # Phosphor icons (regular, plus the filled variant shown while active).
@@ -96,6 +105,20 @@ _ICON_PATHS = {
 # untouched. Colours are the "Nocturne" dark theme's own tokens, hardcoded
 # since this module is injected into pages that don't define them.
 _NAV_STYLE = """
+#gm-nav, .gm-nav-more-sheet, .gm-nav-more-backdrop {
+  --gm-rail-bg: #1b1d2b; --gm-pill-bg: #232532; --gm-rail-border: rgba(233, 233, 237, .1); --gm-ring: #595d6c;
+  --gm-link-rail: #b2b6ca; --gm-link-pill: #9397ab; --gm-hover-text: #e9e9ed; --gm-hover-bg: rgba(233, 233, 237, .07);
+  --gm-active-bg: rgba(145, 132, 217, .2); --gm-active-text: #e7e5fe; --gm-title: #e9e9ed; --gm-divider: #3f424d;
+  --gm-more-icon: #d2cefd; --gm-more-hover: rgba(145, 132, 217, .12); --gm-backdrop: rgba(10, 11, 16, .6);
+  --gm-shadow: 0 6px 18px rgba(0, 0, 0, .55);
+}
+html[data-theme=light] #gm-nav, html[data-theme=light] .gm-nav-more-sheet, html[data-theme=light] .gm-nav-more-backdrop {
+  --gm-rail-bg: #ffffff; --gm-pill-bg: #ffffff; --gm-rail-border: rgba(28, 30, 42, .08); --gm-ring: #cfd3e5;
+  --gm-link-rail: #595d6c; --gm-link-pill: #595d6c; --gm-hover-text: #1c1e2a; --gm-hover-bg: rgba(28, 30, 42, .05);
+  --gm-active-bg: rgba(110, 97, 194, .12); --gm-active-text: #423a6a; --gm-title: #1c1e2a; --gm-divider: #e2e5f0;
+  --gm-more-icon: #6e61c2; --gm-more-hover: rgba(110, 97, 194, .08); --gm-backdrop: rgba(28, 30, 42, .35);
+  --gm-shadow: 0 6px 18px rgba(28, 30, 42, .12);
+}
 #gm-nav, #gm-nav * { box-sizing: border-box; }
 #gm-nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 2147483647;
@@ -109,14 +132,14 @@ _NAV_STYLE = """
 #gm-nav .gm-nav__pill {
   pointer-events: auto; display: flex; gap: 2px; padding: 6px; border-radius: 999px;
   width: min(420px, 100%);
-  background: color-mix(in srgb, #232532 94%, transparent);
+  background: color-mix(in srgb, var(--gm-pill-bg) 94%, transparent);
   backdrop-filter: blur(16px);
-  box-shadow: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, .55);
+  box-shadow: 0 0 0 1px var(--gm-ring), var(--gm-shadow);
 }
 #gm-nav .gm-nav__link, #gm-nav .gm-nav__more-btn {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 2px; min-width: 0; white-space: nowrap; padding: 8px 0; border-radius: 999px;
-  color: #9397ab; text-decoration: none; font: inherit; border: 0; background: none; cursor: pointer;
+  color: var(--gm-link-pill); text-decoration: none; font: inherit; border: 0; background: none; cursor: pointer;
 }
 #gm-nav .gm-nav__icon { display: grid; }
 #gm-nav .gm-nav__icon svg { width: 19px; height: 19px; display: block; grid-area: 1 / 1; }
@@ -124,7 +147,7 @@ _NAV_STYLE = """
 #gm-nav .gm-nav__label { font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
 #gm-nav .gm-nav__title, #gm-nav .gm-nav__rail, #gm-nav .gm-nav__divider, #gm-nav .gm-nav__spacer { display: none; }
 #gm-nav .gm-nav__link:hover, #gm-nav .gm-nav__more-btn:hover {
-  color: #e9e9ed; background: rgba(233, 233, 237, .07);
+  color: var(--gm-hover-text); background: var(--gm-hover-bg);
 }
 /* Tap feedback — a quick press so a tap visibly registered. The empty
    ontouchstart on the nav is what turns :active on in iOS Safari. */
@@ -134,7 +157,7 @@ _NAV_STYLE = """
 #gm-nav .gm-nav__link--active,
 #gm-nav .gm-nav__more-btn--active,
 #gm-nav-more:checked ~ #gm-nav .gm-nav__more-btn {
-  background: rgba(145, 132, 217, .2); color: #e7e5fe;
+  background: var(--gm-active-bg); color: var(--gm-active-text);
 }
 #gm-nav .gm-nav__link--active .gm-nav__on, #gm-nav .gm-nav__more-btn--active .gm-nav__on { visibility: visible; }
 #gm-nav .gm-nav__link--active .gm-nav__off, #gm-nav .gm-nav__more-btn--active .gm-nav__off { visibility: hidden; }
@@ -153,23 +176,23 @@ body { padding-bottom: calc(68px + max(16px, calc(env(safe-area-inset-bottom, 0p
 .gm-nav-more-toggle { position: absolute; opacity: 0; width: 0; height: 0; pointer-events: none; }
 .gm-nav-more-backdrop, .gm-nav-more-sheet { display: none; }
 #gm-nav-more:checked ~ .gm-nav-more-backdrop {
-  display: block; position: fixed; inset: 0; z-index: 2147483646; background: rgba(10, 11, 16, .6);
+  display: block; position: fixed; inset: 0; z-index: 2147483646; background: var(--gm-backdrop);
 }
 #gm-nav-more:checked ~ .gm-nav-more-sheet { display: flex; }
 .gm-nav-more-sheet {
   position: fixed; left: 16px; right: 16px; bottom: calc(68px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px)));
   z-index: 2147483647; flex-direction: column; max-width: 420px; margin: 0 auto; padding: 6px;
-  background: color-mix(in srgb, #232532 94%, transparent); backdrop-filter: blur(16px);
-  border-radius: 20px; box-shadow: 0 0 0 1px #595d6c, 0 6px 18px rgba(0, 0, 0, .55);
+  background: color-mix(in srgb, var(--gm-pill-bg) 94%, transparent); backdrop-filter: blur(16px);
+  border-radius: 20px; box-shadow: 0 0 0 1px var(--gm-ring), var(--gm-shadow);
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
 }
 .gm-nav-more-item {
   display: flex; align-items: center; gap: 12px; padding: 12px 10px; border-radius: 12px;
-  color: #e9e9ed; text-decoration: none; font: inherit; font-size: 14px; cursor: pointer;
+  color: var(--gm-title); text-decoration: none; font: inherit; font-size: 14px; cursor: pointer;
 }
-.gm-nav-more-item + .gm-nav-more-item { border-top: 1px solid color-mix(in srgb, #e9e9ed 16%, transparent); }
-.gm-nav-more-item:hover { background: rgba(145, 132, 217, .12); }
-.gm-nav-more-item svg { width: 19px; height: 19px; flex: 0 0 auto; color: #d2cefd; }
+.gm-nav-more-item + .gm-nav-more-item { border-top: 1px solid color-mix(in srgb, var(--gm-title) 16%, transparent); }
+.gm-nav-more-item:hover { background: var(--gm-more-hover); }
+.gm-nav-more-item svg { width: 19px; height: 19px; flex: 0 0 auto; color: var(--gm-more-icon); }
 
 /* ── Desktop: the same nav as a side rail, everything visible. ── */
 @media (min-width: 900px) {
@@ -177,17 +200,17 @@ body { padding-bottom: calc(68px + max(16px, calc(env(safe-area-inset-bottom, 0p
   #gm-nav { top: 0; right: auto; width: 220px; padding: 0; display: block; }
   #gm-nav .gm-nav__pill {
     width: 100%; height: 100%; flex-direction: column; gap: 2px; padding: 20px 12px; overflow-y: auto;
-    border-radius: 0; background: #1b1d2b; backdrop-filter: none;
-    box-shadow: none; border-right: 1px solid rgba(233, 233, 237, .1);
+    border-radius: 0; background: var(--gm-rail-bg); backdrop-filter: none;
+    box-shadow: none; border-right: 1px solid var(--gm-rail-border);
   }
-  #gm-nav .gm-nav__title { display: block; padding: 0 10px 18px; font-size: 15px; font-weight: 500; color: #e9e9ed;
+  #gm-nav .gm-nav__title { display: block; padding: 0 10px 18px; font-size: 15px; font-weight: 500; color: var(--gm-title);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #gm-nav .gm-nav__rail { display: flex; }
-  #gm-nav .gm-nav__divider { display: block; height: 1px; background: #3f424d; margin: 12px 10px; flex: 0 0 auto; }
+  #gm-nav .gm-nav__divider { display: block; height: 1px; background: var(--gm-divider); margin: 12px 10px; flex: 0 0 auto; }
   #gm-nav .gm-nav__spacer { display: block; flex: 1; }
   #gm-nav .gm-nav__link {
     flex: 0 0 auto; flex-direction: row; justify-content: flex-start; gap: 10px;
-    padding: 9px 10px; border-radius: 8px; color: #b2b6ca;
+    padding: 9px 10px; border-radius: 8px; color: var(--gm-link-rail);
   }
   #gm-nav .gm-nav__link:active { transform: none; }
   #gm-nav .gm-nav__icon svg { width: 18px; height: 18px; }
@@ -260,11 +283,11 @@ def _tab_style(tabs: dict) -> str:
     rules = []
     for key, radio in tabs.items():
         target = f"#{radio}:checked ~ #{NAV_ID} [data-nav={key}]"
-        rules.append(f"{target} {{ background: rgba(145, 132, 217, .2); color: #e7e5fe; }}")
+        rules.append(f"{target} {{ background: var(--gm-active-bg); color: var(--gm-active-text); }}")
         rules.append(f"{target} .gm-nav__on {{ visibility: visible; }} {target} .gm-nav__off {{ visibility: hidden; }}")
         if key in _MORE_KEYS:
             more = f"#{radio}:checked ~ #{NAV_ID} .gm-nav__more-btn"
-            rules.append(f"@media (max-width: 899px) {{ {more} {{ background: rgba(145, 132, 217, .2); color: #e7e5fe; }} "
+            rules.append(f"@media (max-width: 899px) {{ {more} {{ background: var(--gm-active-bg); color: var(--gm-active-text); }} "
                          f"{more} .gm-nav__on {{ visibility: visible; }} {more} .gm-nav__off {{ visibility: hidden; }} }}")
     return "\n".join(rules)
 
@@ -343,6 +366,16 @@ def inject_icon_links(page: str) -> str:
     return page
 
 
+def inject_theme_boot(page: str) -> str:
+    """Insert :data:`THEME_BOOT` right after ``<head>`` (once)."""
+    if THEME_BOOT in page:
+        return page
+    head_match = _HEAD_TAG_RE.search(page)
+    if head_match:
+        return page[:head_match.end()] + THEME_BOOT + page[head_match.end():]
+    return THEME_BOOT + page
+
+
 def inject_nav(page: str, active: str | None = None, token: str | None = None,
                title: str | None = None) -> str:
     """Insert the nav bar as the first child of a page's ``<body>``.
@@ -354,7 +387,7 @@ def inject_nav(page: str, active: str | None = None, token: str | None = None,
     if f'id="{NAV_ID}"' in page:
         return page
 
-    page = inject_no_zoom_meta(page)
+    page = inject_theme_boot(inject_no_zoom_meta(page))
 
     nav = render_nav_html(active, token, title=title)
     match = _BODY_TAG_RE.search(page)

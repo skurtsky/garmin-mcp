@@ -221,31 +221,38 @@ def latest_week() -> dict | None:
 
 _NAV_STYLE = """
 .gm-week-nav {
+  --wn-bg:#171a21; --wn-fg:#e6e8eb; --wn-line:#232833; --wn-field:#0f1115; --wn-link:#5aa9e6; --wn-muted:#8b93a1;
+}
+html[data-theme=light] .gm-week-nav {
+  --wn-bg:#ffffff; --wn-fg:#1c1e2a; --wn-line:#e2e5f0; --wn-field:#f4f4f8; --wn-link:#3a6fb0; --wn-muted:#6b6f82;
+}
+.gm-week-nav {
   box-sizing: border-box; display: flex; flex-wrap: wrap; gap: .6rem;
   align-items: center; justify-content: center;
   padding: .6rem 1rem; margin: 0; width: 100%;
-  background: #171a21; color: #e6e8eb; border-bottom: 1px solid #232833;
+  background: var(--wn-bg); color: var(--wn-fg); border-bottom: 1px solid var(--wn-line);
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   font-size: .9rem; line-height: 1.4;
 }
 .gm-week-nav a, .gm-week-nav select, .gm-week-nav span {
-  font: inherit; color: #5aa9e6; text-decoration: none;
-  border: 1px solid #232833; border-radius: 7px;
-  padding: .3rem .7rem; background: #0f1115;
+  font: inherit; color: var(--wn-link); text-decoration: none;
+  border: 1px solid var(--wn-line); border-radius: 7px;
+  padding: .3rem .7rem; background: var(--wn-field);
 }
-.gm-week-nav a:hover { border-color: #5aa9e6; }
-.gm-week-nav select { color: #e6e8eb; max-width: 60vw; }
-.gm-week-nav .gm-week-nav__off { color: #8b93a1; border-color: #232833; opacity: .55; }
+.gm-week-nav a:hover { border-color: var(--wn-link); }
+.gm-week-nav select { color: var(--wn-fg); max-width: 60vw; }
+.gm-week-nav .gm-week-nav__off { color: var(--wn-muted); border-color: var(--wn-line); opacity: .55; }
 """
 
 _STYLE = """
 :root {
-  color-scheme: light dark;
+  color-scheme: dark;
   --bg:#0f1115; --fg:#e6e8eb; --muted:#8b93a1; --card-bg:#171a21; --card-border:#232833;
   --accent:#5aa9e6;
 }
-@media (prefers-color-scheme: light) {
-  :root { --bg:#f5f6f8; --fg:#1a1d23; --muted:#6b7280; --card-bg:#fff; --card-border:#e4e7ec; }
+html[data-theme=light] {
+  color-scheme: light;
+  --bg:#f5f6f8; --fg:#1a1d23; --muted:#6b7280; --card-bg:#fff; --card-border:#e4e7ec; --accent:#3a6fb0;
 }
 * { box-sizing: border-box; }
 body {
@@ -285,7 +292,7 @@ def _page(title: str, body: str, token: str | None = None) -> str:
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
-        f"{navbar.ICON_LINKS}"
+        f"{navbar.THEME_BOOT}{navbar.ICON_LINKS}"
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"
@@ -357,7 +364,7 @@ def inject_nav(page: str, current_id: str, weeks: list[dict],
         "" if f'id="{navbar.NAV_ID}"' in page
         else navbar.render_nav_html("weekly-summary", token)
     )
-    page = navbar.inject_icon_links(page)
+    page = navbar.inject_theme_boot(navbar.inject_icon_links(page))
     nav = site_nav + render_nav_html(current_id, weeks, token)
     match = _BODY_TAG_RE.search(page)
     if match:

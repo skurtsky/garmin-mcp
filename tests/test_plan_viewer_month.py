@@ -33,3 +33,10 @@ def test_open_week_works_on_archived_plans():
 
 def test_month_toggle_hidden_below_desktop_width():
     assert "@media (max-width: 899px) { .view-seg { display:none; } }" in _html()
+
+
+def test_viewer_has_appearance_card_and_light_tokens():
+    html = _html()
+    assert "data-theme-pick" in html
+    assert "html[data-theme=light]" in html
+    assert html.index("data-theme-pick'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")

@@ -720,7 +720,7 @@ ACTIVITY_CSS = """
 .act-circle { width:28px; height:28px; flex:0 0 auto; border-radius:999px; border:1px solid var(--color-divider);
   background:transparent; color:var(--color-text); display:grid; place-items:center; cursor:pointer; padding:0;
   text-decoration:none; font:inherit; }
-.act-circle.act-disabled { color:#595d6c; opacity:.5; cursor:default; }
+.act-circle.act-disabled { color:var(--color-neutral-700); opacity:.5; cursor:default; }
 .act-tag { display:inline-flex; align-items:center; gap:4px; font-size:10px; letter-spacing:.08em; text-transform:uppercase;
   padding:2px 8px; border-radius:999px; color:var(--color-accent-200); background:color-mix(in srgb, var(--color-accent) 20%, transparent);
   text-decoration:none; }
@@ -791,15 +791,15 @@ ACTIVITY_CSS = """
 .act-cal[hidden] { display:none; }
 .act-cal { position:fixed; inset:0; z-index:2147483646; display:flex; align-items:flex-start; justify-content:center;
   padding:48px 12px; overflow:auto; }
-.act-cal-backdrop { position:fixed; inset:0; background:rgba(10,11,18,.72); }
+.act-cal-backdrop { position:fixed; inset:0; background:var(--color-backdrop); }
 .act-cal-box { position:relative; width:440px; max-width:100%; background:var(--color-surface); border-radius:12px;
-  box-shadow:0 0 0 1px #3f424d, 0 24px 60px rgba(0,0,0,.5); padding:16px; }
+  box-shadow:0 0 0 1px var(--color-neutral-800), 0 24px 60px rgba(0,0,0,.35); padding:16px; }
 .act-cal-body { display:flex; flex-direction:column; gap:14px; }
 .act-cal-row { display:grid; grid-template-columns:repeat(7, minmax(0,1fr)) 52px; gap:4px; padding:3px; margin:0 -3px; border-radius:8px; }
 .act-cal-row.click { cursor:pointer; }
 .act-cal-row.sel { background:color-mix(in srgb, var(--color-accent) 16%, transparent); }
 .act-cal-headrow { font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-600); text-align:center; }
-.act-cell { position:relative; height:56px; border-radius:6px; background:#1b1d2a; overflow:hidden; display:flex;
+.act-cell { position:relative; height:56px; border-radius:6px; background:var(--color-inset); overflow:hidden; display:flex;
   flex-direction:column; justify-content:space-between; padding:4px 5px 7px; }
 .act-cell.out { opacity:.35; }
 .act-cell.today { box-shadow:0 0 0 1px var(--color-accent); }
