@@ -144,6 +144,11 @@ with everything visible. The current page is highlighted and the `?token=` is
 carried into every link. Today, Trends, Activity, Fitness and Gear are
 dashboard tabs; Plan and Settings are the plan viewer.
 
+**Appearance.** Settings → Appearance (Dark / Light / System) is a per-device
+choice, stored in the browser (`localStorage['gm-theme']`) rather than the
+database, and applies to every hosted page — nav, dashboard, plan viewer and
+the weekly-report switcher.
+
 The nav is rendered by `tools/navbar.py`. The plan viewer and weekly reports
 get it injected server-side at request time (never baked into the uploaded
 plan or report files), with its CSS scoped under a `#gm-nav` wrapper so it

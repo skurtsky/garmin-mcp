@@ -51,7 +51,7 @@ from starlette.routing import Route
 
 import db
 from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service
-from tools.navbar import ICON_LINKS, inject_icon_links, inject_nav, render_nav_html
+from tools.navbar import ICON_LINKS, THEME_BOOT, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import render_plan_pdf
 from tools.plan_doc import PlanError
 from tools.plan_service import PlanStorageUnavailable
@@ -76,6 +76,10 @@ _STYLE = """
 :root {
   --bg:#161826; --surface:#232532; --fg:#e9e9ed; --muted:#9397ab; --line:#3f424d;
   --accent:#9184d9; --accent-soft:#423a6a; --err:#e0736f; --ok:#7fb87a; --warn:#d9b35a;
+}
+html[data-theme=light] {
+  --bg:#f4f4f8; --surface:#ffffff; --fg:#1c1e2a; --muted:#595d6c; --line:#e2e5f0;
+  --accent:#6e61c2; --accent-soft:#e7e5fe; --err:#c4524d; --ok:#3f7a3a; --warn:#8a6a14;
 }
 * { box-sizing: border-box; }
 @media (max-width: 899px) {
@@ -137,7 +141,7 @@ def _page(title: str, body: str, token: str | None = None, active: str = "plan")
         '<meta name="mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
-        f"{ICON_LINKS}"
+        f"{THEME_BOOT}{ICON_LINKS}"
         f"<title>{_e(title)}</title>"
         f"<style>{_STYLE}</style>"
         "</head><body>"

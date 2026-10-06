@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 from tools.local_time import local_now, to_local, utc_offset_hours
-from tools.navbar import ICON_LINKS, render_nav_html
+from tools.navbar import ICON_LINKS, THEME_BOOT, render_nav_html
 
 # Coming back to the app once the page is this old (seconds) refreshes it
 # (see _APP_JS). 0 disables refreshing.
@@ -1037,6 +1037,18 @@ _STYLE = """
   --radius-md: 8px;
   --shadow-sm: 0 0 0 1px #3f424d;
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0,0,0,0.55);
+  --color-divider-soft: rgba(233,233,237,.07); --color-inset: #1b1d2a; --color-backdrop: rgba(10,11,16,.65); --color-danger: #e0736f;
+}
+html[data-theme=light] {
+  color-scheme: light;
+  --color-bg:#f4f4f8; --color-surface:#ffffff; --color-text:#1c1e2a; --color-accent:#6e61c2; --color-accent-2:#6e61c2;
+  --color-divider:color-mix(in srgb,#1c1e2a 13%,transparent);
+  --color-neutral-100:#1c1e2a; --color-neutral-200:#2a2d3b; --color-neutral-300:#3f424d; --color-neutral-400:#595d6c;
+  --color-neutral-500:#6b6f82; --color-neutral-600:#8a8ea2; --color-neutral-700:#c3c7d8; --color-neutral-800:#e2e5f0; --color-neutral-900:#eef0f7;
+  --color-accent-100:#2b2741; --color-accent-200:#423a6a; --color-accent-300:#5d5294; --color-accent-400:#6e61c2;
+  --color-accent-500:#796cbf; --color-accent-600:#968ae0; --color-accent-700:#b5abfc; --color-accent-800:#e7e5fe; --color-accent-900:#f1f0ff;
+  --shadow-sm:0 0 0 1px #e2e5f0; --shadow-md:0 0 0 1px #cfd3e5,0 6px 18px rgba(28,30,42,.10);
+  --color-divider-soft:rgba(28,30,42,.08); --color-inset:#eef0f7; --color-backdrop:rgba(28,30,42,.35); --color-danger:#c4524d;
 }
 * { box-sizing: border-box; }
 /* The sticky header's blurred backdrop extends up under the notch / Dynamic
@@ -1159,7 +1171,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .f-zones-run .f-zone4 { grid-template-columns:30px minmax(0,1fr) 62px 80px; }
 .f-zone3 { display:grid; grid-template-columns:30px minmax(0,1fr) 100px; }
 .f-zhead { padding:8px 12px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-600);
-  border-bottom:1px solid rgba(233,233,237,.1); }
+  border-bottom:1px solid var(--color-divider-soft); }
 .f-zrow { padding:9px 12px; font-size:13px; align-items:center; }
 .f-prs { border-radius:10px; box-shadow:var(--shadow-sm); }
 .f-prs summary { display:flex; align-items:center; gap:10px; padding:12px 14px; cursor:pointer; list-style:none; }
@@ -1171,13 +1183,13 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 /* ── "Update FTP from test" dialog ── */
 .ftp-dialog { position:fixed; inset:0; z-index:2147483647; display:grid; place-items:center; padding:16px; }
 .ftp-dialog[hidden] { display:none; }
-.ftp-dialog-backdrop { position:absolute; inset:0; background:rgba(10,11,16,.65); }
+.ftp-dialog-backdrop { position:absolute; inset:0; background:var(--color-backdrop); }
 .ftp-dialog-box { position:relative; width:min(400px,100%); background:var(--color-surface); border-radius:14px; padding:18px;
   display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-md); }
 .ftp-field { display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--color-neutral-400); }
 .ftp-field input { font:inherit; font-size:16px; color:var(--color-text); background:var(--color-bg);
   border:1px solid var(--color-divider); border-radius:8px; padding:8px 10px; }
-.ftp-error { font-size:12px; color:#e0736f; }
+.ftp-error { font-size:12px; color:var(--color-danger); }
 .ftp-error:empty { display:none; }
 .ftp-btn { font:inherit; font-size:13px; padding:7px 14px; border-radius:8px; border:1px solid var(--color-divider);
   background:transparent; color:var(--color-text); cursor:pointer; }
@@ -1236,7 +1248,7 @@ details.gt-bike[open] > summary::after { transform:rotate(180deg); }
 .gear-modal { display:none; position:fixed; inset:0; z-index:2147483647; align-items:center;
               justify-content:center; padding:16px; }
 .gear-modal:target { display:flex; }
-.gear-modal-backdrop { position:absolute; inset:0; background:rgba(10,11,16,.65); }
+.gear-modal-backdrop { position:absolute; inset:0; background:var(--color-backdrop); }
 .gear-modal-dialog { position:relative; z-index:1; width:100%; max-width:420px; max-height:85vh;
                       overflow-y:auto; background:var(--color-surface); border-radius:var(--radius-md);
                       padding:18px; display:flex; flex-direction:column; gap:12px; box-shadow:var(--shadow-md); }
@@ -1307,7 +1319,7 @@ html { -webkit-tap-highlight-color:transparent; }
 /* ── activity-detail modal (issue 74) ── */
 .activity-modal { display:none; position:fixed; inset:0; z-index:2147483647; }
 .activity-modal.open { display:block; }
-.activity-modal-backdrop { position:absolute; inset:0; background:rgba(10,11,16,.65); }
+.activity-modal-backdrop { position:absolute; inset:0; background:var(--color-backdrop); }
 .activity-modal-sheet { position:absolute; left:0; right:0; bottom:0; margin:0 auto; width:100%; max-width:520px;
   max-height:92vh; background:var(--color-surface); border-radius:16px 16px 0 0; box-shadow:var(--shadow-md);
   display:flex; flex-direction:column; transform:translateY(100%); transition:transform .25s ease; }
@@ -1349,7 +1361,7 @@ html { -webkit-tap-highlight-color:transparent; }
 /* ── route map (issue 74 feedback) ── */
 #activity-map { height:220px; background:var(--color-neutral-900); }
 .ad-map-weather { position:absolute; top:10px; right:10px; z-index:400; display:flex; flex-direction:column; gap:4px;
-  background:rgba(10,11,16,.6); backdrop-filter:blur(6px); border-radius:8px; padding:6px 9px;
+  background:var(--color-backdrop); backdrop-filter:blur(6px); border-radius:8px; padding:6px 9px;
   font-size:11px; color:var(--color-neutral-200); }
 @media (max-width:600px) {
   #activity-map .leaflet-control-zoom, #activity-map .leaflet-control-attribution { display:none; }
@@ -1881,7 +1893,7 @@ def _goal_card(g: dict) -> str:
         <span style="flex:0 0 auto;font-size:10px;padding:3px 9px;border-radius:6px;
             background:color-mix(in srgb, {phase_color} 16%, transparent);color:{phase_color}">{phase}</span>
       </div>
-      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:10px;border-top:1px solid rgba(233,233,237,.07)">
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:10px;border-top:1px solid var(--color-divider-soft)">
         {_goal_cell("Predicted", _e(_hms(g.get("predicted_sec"))))}
         {_goal_cell("Target", _e(g.get("target")), gap_text, gap_color, value_colored=False)}
         {form}
@@ -2090,7 +2102,7 @@ def _zone_table(sport: str, rows: list[dict], now: dict) -> str:
         head = f"CSS {now['css']}" if now.get("css") else ""
         cols, keys, cls = ("Pace /100m",), ("pace",), "f-zone3"
     header = "".join(f'<span style="text-align:right">{c}</span>' for c in cols)
-    divider = ' style="border-bottom:1px solid rgba(233,233,237,.07)"'
+    divider = ' style="border-bottom:1px solid var(--color-divider-soft)"'
     muted = ";color:var(--color-neutral-400)"
     body = "".join(
         f'<div class="{cls} f-zrow"{"" if i == len(rows) - 1 else divider}>'
@@ -3541,7 +3553,7 @@ def _dashboard_head(token: str | None) -> str:
         '<meta name="apple-mobile-web-app-capable" content="yes">'
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
         f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
-        f"{ICON_LINKS}"
+        f"{THEME_BOOT}{ICON_LINKS}"
         "<title>Garmin Health Dashboard</title>"
         f"<style>{_STYLE}{_activity_css()}</style>"
         f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'

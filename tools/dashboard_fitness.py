@@ -83,12 +83,12 @@ def _spark(vals: list, tests: list[int], lower_better: bool, w: int, h: int, big
 
     line = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in pts)
     dots = "".join(
-        (f'<circle cx="{x(i):.1f}" cy="{y(vals[i]):.1f}" r="4" fill="#e7e5fe" stroke="#232532" stroke-width="2"/>' if big
-         else f'<circle cx="{x(i):.1f}" cy="{y(vals[i]):.1f}" r="2.2" fill="#e7e5fe"/>')
+        (f'<circle cx="{x(i):.1f}" cy="{y(vals[i]):.1f}" r="4" style="fill:var(--color-accent-200);stroke:var(--color-surface)" stroke-width="2"/>' if big
+         else f'<circle cx="{x(i):.1f}" cy="{y(vals[i]):.1f}" r="2.2" style="fill:var(--color-accent-200)"/>')
         for i in tests if vals[i] is not None)
     if big:
         return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" style="width:100%;height:{h}px;display:block">'
-                f'<line x1="0" x2="{w}" y1="{h - 4}" y2="{h - 4}" stroke="#3f424d" stroke-width="1" vector-effect="non-scaling-stroke"/>'
+                f'<line x1="0" x2="{w}" y1="{h - 4}" y2="{h - 4}" style="stroke:var(--color-neutral-800)" stroke-width="1" vector-effect="non-scaling-stroke"/>'
                 f'<polyline points="{line}" fill="none" stroke="#9184d9" stroke-width="2" vector-effect="non-scaling-stroke" '
                 f'stroke-linejoin="round"/>{dots}</svg>')
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:block">'
@@ -347,7 +347,7 @@ def records(progress: dict | None, today: date) -> str:
       </div>
       <div class="card" style="padding:0;gap:0;box-shadow:var(--shadow-sm)">
         <div class="rec-kicker">New · last 30 days</div>{new_rows}
-        <div class="rec-kicker" style="border-top:1px solid rgba(233,233,237,.07)">Close calls</div>{close_rows}
+        <div class="rec-kicker" style="border-top:1px solid var(--color-divider-soft)">Close calls</div>{close_rows}
         <div style="height:6px"></div>
       </div>"""
 
@@ -358,17 +358,17 @@ FITNESS_CSS = """
 .thr-col { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-600); }
 .thr-card { padding:0; gap:0; box-shadow:var(--shadow-sm); overflow:hidden; }
 .thr-row { display:grid; grid-template-columns:minmax(0,1fr) 60px 64px 84px; gap:8px; align-items:center; padding:11px 14px;
-  cursor:pointer; border-bottom:1px solid rgba(233,233,237,.07); }
+  cursor:pointer; border-bottom:1px solid var(--color-divider-soft); }
 .thr-row:last-child { border-bottom:0; }
 .thr-row:hover { background:color-mix(in srgb, var(--color-text) 3%, transparent); }
 .thr-modal { position:fixed; inset:0; z-index:2147483646; display:flex; align-items:flex-start; justify-content:center; padding:48px 12px; overflow:auto; }
 .thr-modal[hidden] { display:none; }
-.thr-backdrop { position:fixed; inset:0; background:rgba(10,11,18,.72); }
+.thr-backdrop { position:fixed; inset:0; background:var(--color-backdrop); }
 .thr-box { position:relative; width:420px; max-width:100%; background:var(--color-surface); border-radius:12px;
-  box-shadow:0 0 0 1px #3f424d, 0 24px 60px rgba(0,0,0,.5); padding:16px; display:flex; flex-direction:column; gap:14px; }
+  box-shadow:0 0 0 1px var(--color-neutral-800), 0 24px 60px rgba(0,0,0,.35); padding:16px; display:flex; flex-direction:column; gap:14px; }
 .thr-test { display:grid; grid-template-columns:minmax(0,1fr) auto 70px; gap:8px; align-items:center; padding:8px 0;
-  border-top:1px solid rgba(233,233,237,.07); font-size:13px; }
-.thr-note { display:flex; gap:8px; align-items:flex-start; padding:10px 12px; border-radius:8px; background:#1b1d2a; font-size:12px;
+  border-top:1px solid var(--color-divider-soft); font-size:13px; }
+.thr-note { display:flex; gap:8px; align-items:flex-start; padding:10px 12px; border-radius:8px; background:var(--color-inset); font-size:12px;
   color:var(--color-neutral-400); }
 .thr-note .phi { margin-top:2px; }
 .rp-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 2px 0; }
@@ -379,13 +379,13 @@ FITNESS_CSS = """
   color:var(--color-accent-200); background:color-mix(in srgb, var(--color-accent) 20%, transparent); }
 .card.rp-card { display:none; padding:0; gap:0; box-shadow:var(--shadow-sm); }
 #rp-run:checked ~ .rp-run, #rp-tri:checked ~ .rp-tri { display:flex; }
-.rp-row { display:flex; flex-direction:column; gap:10px; padding:11px 14px; border-bottom:1px solid rgba(233,233,237,.07); }
+.rp-row { display:flex; flex-direction:column; gap:10px; padding:11px 14px; border-bottom:1px solid var(--color-divider-soft); }
 .rp-row:last-child { border-bottom:0; }
 .rp-row.rp-goal { background:color-mix(in srgb, var(--color-accent) 10%, transparent); box-shadow:inset 3px 0 0 var(--color-accent); }
 .rp-goal-head { display:flex; align-items:center; gap:6px; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#b5abfc; margin-bottom:-4px; }
 .rp-grid { display:grid; grid-template-columns:minmax(0,1fr) auto 72px; gap:8px; align-items:center; }
 .rp-legs { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)) 66px; gap:6px; }
-.rp-leg { display:flex; flex-direction:column; gap:1px; padding:7px 8px; border-radius:6px; background:#1b1d2a; }
+.rp-leg { display:flex; flex-direction:column; gap:1px; padding:7px 8px; border-radius:6px; background:var(--color-inset); }
 .rp-empty, .rec-empty { padding:12px 14px; font-size:12px; color:var(--color-neutral-500); }
 .rec-kicker { padding:10px 14px 2px; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
 .rec-row { display:flex; align-items:center; gap:12px; padding:9px 14px; }

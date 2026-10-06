@@ -135,6 +135,8 @@ def test_nav_styles_are_scoped_to_the_nav_id():
         for line in style.splitlines()
         if "{" in line and not line.strip().startswith(("@", "/*"))
     ]
+    # The light theme prefixes the nav's own selectors with the theme attribute.
+    selectors = [s.removeprefix("html[data-theme=light] ") for s in selectors]
     unscoped = {s for s in selectors if not (s.startswith("#gm-nav") or s.startswith(".gm-nav-more"))}
     assert unscoped == {"body", "html"}
 
@@ -221,3 +223,18 @@ def test_icon_links_point_at_files_that_exist():
     root = os.path.join(os.path.dirname(__file__), "..", "static")
     for href in re.findall(r'href="/icons/([^"]+)"', navbar.ICON_LINKS):
         assert os.path.isfile(os.path.join(root, "icons", href)), href
+
+
+def test_nav_style_has_a_light_theme_override():
+    html = navbar.render_nav_html("plan")
+    assert "html[data-theme=light]" in html
+    assert "var(--gm-active-bg)" in html
+
+
+def test_inject_nav_adds_theme_boot_once_and_is_idempotent():
+    page = "<!doctype html><html><head><title>x</title></head><body><p>hi</p></body></html>"
+    once = navbar.inject_nav(page, "plan")
+    assert once.count(navbar.THEME_BOOT) == 1
+    assert once.index(navbar.THEME_BOOT) < once.index("<title>")
+    assert navbar.inject_nav(once, "plan") == once
+    assert navbar.inject_theme_boot(once).count(navbar.THEME_BOOT) == 1

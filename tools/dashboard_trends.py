@@ -97,8 +97,8 @@ def _chart_svg(win: list[dict], ti: int, race_idx: int | None, overlays: dict[st
     stroke = 'fill="none" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round"'
     kids = [
         f'<rect x="0" y="{fy(-10):.1f}" width="{W}" height="{fy(-30) - fy(-10):.1f}" fill="#4fae72" opacity="0.07"/>',
-        f'<line x1="0" x2="{W}" y1="{fy(0):.1f}" y2="{fy(0):.1f}" stroke="#595d6c" stroke-width="1" vector-effect="non-scaling-stroke"/>',
-        f'<line x1="0" x2="{W}" y1="120" y2="120" stroke="#3f424d" stroke-width="1" vector-effect="non-scaling-stroke"/>',
+        f'<line x1="0" x2="{W}" y1="{fy(0):.1f}" y2="{fy(0):.1f}" style="stroke:var(--color-neutral-700)" stroke-width="1" vector-effect="non-scaling-stroke"/>',
+        f'<line x1="0" x2="{W}" y1="120" y2="120" style="stroke:var(--color-neutral-800)" stroke-width="1" vector-effect="non-scaling-stroke"/>',
         *(f'<path d="{d}" fill="{c}" opacity="{0.35 if proj else 0.9}"/>' for (c, proj), d in bars.items()),
         f'<path d="{area}" fill="{FITNESS_COLOR}" opacity="0.12"/>',
         f'<path d="{atl}" stroke="{FATIGUE_COLOR}" stroke-width="1.5" {stroke}/>',
@@ -128,7 +128,7 @@ def _chart_svg(win: list[dict], ti: int, race_idx: int | None, overlays: dict[st
             started = True
         kids.append(f'<path class="ff-overlay" data-ov="{key}" d="{" ".join(pts)}" stroke="{color}" stroke-width="1.25" '
                     f'opacity="0.9" style="display:none" {stroke}/>')
-    kids.append(f'<line class="ff-hover" x1="0" x2="0" y1="0" y2="{H}" stroke="#e9e9ed" stroke-width="1" opacity="0" '
+    kids.append(f'<line class="ff-hover" x1="0" x2="0" y1="0" y2="{H}" style="stroke:var(--color-text)" stroke-width="1" opacity="0" '
                 'vector-effect="non-scaling-stroke"/>')
     return (f'<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" class="ff-svg" '
             f'style="width:100%;height:{H}px;display:block;overflow:visible">{"".join(kids)}</svg>')
@@ -323,7 +323,7 @@ TRENDS_CSS = """
 .ff-leg { display:flex; align-items:center; gap:5px; }
 .ff-leg[hidden] { display:none; }
 .ff-leg > span:first-child { width:7px; height:7px; border-radius:2px; display:inline-block; }
-.ff-race { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; background:#1b1d2a; }
+.ff-race { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; background:var(--color-inset); }
 .ff-metrics-wrap { display:flex; flex-direction:column; gap:8px; }
 .ff-metrics { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
 .ff-metric { display:flex; flex-direction:column; gap:6px; padding:12px; border-radius:8px; border:0; background:var(--color-surface);
