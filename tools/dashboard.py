@@ -1483,16 +1483,33 @@ def _readiness_card(data: dict) -> str:
         return f'<div class="card err">Training readiness unavailable — {_e(data.get("training_err"))}</div>'
     level = training.get("level")
     color = _readiness_color(level)
-    hrv_status = ((readiness.get("hrv") or {}).get("status"))
-    sub = " · ".join(p for p in (_label(training.get("feedback_short")),
-                                 f"HRV {_label(hrv_status).lower()}" if hrv_status else None) if p)
+    hrv = readiness.get("hrv") or {}
+    stats = readiness.get("daily_stats") or {}
+    sleep_h, sleep_m = _fmt_hm_clock((data.get("sleep") or {}).get("total_sleep_hrs"))
+    sub = " · ".join(p for p in (
+        f"HRV {_label(hrv.get('status')).lower()}" if hrv.get("status") else None,
+        f"slept {sleep_h}h{sleep_m:02d}" if sleep_h is not None else None) if p)
+    title = _label(training.get("feedback_short")) if training.get("feedback_short") else _label(level)
+    resting = stats.get("resting_hr")
+    if resting is None:
+        resting = ((data.get("health") or {}).get("heart_rate") or {}).get("resting_hr")
+
+    def stat(label, value, unit):
+        shown = f'{_num(value)}<span style="font-size:12px;color:var(--color-neutral-500)"> {unit}</span>' if value is not None and unit else _num(value)
+        return f'<div><div class="t-kick">{label}</div><div style="font-size:15px">{shown}</div></div>'
+
     return f"""
-    <div class="t-card" style="display:flex;align-items:center;gap:14px">
-      <div class="t-ring" style="box-shadow:inset 0 0 0 4px {color}">{_num(training.get("score"))}</div>
-      <div style="flex:1;min-width:0">
-        <div class="t-kick" style="color:var(--color-accent-300)">Readiness</div>
-        <div style="font-size:17px;font-weight:500;color:{color}">{_label(level) or "&mdash;"}</div>
-        <div class="t-sub">{sub or "&mdash;"}</div>
+    <div class="t-card" style="display:flex;flex-direction:column;gap:10px">
+      <div class="t-kick">Readiness</div>
+      <div style="display:flex;align-items:center;gap:14px">
+        <div class="t-ring" style="box-shadow:inset 0 0 0 4px {color}">{_num(training.get("score"))}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:17px;font-weight:500">{title or "&mdash;"}</div>
+          <div class="t-sub">{sub or "&mdash;"}</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;padding-top:10px;border-top:1px solid var(--color-divider-soft)">
+        {stat("HRV", hrv.get("last_night_avg"), "ms")}{stat("Resting HR", resting, "bpm")}{stat("Battery", (readiness.get("body_battery") or {}).get("current_level"), "")}
       </div>
     </div>"""
 

@@ -95,9 +95,17 @@ def view_payload(row: dict) -> dict:
     complete, the Garmin activity each one was matched to, and each
     workout's start time as the calendar feed places it (the viewer orders
     a day's workouts by it)."""
+    from concurrent.futures import ThreadPoolExecutor
     from tools import plan_calendar   # it imports this module
-    states = db.get_workout_states(row["id"])
-    briefs = db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
+
+    def completions():
+        states = db.get_workout_states(row["id"])
+        return states, db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
+
+    with ThreadPoolExecutor(max_workers=2) as pool:      # two independent round trips
+        start_times = pool.submit(plan_calendar.start_times, row["plan"])
+        (states, briefs) = completions()
+        start_times = start_times.result()
     activities = {}
     for wid, s in states.items():
         act = briefs.get(s.get("activity_id"))
@@ -113,7 +121,7 @@ def view_payload(row: dict) -> dict:
         "readOnly": row["status"] != "active",
         "completed": {wid: True for wid, s in states.items() if s.get("completed")},
         "activities": activities,
-        "startTimes": plan_calendar.start_times(row["plan"]),
+        "startTimes": start_times,
     }
 
 
