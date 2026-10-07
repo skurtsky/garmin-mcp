@@ -65,3 +65,17 @@ def test_gzip_flushing_makes_each_chunk_readable_as_soon_as_it_is_sent():
     decoder = zlib.decompressobj(31)
     assert decoder.decompress(parts[0]) == b"<head>skeleton</head>"
     assert decoder.decompress(b"".join(parts[1:])) == b"<main>page</main>"
+
+
+def _asgi_get(path):
+    from starlette.testclient import TestClient
+    return TestClient(server.build_asgi_app()).get(path)
+
+
+def test_manifest_is_branded_ridgeline(monkeypatch):
+    monkeypatch.delenv("BEARER_TOKEN", raising=False)
+    manifest = _asgi_get("/manifest.webmanifest").json()
+    assert manifest["name"] == "Ridgeline"
+    assert manifest["short_name"] == "Ridgeline"
+    assert manifest["theme_color"] == "#161826"
+    assert len(manifest["icons"]) == 3

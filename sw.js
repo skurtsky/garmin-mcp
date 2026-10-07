@@ -1,4 +1,4 @@
-const CACHE_NAME = "garmin-mcp-shell-v2";
+const CACHE_NAME = "ridgeline-shell-v1";
 
 // Written at the very end of a complete dashboard render
 // (DASHBOARD_COMPLETE_MARKER in tools/dashboard.py). Only a page carrying it

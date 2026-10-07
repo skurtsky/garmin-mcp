@@ -3728,7 +3728,7 @@ def _dashboard_head(token: str | None) -> str:
         '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">'
         f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
         f"{THEME_BOOT}{ICON_LINKS}"
-        "<title>Garmin Health Dashboard</title>"
+        "<title>Ridgeline</title>"
         f"<style>{_STYLE}{_activity_css()}</style>"
         f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
     )
@@ -3800,7 +3800,7 @@ def render_dashboard_body(data: dict, token: str | None = None,
                      f'<span style="width:7px;height:7px;border-radius:50%;background:{plan["phase_color"]}"></span>'
                      f'{_e(label)}</a>')
     fitness_sub = f"Garmin + {plan['title']}" if plan else "Garmin"
-    nav = render_nav_html(None, token, tabs=_NAV_TABS, title=(plan or {}).get("athlete") or "Garmin")
+    nav = render_nav_html(None, token, tabs=_NAV_TABS, title=(plan or {}).get("athlete") or "Ridgeline")
 
     body = f"""
 <div style="min-height:100vh;background:

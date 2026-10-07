@@ -45,7 +45,7 @@ python server.py
 
 You should see:
 ```
-INFO: Starting Garmin MCP server on port 8000
+INFO: Starting Ridgeline server on port 8000
 INFO: Uvicorn running on http://0.0.0.0:8000
 ```
 

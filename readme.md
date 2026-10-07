@@ -1,7 +1,13 @@
-# Garmin MCP Server
+# Ridgeline
 
-A Model Context Protocol (MCP) server that connects to Garmin Connect and exposes
+<img src="static/icons/icon-192.png" width="96" alt="Ridgeline">
+
+**Your training data, mapped for Claude.**
+
+A health dashboard and MCP server that turns Garmin Connect into something Claude can read.
+Ridgeline pairs a dashboard with a Model Context Protocol (MCP) server that exposes
 fitness and health data as tools for Claude and other MCP-compatible clients.
+Formerly garmin-mcp.
 
 Built on [python-garminconnect](https://github.com/cyberjunky/python-garminconnect)
 and [FastMCP](https://github.com/jlowin/fastmcp).

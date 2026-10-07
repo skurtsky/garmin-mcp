@@ -62,12 +62,14 @@ _BODY_TAG_RE = re.compile(r"<body\b[^>]*>", re.IGNORECASE)
 _HEAD_TAG_RE = re.compile(r"<head\b[^>]*>", re.IGNORECASE)
 _VIEWPORT_TAG_RE = re.compile(r"<meta\b(?=[^>]*\bname=[\"']viewport[\"'])[^>]*>", re.IGNORECASE)
 # Browser-tab favicon and iOS home-screen icon. The tab icon is transparent;
-# favicon.svg switches its strokes to white on dark-mode tab bars, and
-# browsers without SVG favicons (Safari) fall back to favicon.ico. Served
+# favicon.svg switches its strokes to white on dark-mode tab bars. Browsers
+# without SVG favicons (Safari) use the .ico, which can't switch itself, so
+# there is one per colour scheme, chosen by the link's media query. Served
 # without the bearer token (see server.py) — iOS fetches the touch icon
 # without it.
 ICON_LINKS = (
-  '<link rel="icon" href="/favicon.ico" sizes="32x32">'
+  '<link rel="icon" href="/favicon.ico" sizes="32x32" media="(prefers-color-scheme: light)">'
+  '<link rel="icon" href="/favicon-dark.ico" sizes="32x32" media="(prefers-color-scheme: dark)">'
   '<link rel="icon" type="image/svg+xml" href="/icons/favicon.svg">'
   '<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">'
 )
@@ -331,7 +333,7 @@ def render_nav_html(active: str | None = None, token: str | None = None, *,
         f"<style>{_NAV_STYLE}{_tab_style(tabs)}</style>"
         f'<input type="checkbox" id="{_MORE_TOGGLE_ID}" class="gm-nav-more-toggle" aria-label="More">'
         f'<nav id="{NAV_ID}" aria-label="Site" ontouchstart=""><div class="gm-nav__pill">'
-        f'<div class="gm-nav__title">{_e(title or "Garmin")}</div>'
+        f'<div class="gm-nav__title">{_e(title or "Ridgeline")}</div>'
         f"{items}{rail}"
         f'<label for="{_MORE_TOGGLE_ID}" class="gm-nav__more-btn{more_active}" data-nav="more">'
         f'{_icon("more")}<span class="gm-nav__label">More</span></label>'
