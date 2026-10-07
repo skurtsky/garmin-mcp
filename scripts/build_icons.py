@@ -28,8 +28,13 @@ def main() -> None:
     # iOS applies its own corner mask and rejects transparency: opaque RGB.
     render(FULLBLEED, 180).convert("RGB").save(ICONS / "apple-touch-icon.png", optimize=True)
 
-    # Light-scheme rendering (dark stroke) on a transparent background.
-    render(FAVICON, 64).save(ICONS / "favicon.ico", format="ICO", sizes=[(16, 16), (32, 32)])
+    # ICO has no colour-scheme switch, so ship one per scheme (see ICON_LINKS).
+    # Light tab bars: dark stroke. Dark tab bars: light stroke.
+    for name, stroke in (("favicon.ico", "#161826"), ("favicon-dark.ico", "#E8EEFF")):
+        svg = FAVICON.read_text().replace("stroke: #161826", f"stroke: {stroke}") \
+                                  .replace("@media (prefers-color-scheme: dark) { .line { stroke: #E8EEFF; } }", "")
+        png = cairosvg.svg2png(bytestring=svg.encode(), output_width=64, output_height=64)
+        Image.open(io.BytesIO(png)).save(ICONS / name, format="ICO", sizes=[(16, 16), (32, 32)])
     shutil.copyfile(FAVICON, ICONS / "favicon.svg")
 
 

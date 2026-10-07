@@ -905,6 +905,7 @@ def build_asgi_app():
     icon_files = {
         "/favicon.ico": ("favicon.ico", "image/x-icon"),
         "/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
+        "/favicon-dark.ico": ("favicon-dark.ico", "image/x-icon"),
         "/icons/favicon.svg": ("favicon.svg", "image/svg+xml"),
         "/icons/apple-touch-icon.png": ("apple-touch-icon.png", "image/png"),
         "/icons/icon-192.png": ("icon-192.png", "image/png"),

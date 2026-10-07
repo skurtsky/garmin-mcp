@@ -2,6 +2,8 @@ import os
 import re
 import struct
 
+import pytest
+
 import server
 
 ICONS = os.path.join(os.path.dirname(__file__), "..", "static", "icons")
@@ -20,8 +22,9 @@ def test_png_icons_have_expected_sizes():
     assert _png_size("apple-touch-icon.png") == (180, 180)
 
 
-def test_favicon_ico_has_16_and_32_frames():
-    with open(os.path.join(ICONS, "favicon.ico"), "rb") as f:
+@pytest.mark.parametrize("name", ["favicon.ico", "favicon-dark.ico"])
+def test_favicon_ico_has_16_and_32_frames(name):
+    with open(os.path.join(ICONS, name), "rb") as f:
         data = f.read()
     count = struct.unpack("<H", data[4:6])[0]
     frames = {(data[6 + 16 * i] or 256, data[7 + 16 * i] or 256) for i in range(count)}
