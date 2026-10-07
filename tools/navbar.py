@@ -331,7 +331,7 @@ def render_nav_html(active: str | None = None, token: str | None = None, *,
         f"<style>{_NAV_STYLE}{_tab_style(tabs)}</style>"
         f'<input type="checkbox" id="{_MORE_TOGGLE_ID}" class="gm-nav-more-toggle" aria-label="More">'
         f'<nav id="{NAV_ID}" aria-label="Site" ontouchstart=""><div class="gm-nav__pill">'
-        f'<div class="gm-nav__title">{_e(title or "Garmin")}</div>'
+        f'<div class="gm-nav__title">{_e(title or "Ridgeline")}</div>'
         f"{items}{rail}"
         f'<label for="{_MORE_TOGGLE_ID}" class="gm-nav__more-btn{more_active}" data-nav="more">'
         f'{_icon("more")}<span class="gm-nav__label">More</span></label>'

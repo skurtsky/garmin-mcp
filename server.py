@@ -940,15 +940,15 @@ def build_asgi_app():
             token = query.get("token", [None])[0]
             start_url = "/dashboard" + (f"?token={token}" if token else "")
             response = JSONResponse({
-                "name": "Garmin MCP",
-                "short_name": "Garmin",
+                "name": "Ridgeline",
+                "short_name": "Ridgeline",
                 "start_url": start_url,
                 "scope": "/",
                 "display": "standalone",
                 "orientation": "any",
                 "background_color": "#161826",
                 "theme_color": "#161826",
-                "description": "A personal Garmin health dashboard",
+                "description": "A health dashboard and MCP server that turns Garmin Connect into something Claude can read.",
                 "icons": [
                     {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png"},
                     {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png"},
@@ -1058,5 +1058,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Starting Garmin MCP server on port {port}")
+    logger.info(f"Starting Ridgeline server on port {port}")
     uvicorn.run(build_asgi_app(), host="0.0.0.0", port=port)
