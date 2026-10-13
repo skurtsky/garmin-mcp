@@ -889,6 +889,10 @@ def get_activity(activity_id: int) -> dict:
         'gear':             gear,
     }
 
+    if summary.get('type') == 'strength_training':
+        from tools.strength_sets import activity_exercises_summary
+        result['exercises'] = activity_exercises_summary(activity_id, client)
+
     if _is_multisport(activity_raw):
         result['sub_activities'] = _fetch_sub_activities(
             _child_activity_ids(activity_raw), weight_kg=athlete['weight_kg'])

@@ -45,6 +45,12 @@ from tools.workout import (
     create_workout as create_workout_impl,
     delete_workout as delete_workout_impl,
     update_workout_weights as update_workout_weights_impl,
+    patch_workout_step as patch_workout_step_impl,
+)
+from tools.exercise_db import search_exercises as search_exercises_impl
+from tools.strength_sets import (
+    strength_sets as strength_sets_impl,
+    compare_strength_session as compare_strength_session_impl,
 )
 from tools.gear_tracker import (
     log_maintenance as log_maintenance_impl,
@@ -146,6 +152,10 @@ def activity_detail(activity_id: int) -> dict:
     includes 'sub_activities': the swim / T1 / bike / T2 / run legs, each
     with its own discipline metrics (swim pace per 100m, bike power and
     speed, run pace) and lap splits.
+
+    For a strength activity the result also includes 'exercises': a compact
+    per-exercise summary of the sets actually performed (sets, reps, top weight
+    in kg/lb, volume). Use strength_sets for the full set-by-set data.
 
     'gear' lists the shoes/bike linked to the activity (name, uuid, type and
     cumulative distance), and is empty when no gear was assigned. For a
@@ -722,20 +732,55 @@ def create_workout(
     step with "sets" — do NOT emit the same interval step multiple times.
 
     For strength_training: each set carries a Garmin exercise_name (validated
-    against the exercise reference — a typo fails fast with a clear error), a
-    per-set weight_kg, and optional wave notation for ascending loads. Use
-    "repeat" for working sets and "warmup" for warm-up sets (both take "sets"),
-    and "rest" for standalone rest between exercises:
+    against the exercise reference — a typo fails with "did you mean ..."
+    suggestions; use search_exercises to look names up), a load, and optional
+    wave notation for ascending loads. Use "repeat" for working sets and
+    "warmup" for warm-up sets (both take "sets"), and "rest" for standalone
+    rest between exercises:
 
         {"type": "warmup", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
-         "weight_kg": 22.7, "description": "50 - 50 - 90"}
+         "weight_lb": 50, "description": "50 - 50 - 90"}
         {"type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
-         "weight_kg": 58.97, "description": "130 - 150 - 160"}
-        {"type": "rest"}
+         "weight_lb": 115, "reps": 8, "rest_duration_s": 120,
+         "description": "115 - 125 - 135 (6-8 reps)"}
+        {"type": "rest"}                       # or {"type": "rest", "duration_s": 90}
 
-    `description` ("130 - 150 - 160") and `set_weights` ([130, 150, 160]) are two
-    views of the same per-set wave — give either. Omit weight_kg for bodyweight
-    exercises. `category` is derived automatically from `exercise_name`.
+    Strength step fields (anything else is rejected, never silently dropped):
+      sets            number of sets (repeat/warmup/cooldown)
+      reps            rep target per set -> the watch counts reps (int)
+      duration_s      timed hold per set in seconds -> countdown + vibration
+                      (reps and duration_s are mutually exclusive; neither = open
+                      step, press lap when done)
+      rest_duration_s timed rest after each set (omit = press lap to rest)
+      weight_kg | weight_lb   load (pounds are converted to kg, rounded to 2 dp:
+                      115 lb = 52.16 kg). Giving both is only OK if they agree.
+      set_weights | set_weights_lb   per-set wave, e.g. [115, 125, 135]; the
+                      description is synthesized from it. set_weights_lb also sets
+                      the base load (first entry, lb->kg); legacy set_weights
+                      takes the first entry as kg.
+      description     free text shown on the watch (wave "115 - 125 - 135", or
+                      notes such as "6-8 reps"). Garmin cannot use a rep RANGE as
+                      a target: set reps to the upper bound (or omit it) and keep
+                      the range in the description.
+      category        derived from exercise_name (override only if needed)
+    Omit the weight for bodyweight exercises (stored as -1).
+
+    Strength examples:
+        Timed hold, 6 sets of 30 s side plank with 15 s rest:
+            {"type": "repeat", "sets": 6, "exercise_name": "SIDE_PLANK",
+             "duration_s": 30, "rest_duration_s": 15}
+        Reps, bodyweight:
+            {"type": "repeat", "sets": 3, "exercise_name": "PUSH_UP", "reps": 10}
+        Pounds, with wave:
+            {"type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+             "set_weights_lb": [115, 125, 135], "reps": 8}
+
+    After upload the workout is re-fetched and compared with what was sent. The
+    result includes "warnings" (anything Garmin did not store: timer, reps,
+    weight, description, pace/HR/power target) and "verified". If warnings is
+    non-empty, tell the user. "notes" flags exercises with no Garmin Connect page
+    (they still upload) and suggests alternatives such as SIDE_PLANK for
+    WEIGHTED_SIDE_PLANK.
 
     steps is a list of dicts, each with a "type" field (running/cycling shapes):
 
@@ -803,15 +848,20 @@ def update_workout_weights(
     workout_name: str,
     weight_updates: dict,
     workout_description: str | None = None,
+    include_warmup: bool = False,
+    warmup_updates: dict | None = None,
 ) -> dict:
     """
     Update exercise weights (and optionally per-set notes) in a strength
     workout by name.
 
+    Updates the workout IN PLACE: its Garmin ID does not change, so calendar
+    schedule entries and plan links (link_plan_workout_to_garmin) stay valid.
     Finds the workout, updates weightValue and/or the per-exercise
-    description text for matching exercises (interval steps only — warmup
-    steps are not changed), optionally replaces the workout-level
-    description, uploads as a new workout, and deletes the old one.
+    description text for matching exercises (working steps only by default —
+    see include_warmup / warmup_updates), optionally replaces the
+    workout-level description, then re-fetches it and reports in "warnings"
+    anything that was not stored. The result still has old_id/new_id (equal now).
 
     Args:
         workout_name: Exact workout name as it appears in Garmin Connect.
@@ -819,19 +869,134 @@ def update_workout_weights(
             a weight-only update (backward compatible), e.g.
             {"OVERHEAD_BARBELL_PRESS": 32.5}, or a dict with optional
             "weight_kg" and/or "description" keys, e.g.
-            {"BARBELL_BACK_SQUAT": {"weight_kg": 56.7,
-                                     "description": "125 - 145 - 155"}}.
-            Omitting "weight_kg" or "description" leaves that field
+            {"BARBELL_BACK_SQUAT": {"weight_lb": 125,
+                                     "description": "115 - 125 - 135"}}.
+            Keys: "weight_kg" or "weight_lb", "description", or a wave via
+            "set_weights"/"set_weights_lb". Omitting a key leaves that field
             unchanged (no accidental blanking).
         workout_description: Optional new workout-level description (e.g.
             "Next weight progression day: July 30"). Omit to leave it
             unchanged.
+        include_warmup: Also apply weight_updates to warm-up steps (default
+            False: warm-ups are untouched).
+        warmup_updates: Same shape as weight_updates but applied only to
+            warm-up steps, e.g. {"BARBELL_BACK_SQUAT": {"weight_lb": 55}}.
     """
     return update_workout_weights_impl(
         workout_name=workout_name,
         weight_updates=weight_updates,
         workout_description=workout_description,
+        include_warmup=include_warmup,
+        warmup_updates=warmup_updates,
     )
+
+
+@mcp.tool()
+def patch_workout_step(
+    workout_id: int,
+    exercise_name: str,
+    fields: dict,
+    occurrence: int = 1,
+    step_type: Optional[str] = None,
+) -> dict:
+    """
+    Change ONE step of a saved strength workout in place (same Garmin ID, same
+    calendar entries) without rebuilding the workout.
+
+    The step is picked by exercise_name + occurrence (1-based, in workout
+    order; a warm-up block of the same exercise counts as an occurrence, or pass
+    step_type="warmup"/"repeat"/"cooldown" to count only that kind).
+
+    fields (any of): sets, reps, duration_s (hold, seconds), rest_duration_s,
+    weight_kg | weight_lb, set_weights | set_weights_lb (per-set wave), description.
+    None for reps/duration_s makes the step open (press lap); None for
+    rest_duration_s makes rest open; None weight = bodyweight. A rep target and a
+    timer replace each other. After saving, the workout is re-fetched and
+    "warnings" lists anything not stored.
+
+    Examples:
+        Make the side plank a 40 s hold:
+            workout_id=..., exercise_name="SIDE_PLANK", fields={"duration_s": 40}
+        Working-set squat to 8 reps at 135 lb (warm-up is occurrence 1):
+            exercise_name="BARBELL_BACK_SQUAT", occurrence=2,
+            fields={"reps": 8, "weight_lb": 135}   # or step_type="repeat"
+
+    Returns the matched step, "changes" ({field: {old, new}}), the decoded step,
+    "warnings" and "verified".
+
+    Args:
+        workout_id: Garmin workout ID (from get_saved_workouts).
+        exercise_name: Garmin exercise name (see search_exercises).
+        fields: What to change (see above).
+        occurrence: Which matching step, 1-based.
+        step_type: Optional filter: "warmup", "repeat" or "cooldown".
+    """
+    return patch_workout_step_impl(
+        workout_id=workout_id, exercise_name=exercise_name,
+        occurrence=occurrence, fields=fields, step_type=step_type,
+    )
+
+
+@mcp.tool()
+def search_exercises(
+    query: str = "",
+    category: Optional[str] = None,
+    equipment: Optional[str] = None,
+    muscle: Optional[str] = None,
+    found_only: bool = False,
+    limit: int = 25,
+) -> list:
+    """
+    Search Garmin's strength exercise database for the exact exercise_name
+    (and category) to use in create_workout / patch_workout_step.
+
+    Each result has exercise_name, category, display_name,
+    found_on_garmin_connect, difficulty, muscles (0-2 scores), equipment, url.
+    found_on_garmin_connect=False means Garmin Connect has no page for it; it
+    usually still uploads, but a plain variant is often better (SIDE_PLANK rather
+    than WEIGHTED_SIDE_PLANK). Some names exist under several categories
+    (e.g. PUSH_UP in PUSH_UP and SUSPENSION).
+
+    Args:
+        query: Words to match in the name, e.g. "side plank" or "romanian deadlift".
+            Typos fall back to fuzzy matching.
+        category: Garmin category filter, e.g. "PLANK", "SQUAT".
+        equipment: e.g. "BARBELL", "DUMBBELL", "KETTLEBELL", "BENCH".
+        muscle: e.g. "GLUTES", "CHEST", "LATS" (requires a score >= 1).
+        found_only: Only exercises with a Garmin Connect page.
+        limit: Max results (default 25).
+    """
+    return search_exercises_impl(query=query, category=category, equipment=equipment,
+                                 muscle=muscle, found_only=found_only, limit=limit)
+
+
+@mcp.tool()
+def strength_sets(activity_id: int, workout_id: Optional[int] = None,
+                  compare_to_workout: bool = False) -> dict:
+    """
+    What was actually lifted in a strength activity, set by set: exercise
+    (category + name), reps, weight (kg and lb), duration, set type
+    ("warm-up" | "active" | "rest") and order, plus a per-exercise summary
+    (sets, reps, top weight, volume).
+
+    Garmin records warm-ups as ordinary active sets; pass workout_id (the saved
+    workout the session followed) so they can be labelled "warm-up".
+
+    With compare_to_workout=True (requires workout_id) the result is a
+    planned-vs-actual comparison instead: for every performed set the planned
+    reps/time/load (waves honoured) and flags where the load, reps, time or
+    exercise differ, plus planned sets that were never performed ("missed").
+
+    Args:
+        activity_id: Garmin activity ID of a strength session.
+        workout_id: Saved workout the session followed (optional).
+        compare_to_workout: Return planned-vs-actual instead.
+    """
+    if compare_to_workout:
+        if workout_id is None:
+            raise ValueError("compare_to_workout requires workout_id")
+        return compare_strength_session_impl(activity_id, workout_id)
+    return strength_sets_impl(activity_id, workout_id)
 
 
 # ── ENTRYPOINT ────────────────────────────────────────────────────────────────

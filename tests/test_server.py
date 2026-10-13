@@ -79,3 +79,22 @@ def test_manifest_is_branded_ridgeline(monkeypatch):
     assert manifest["short_name"] == "Ridgeline"
     assert manifest["theme_color"] == "#161826"
     assert len(manifest["icons"]) == 3
+
+
+def test_strength_tools_are_registered_with_documented_parameters():
+    patch_schema = _get_tool_schema("patch_workout_step")
+    assert set(patch_schema["properties"]) >= {"workout_id", "exercise_name", "fields", "occurrence", "step_type"}
+    search_schema = _get_tool_schema("search_exercises")
+    assert set(search_schema["properties"]) >= {"query", "category", "equipment", "muscle", "found_only"}
+    sets_schema = _get_tool_schema("strength_sets")
+    assert "activity_id" in sets_schema["properties"]
+    update_schema = _get_tool_schema("update_workout_weights")
+    # original parameters are unchanged; new ones are optional additions
+    assert set(update_schema["required"]) == {"workout_name", "weight_updates"}
+    assert {"include_warmup", "warmup_updates"} <= set(update_schema["properties"])
+
+
+def test_create_workout_docstring_documents_strength_timers_reps_and_pounds():
+    doc = server.create_workout.__doc__
+    for needle in ("duration_s", "reps", "rest_duration_s", "weight_lb", "set_weights_lb", "warnings", "SIDE_PLANK"):
+        assert needle in doc
