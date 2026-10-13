@@ -40,9 +40,40 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | `get_saved_workouts` | Saved workout library with optional sport filter |
 | `schedule_workout` | Schedule an existing workout ID to a date |
 | `unschedule_workout` | Remove a scheduled workout from calendar |
-| `create_workout` | Create a workout (running, cycling, strength_training, cardio) from step definitions and optionally schedule it |
+| `create_workout` | Create a workout (running, cycling, strength_training) from step definitions and optionally schedule it. Strength steps take timed holds (`duration_s`), rep targets (`reps`), timed rest (`rest_duration_s`) and loads in kg or lb. Unknown fields are rejected, and the saved workout is re-fetched and diffed against the request: anything Garmin did not store comes back in `warnings` |
 | `delete_workout` | Delete a saved workout by ID |
-| `update_workout_weights` | Update exercise weights, per-set notes, and/or the workout-level description in a strength workout by name — uploads a new version and deletes the old one |
+| `update_workout_weights` | Update exercise weights (kg or lb), per-set notes, and/or the workout-level description in a strength workout by name, **in place** — the Garmin ID is unchanged, so calendar entries and plan links stay valid. `include_warmup` / `warmup_updates` reach warm-up steps too |
+| `patch_workout_step` | Change one step of a saved strength workout in place (sets, reps, timed hold, rest, weight, per-set wave, description), picked by exercise name and occurrence |
+| `search_exercises` | Search Garmin's strength exercise database (name, category, equipment, muscle, "has a Garmin Connect page") for the exact `exercise_name` to use |
+| `strength_sets` | What was actually lifted: per-set exercise, reps, weight (kg and lb), duration and set type for a strength activity; `compare_to_workout=true` gives planned vs actual |
+
+#### Strength workouts: holds, reps and pounds
+
+```jsonc
+// Timed hold: 6 x 30 s side plank, 15 s rest (the watch counts down and vibrates)
+{"type": "repeat", "sets": 6, "exercise_name": "SIDE_PLANK", "duration_s": 30, "rest_duration_s": 15}
+
+// Rep target, bodyweight
+{"type": "repeat", "sets": 3, "exercise_name": "PUSH_UP", "reps": 10}
+
+// Pounds, with a per-set wave (115 lb = 52.16 kg is stored; get_workout_detail returns both)
+{"type": "repeat", "sets": 3, "exercise_name": "BARBELL_BACK_SQUAT",
+ "set_weights_lb": [115, 125, 135], "reps": 8, "description": "115 - 125 - 135 (6-8 reps)"}
+```
+
+- `reps` and `duration_s` are mutually exclusive; with neither the step is open (press lap).
+  Garmin cannot use a rep range as a target: set `reps` to the upper bound and keep "6-8" in the description.
+- Load is `weight_kg` or `weight_lb` (giving both is fine only if they agree). `set_weights_lb` is a per-set wave in
+  pounds; the older `set_weights` keeps its meaning (first entry is the base load in kg).
+- Edit one step later without rebuilding: `patch_workout_step(workout_id, "SIDE_PLANK", fields={"duration_s": 40})`.
+  The warm-up of an exercise counts as occurrence 1, so use `occurrence=2` or `step_type="repeat"` for the working block.
+- Find names with `search_exercises("side plank")`. Names whose `found_on_garmin_connect` is false (e.g.
+  `WEIGHTED_SIDE_PLANK`) still upload, but `create_workout` adds a note suggesting the plain variant.
+- Every create/update re-fetches the workout and returns `warnings` (and `verified`) for anything not stored.
+- The exercise data comes from the packaged `tools/data/garmin_exercise_meta.json`, built from the community
+  [exercise sheet](https://docs.google.com/spreadsheets/d/1OaqIaBhPk4xBnkqVPYvFpj2HZNk_ISX0zHgWfA0WXkQ) by
+  `python scripts/build_exercise_db.py <export.txt>`; nothing is fetched at runtime.
+
 
 ### Health & Recovery
 
@@ -542,7 +573,10 @@ garmin-mcp/
 │   ├── assets/plan-viewer.html  # the plan viewer app the server fills with a stored plan
 │   ├── trends.py          # get_performance_predictions, get_performance_trends, get_trends
 │   ├── weekly_summaries.py # storage + routes for the weekly reports (/weekly-summary)
-│   └── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights
+│   ├── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights, patch_workout_step
+│   ├── strength_sets.py   # exerciseSets parsing, strength_sets, planned-vs-actual
+│   ├── exercise_db.py     # exercise validation, search_exercises, "did you mean" suggestions
+│   └── weight_units.py    # kg <-> lb with one rounding rule
 ├── tests/
 │   ├── conftest.py        # Shared fixtures
 │   ├── test_activities.py
