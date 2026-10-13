@@ -15,9 +15,16 @@ import copy
 import json
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 
-from garmin_client import get_client
-from tools.workout import build_workout_payload, _extract_uploaded_workout_id
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # repo root, so `garmin_client` imports
+
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv()
+
+from garmin_client import get_client  # noqa: E402
+from tools.workout import build_workout_payload, _extract_uploaded_workout_id  # noqa: E402
 
 SCHEDULE_DATE = (date.today() + timedelta(days=400)).isoformat()
 
