@@ -232,7 +232,8 @@ def test_create_workout_uploads_and_schedules():
     assert len(uploaded_payload["workoutSegments"][0]["workoutSteps"]) == 1
 
     mock_client.schedule_workout.assert_called_once_with(4242, "2026-08-01")
-    assert result == {
+    # new fields (warnings/verified/notes) are additive; the original four are unchanged
+    assert {k: result[k] for k in ("workout_id", "name", "sport_type", "scheduled_date")} == {
         "workout_id": 4242,
         "name": "TEST - 6x400",
         "sport_type": "running",
@@ -333,7 +334,6 @@ def test_update_workout_weights():
         {"workoutId": 123, "workoutName": "Strength - A"}
     ]
     mock_client.get_workout_by_id.return_value = old_workout
-    mock_client.upload_workout.return_value = {"workoutId": 456}
 
     with patch("tools.workout.get_client", return_value=mock_client):
         result = update_workout_weights(
@@ -342,23 +342,25 @@ def test_update_workout_weights():
         )
 
     assert result["workout_name"] == "Strength - A"
+    # updated in place: the ID never changes (old_id/new_id kept for compatibility)
     assert result["old_id"] == 123
-    assert result["new_id"] == 456
-    assert result["updates_applied"] == {
-        "BARBELL_BACK_SQUAT": {"old_kg": 100.0, "new_kg": 105.0}
-    }
+    assert result["new_id"] == 123
+    assert result["id_changed"] is False
+    applied = result["updates_applied"]["BARBELL_BACK_SQUAT"]
+    assert (applied["old_kg"], applied["new_kg"]) == (100.0, 105.0)
+    assert list(result["updates_applied"]) == ["BARBELL_BACK_SQUAT"]
     assert result["workout_description"] is None
 
-    # delete called on old ID
-    mock_client.delete_workout.assert_called_once_with(123)
+    # no upload/delete: a single in-place PUT
+    mock_client.upload_workout.assert_not_called()
+    mock_client.delete_workout.assert_not_called()
+    put_url = mock_client.client.put.call_args[0][1]
+    assert put_url == "/workout-service/workout/123"
+    sent = mock_client.client.put.call_args[1]["json"]
 
-    # verify warmup weight was NOT modified in the uploaded payload
-    uploaded_payload = mock_client.upload_workout.call_args[0][0]
-    top_steps = uploaded_payload["workoutSegments"][0]["workoutSteps"]
-    warmup_step = top_steps[0]
-    assert warmup_step["weightValue"] == 40.0   # unchanged
-    # stepIds stripped
-    assert "stepId" not in warmup_step
+    # warm-up weight was NOT modified (include_warmup defaults to False)
+    top_steps = sent["workoutSegments"][0]["workoutSteps"]
+    assert top_steps[0]["weightValue"] == 40.0
 
 
 def test_update_workout_weights_with_description_and_workout_description():
@@ -424,7 +426,6 @@ def test_update_workout_weights_with_description_and_workout_description():
         {"workoutId": 123, "workoutName": "Strength - A"}
     ]
     mock_client.get_workout_by_id.return_value = old_workout
-    mock_client.upload_workout.return_value = {"workoutId": 456}
 
     with patch("tools.workout.get_client", return_value=mock_client):
         result = update_workout_weights(
@@ -436,21 +437,21 @@ def test_update_workout_weights_with_description_and_workout_description():
             workout_description="Next weight progression day: July 30",
         )
 
-    assert result["updates_applied"] == {
-        "BARBELL_BACK_SQUAT": {
-            "old_kg": 100.0,
-            "new_kg": 105.0,
-            "old_description": "120 - 140 - 150",
-            "new_description": "125 - 145 - 155",
-        },
-        "OVERHEAD_BARBELL_PRESS": {"old_kg": 30.0, "new_kg": 32.5},
+    applied = result["updates_applied"]
+    assert {k: applied["BARBELL_BACK_SQUAT"][k] for k in
+            ("old_kg", "new_kg", "old_description", "new_description")} == {
+        "old_kg": 100.0,
+        "new_kg": 105.0,
+        "old_description": "120 - 140 - 150",
+        "new_description": "125 - 145 - 155",
     }
+    assert (applied["OVERHEAD_BARBELL_PRESS"]["old_kg"], applied["OVERHEAD_BARBELL_PRESS"]["new_kg"]) == (30.0, 32.5)
     assert result["workout_description"] == {
         "old": "Next weight progression day: July 16",
         "new": "Next weight progression day: July 30",
     }
 
-    uploaded_payload = mock_client.upload_workout.call_args[0][0]
+    uploaded_payload = mock_client.client.put.call_args[1]["json"]
     assert uploaded_payload["description"] == "Next weight progression day: July 30"
 
     top_steps = uploaded_payload["workoutSegments"][0]["workoutSteps"]
