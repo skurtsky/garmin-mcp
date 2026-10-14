@@ -94,7 +94,8 @@ def get_conn():
 
 
 # Training plans (Claude Coach). Each plan is stored as its whole JSON
-# document, keyed by meta.id; at most one is active, the rest are archived.
+# document, keyed by meta.id; at most one is active, others are future (planned
+# ahead, still editable) or archived (read-only).
 # Every change writes a full snapshot to training_plan_revisions so any edit
 # can be undone. Completion and Garmin links live in their own table, keyed by
 # workout id, so replacing or restoring the plan content never loses them.
@@ -102,13 +103,26 @@ TRAINING_PLAN_SCHEMA = """
     CREATE TABLE IF NOT EXISTS training_plans (
         id           TEXT PRIMARY KEY,
         status       TEXT NOT NULL DEFAULT 'active'
-                     CHECK (status IN ('active', 'archived')),
+                     CHECK (status IN ('active', 'future', 'archived')),
         plan         JSONB NOT NULL,
         version      INTEGER NOT NULL DEFAULT 1,
         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
         archived_at  TIMESTAMPTZ
     );
+    -- Tables created before future plans existed only allow active/archived.
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = 'training_plans'::regclass AND contype = 'c'
+              AND pg_get_constraintdef(oid) LIKE '%future%'
+        ) THEN
+            ALTER TABLE training_plans DROP CONSTRAINT IF EXISTS training_plans_status_check;
+            ALTER TABLE training_plans ADD CONSTRAINT training_plans_status_check
+                CHECK (status IN ('active', 'future', 'archived'));
+        END IF;
+    END $$;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_training_plans_one_active
         ON training_plans ((true)) WHERE status = 'active';
 
@@ -1048,7 +1062,8 @@ def get_training_plan(plan_id: str | None = None) -> dict | None:
 
 
 def list_training_plans() -> list[dict]:
-    """Every plan without its JSON body: active first, then newest."""
+    """Every plan without its JSON body: the active one, then future plans by
+    start date, then archived ones newest first."""
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -1058,7 +1073,9 @@ def list_training_plans() -> list[dict]:
                           plan->'meta'->>'planStartDate' AS start_date,
                           plan->'meta'->>'planEndDate' AS end_date
                    FROM training_plans
-                   ORDER BY status = 'active' DESC, updated_at DESC"""
+                   ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'future' THEN 1 ELSE 2 END,
+                            CASE WHEN status = 'future' THEN plan->'meta'->>'planStartDate' END,
+                            updated_at DESC"""
             )
             return cur.fetchall()
 
@@ -1071,23 +1088,31 @@ def _archive_other_active(cur, plan_id: str) -> None:
     )
 
 
-def save_uploaded_training_plan(plan_id: str, plan: dict, summary: str) -> dict:
-    """Insert a new plan, or replace an existing one's content, and make it
-    the active plan (archiving whichever was active). Writes a revision."""
+def save_uploaded_training_plan(plan_id: str, plan: dict, summary: str, activate: bool = True) -> dict:
+    """Insert a new plan, or replace an existing one's content. Writes a revision.
+
+    ``activate`` makes it the active plan (archiving whichever was active).
+    Otherwise a new plan is stored as a future plan, and an existing one keeps
+    its status — except an archived one, which comes back as a future plan.
+    """
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            _archive_other_active(cur, plan_id)
+            if activate:
+                _archive_other_active(cur, plan_id)
             cur.execute(
                 f"""INSERT INTO training_plans (id, status, plan, version)
-                    VALUES (%s, 'active', %s, 1)
+                    VALUES (%(id)s, %(status)s, %(plan)s, 1)
                     ON CONFLICT (id) DO UPDATE SET
                         plan = EXCLUDED.plan,
-                        status = 'active',
+                        status = CASE WHEN %(activate)s THEN 'active'
+                                      WHEN training_plans.status = 'archived' THEN 'future'
+                                      ELSE training_plans.status END,
                         archived_at = NULL,
                         version = training_plans.version + 1,
                         updated_at = now()
                     RETURNING {_PLAN_COLUMNS}""",
-                (plan_id, Jsonb(plan)),
+                {"id": plan_id, "plan": Jsonb(plan), "activate": activate,
+                 "status": "active" if activate else "future"},
             )
             row = cur.fetchone()
             _insert_revision(cur, row, "upload", summary)
@@ -1129,7 +1154,8 @@ def update_training_plan(plan_id: str, mutate, source: str) -> dict:
 
 
 def set_training_plan_status(plan_id: str, status: str) -> bool:
-    """Activate (archiving the current active plan) or archive a plan."""
+    """Activate (archiving the current active plan), mark as future, or
+    archive a plan."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM training_plans WHERE id = %s FOR UPDATE", (plan_id,))
@@ -1139,6 +1165,12 @@ def set_training_plan_status(plan_id: str, status: str) -> bool:
                 _archive_other_active(cur, plan_id)
                 cur.execute(
                     """UPDATE training_plans SET status = 'active', archived_at = NULL
+                       WHERE id = %s""",
+                    (plan_id,),
+                )
+            elif status == "future":
+                cur.execute(
+                    """UPDATE training_plans SET status = 'future', archived_at = NULL
                        WHERE id = %s""",
                     (plan_id,),
                 )

@@ -7,6 +7,7 @@ TestClient, so no PostgreSQL and no Garmin session are involved.
 """
 import json
 import re
+from datetime import date, timedelta
 
 import pytest
 from starlette.responses import Response
@@ -24,9 +25,11 @@ def client(fake_db):
     return TestClient(training_plan.create_app())
 
 
-def _upload(client, plan, **kwargs):
+def _upload(client, plan, activate=True, **kwargs):
+    """Upload a plan file, ticking "Make this the active plan" unless told not to."""
     body = plan if isinstance(plan, (bytes, str)) else json.dumps(plan)
-    return client.post("/training-plan/upload", params=TOKEN,
+    data = {training_plan.ACTIVATE_FIELD: "1"} if activate else None
+    return client.post("/training-plan/upload", params=TOKEN, data=data,
                        files={training_plan.FILE_FIELD: ("plan.json", body, "application/json")}, **kwargs)
 
 
@@ -76,7 +79,8 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     assert server.pop("timezone")["source"] in ("default", "env", "offset")   # Settings' time zone (none picked yet)
     assert server.pop("startTimes")["w1-thu-bike"] == "06:00"   # the default start time
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
-                      "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {}}
+                      "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {},
+                      "neighbors": {}, "carryover": None}
     assert 'data-nav="plan" aria-current="page"' in r.text   # the site nav, on Plan
 
 
@@ -207,6 +211,122 @@ def test_replace_keeps_the_unit_choice(client, fake_db):
     assert fake_db.plans["test-block-2026"]["plan"]["unit"] == "imperial"
 
 
+
+# ── FUTURE PLANS ──────────────────────────────────────────────────────────────
+
+def _next_block():
+    """A second block that starts the week after the sample plan ends."""
+    plan = sample_plan(id="next-block", event="Next Block",
+                       planStartDate="2026-09-28", planEndDate="2026-10-11")
+    for week in plan["weeks"]:
+        week["startDate"] = str(date.fromisoformat(week["startDate"]) + timedelta(days=14))
+        week["endDate"] = str(date.fromisoformat(week["endDate"]) + timedelta(days=14))
+        for day in week["days"]:
+            day["date"] = str(date.fromisoformat(day["date"]) + timedelta(days=14))
+            for w in day["workouts"]:
+                w["id"] = "next-" + w["id"]
+    return plan
+
+
+def test_upload_form_only_pre_ticks_make_active_when_no_plan_is(client):
+    box = f'name="{training_plan.ACTIVATE_FIELD}" value="1"'
+    assert f"{box} checked" in client.get("/training-plan/upload", params=TOKEN).text
+
+    _upload(client, sample_plan())
+    r = client.get("/training-plan/upload", params=TOKEN)
+
+    assert box in r.text and f"{box} checked" not in r.text
+    assert "Archives Test Block" in r.text
+
+
+def test_upload_without_make_active_stores_a_future_plan(client, fake_db):
+    _upload(client, sample_plan())
+
+    r = _upload(client, _next_block(), activate=False, follow_redirects=False)
+
+    assert r.status_code == 303
+    assert r.headers["location"] == "/training-plan?plan=next-block&token=t0k"
+    assert fake_db.plans["next-block"]["status"] == "future"
+    assert fake_db.plans["test-block-2026"]["status"] == "active"   # untouched
+
+
+def test_replacing_keeps_the_status_unless_made_active(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block(), activate=False)
+    form = {training_plan.TEXT_FIELD: json.dumps(_next_block()), training_plan.CONFIRM_FIELD: "1"}
+
+    client.post("/training-plan/upload", params=TOKEN, data=form)
+    assert fake_db.plans["next-block"]["status"] == "future"
+    assert fake_db.plans["test-block-2026"]["status"] == "active"
+
+    client.post("/training-plan/upload", params=TOKEN, data={**form, training_plan.ACTIVATE_FIELD: "1"})
+    assert fake_db.plans["next-block"]["status"] == "active"
+    assert fake_db.plans["test-block-2026"]["status"] == "archived"
+
+
+def test_confirm_replace_carries_the_make_active_choice(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block())          # archives the sample plan
+
+    r = _upload(client, sample_plan())      # same id as the archived plan, ticked
+    assert "This archived plan becomes the active plan" in r.text
+    assert f'name="{training_plan.ACTIVATE_FIELD}" value="1"' in r.text
+
+    r = _upload(client, sample_plan(), activate=False)
+    assert "comes back as a future plan" in r.text
+    assert f'name="{training_plan.ACTIVATE_FIELD}"' not in r.text
+
+    client.post("/training-plan/upload", params=TOKEN,
+                data={training_plan.TEXT_FIELD: json.dumps(sample_plan()), training_plan.CONFIRM_FIELD: "1"})
+    assert fake_db.plans["test-block-2026"]["status"] == "future"
+    assert fake_db.plans["next-block"]["status"] == "active"
+
+
+def test_future_plans_are_editable_in_the_viewer(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block(), activate=False)
+    params = {**TOKEN, "plan": "next-block"}
+
+    server = _embedded(client.get("/training-plan", params=params).text, "plan-server")
+    assert (server["status"], server["readOnly"]) == ("future", False)
+
+    r = client.post("/training-plan/api/operations", params=params,
+                    json={"operations": [{"op": "remove_workout", "workout_id": "next-w2-tue-run"}]})
+    assert r.status_code == 200 and r.json()["status"] == "future"
+    r = client.post("/training-plan/api/completion", params=params, json={"workout_id": "next-w1-mon-swim"})
+    assert r.status_code == 200
+
+
+def test_viewer_knows_the_plans_before_and_after(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block(), activate=False)
+
+    active = _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["neighbors"]
+    future = _embedded(client.get("/training-plan", params={**TOKEN, "plan": "next-block"}).text,
+                       "plan-server")["neighbors"]
+
+    assert set(active) == {"next"}
+    nxt = active["next"]
+    assert (nxt["id"], nxt["status"], nxt["event"]) == ("next-block", "future", "Next Block")
+    assert (nxt["startDate"], nxt["endDate"], nxt["firstWeek"], nxt["lastWeek"]) == ("2026-09-28", "2026-10-11", 1, 2)
+    assert nxt["days"]["2026-10-06"] == [{"sport": "run", "name": "Intervals", "durationMinutes": 55}]
+    assert set(future) == {"prev"} and future["prev"]["id"] == "test-block-2026"
+
+    # archived plans stand alone
+    client.post("/training-plan/plans/next-block/archive", params=TOKEN)
+    assert _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["neighbors"] == {}
+    assert _embedded(client.get("/training-plan", params={**TOKEN, "plan": "next-block"}).text,
+                     "plan-server")["neighbors"] == {}
+
+
+def test_no_plan_page_offers_the_future_plans(client, fake_db):
+    _upload(client, _next_block(), activate=False)
+
+    r = client.get("/training-plan", params=TOKEN)
+
+    assert "No plan active" in r.text and "Next Block" in r.text and "Starts 2026-09-28" in r.text
+    assert "/training-plan/plans/next-block/activate?token=t0k" in r.text
+
 # ── PLANS LIST ────────────────────────────────────────────────────────────────
 
 def test_plans_list_and_actions(client, fake_db):
@@ -226,6 +346,27 @@ def test_plans_list_and_actions(client, fake_db):
 
     client.post("/training-plan/plans/next-block/delete", params=TOKEN)
     assert "next-block" not in fake_db.plans
+
+
+def test_plans_list_future_actions(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block(), activate=False)
+
+    r = client.get("/training-plan/plans", params=TOKEN)
+    assert '<span class="tag future">future</span>' in r.text
+    assert r.text.index("Test Block") < r.text.index("Next Block")   # active first
+    assert "/training-plan/plans/next-block/archive?token=t0k" in r.text
+    assert "/training-plan/plans/next-block/delete?token=t0k" in r.text
+    assert "/training-plan/plans/test-block-2026/future?token=t0k" in r.text
+
+    client.post("/training-plan/plans/next-block/archive", params=TOKEN)
+    assert fake_db.plans["next-block"]["status"] == "archived"
+    assert "/training-plan/plans/next-block/future?token=t0k" in client.get("/training-plan/plans", params=TOKEN).text
+    client.post("/training-plan/plans/next-block/future", params=TOKEN)
+    assert fake_db.plans["next-block"]["status"] == "future"
+    client.post("/training-plan/plans/test-block-2026/future", params=TOKEN)
+    assert fake_db.plans["test-block-2026"]["status"] == "future"
+    assert fake_db.get_training_plan() is None
 
 
 def test_active_plan_cannot_be_deleted(client, fake_db):
@@ -504,3 +645,86 @@ def test_timezone_setting_without_a_database(monkeypatch):
     assert c.get("/training-plan/api/timezone", params=TOKEN).json()["timezone"] is None
     r = c.post("/training-plan/api/timezone", params=TOKEN, json={"timezone": "America/Toronto"})
     assert r.status_code == 503 and "LOCAL_TIMEZONE" in r.json()["error"]
+
+
+# ── CARRY-OVER, TIMELINE, SEASON ──────────────────────────────────────────────
+
+def test_activating_offers_the_outgoing_plans_thresholds(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/operations", params=TOKEN,
+                json={"operations": [{"op": "set_zones", "ftp": 262},
+                                     {"op": "set_zone_validation", "sport": "bike", "at": "2026-10-01"}]})
+    _upload(client, _next_block(), activate=False)
+
+    client.post("/training-plan/plans/next-block/activate", params=TOKEN)
+    carry = _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["carryover"]
+
+    assert carry["from"] == {"id": "test-block-2026", "event": "Test Block"} and carry["auto"] is False
+    assert carry["items"] == [{"key": "ftp", "label": "FTP", "sport": "bike", "from": 262, "to": 250, "suggested": True}]
+
+    r = client.post("/training-plan/api/carryover", params=TOKEN, json={"keys": ["ftp"]})
+    assert r.status_code == 200 and r.json()["carryover"] is None
+    stored = fake_db.plans["next-block"]["plan"]
+    assert stored["overrides"]["ftp"] == 262
+    assert stored["zonesValidated"]["bike"] == {"validated": True, "at": "2026-10-01"}
+    assert fake_db.revisions["next-block"][-1]["summary"].startswith("Carried thresholds from Test Block")
+    assert client.post("/training-plan/api/carryover", params=TOKEN, json={"keys": ["ftp"]}).status_code == 400
+
+
+def test_carry_over_can_be_dismissed_and_needs_a_difference(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block())          # same thresholds: nothing to offer
+    assert _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["carryover"] is None
+
+    client.post("/training-plan/api/operations", params=TOKEN, json={"operations": [{"op": "set_zones", "runLthr": 175}]})
+    _upload(client, sample_plan())          # re-activate the first plan (confirm page) ...
+    client.post("/training-plan/upload", params=TOKEN, data={
+        training_plan.TEXT_FIELD: json.dumps(sample_plan()), training_plan.CONFIRM_FIELD: "1",
+        training_plan.ACTIVATE_FIELD: "1"})
+    assert [i["key"] for i in _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["carryover"]["items"]] == ["runLthr"]
+
+    r = client.post("/training-plan/api/carryover/dismiss", params=TOKEN)
+    assert r.status_code == 200 and r.json()["carryover"] is None
+    assert "overrides" not in fake_db.plans["test-block-2026"]["plan"]
+
+
+def test_plans_list_and_upload_flag_overlaps_and_gaps(client, fake_db):
+    _upload(client, sample_plan())                                   # Sep 14 – 27
+    overlapping = _next_block()
+    overlapping["meta"].update(id="overlap", event="Overlap", planStartDate="2026-09-24")
+    for week in overlapping["weeks"]:
+        week["startDate"] = "2026-09-24" if week["weekNumber"] == 1 else week["startDate"]
+        for day in week["days"]:
+            for w in day["workouts"]:
+                w["id"] = "o-" + w["id"]
+
+    r = _upload(client, overlapping, activate=False, follow_redirects=False)
+    assert r.status_code == 200      # the done page, to show the warning
+    assert "Overlap overlaps Test Block by 4 days (2026-09-24 – 2026-09-27)" in r.text
+    assert "becomes the active plan on 2026-09-24" in r.text
+
+    client.post("/training-plan/plans/overlap/delete", params=TOKEN)
+    later = _next_block()
+    later["meta"]["planStartDate"] = "2026-10-05"
+    later["weeks"][0]["startDate"] = "2026-10-05"
+    _upload(client, later, activate=False)
+    page = client.get("/training-plan/plans", params=TOKEN).text
+    assert "7 days with no plan between Test Block and Next Block (2026-09-28 – 2026-10-04)" in page
+
+
+def test_season_page(client, fake_db):
+    assert "No plans yet" in client.get("/training-plan/season", params=TOKEN).text
+    race = sample_plan()
+    race["weeks"][1]["days"][0]["workouts"].append({"id": "w2-race", "sport": "race", "name": "Fall 10K", "durationMinutes": 45})
+    _upload(client, race)
+    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
+    _upload(client, _next_block(), activate=False)
+
+    r = client.get("/training-plan/season", params=TOKEN)
+
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert "<svg" in r.text and "Fall 10K" in r.text
+    assert "Next Block" in r.text and "Test Block" in r.text
+    assert "/training-plan?plan=next-block&amp;week=2&amp;token=t0k" in r.text   # a column opens its week
+    assert "/training-plan?week=1&amp;token=t0k" in r.text                        # the active plan's
+    assert "50m done" in r.text   # the ticked tempo run, in its week's tooltip

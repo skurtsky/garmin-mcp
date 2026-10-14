@@ -162,11 +162,13 @@ INSERT INTO sync_state (data_type) VALUES
 ON CONFLICT DO NOTHING;
 
 -- Training plans (Claude Coach), one JSON document per plan keyed by meta.id.
--- At most one plan is active; uploading a new one archives the previous.
+-- At most one plan is active. Future plans are planned ahead and stay
+-- editable; archived plans are read-only. An upload is stored as a future
+-- plan unless it's made active, which archives the previous active plan.
 CREATE TABLE IF NOT EXISTS training_plans (
     id           TEXT PRIMARY KEY,
     status       TEXT NOT NULL DEFAULT 'active'
-                 CHECK (status IN ('active', 'archived')),
+                 CHECK (status IN ('active', 'future', 'archived')),
     plan         JSONB NOT NULL,
     version      INTEGER NOT NULL DEFAULT 1,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),

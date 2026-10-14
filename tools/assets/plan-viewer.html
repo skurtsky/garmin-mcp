@@ -191,12 +191,18 @@ a:hover { color: var(--color-accent); }
 <script>
 "use strict";
 let PLAN = JSON.parse(document.getElementById('plan-data').textContent);
-/* Served by garmin-mcp from PostgreSQL: the plan's id/status/version, whether
-   it's read-only (archived), and which workouts are complete. Everything the
+/* Served by garmin-mcp from PostgreSQL: the plan's id/status/version
+   (active, future or archived), whether it's read-only (archived), which
+   workouts are complete, and the plans just before / after it. Everything the
    viewer changes is sent back to the server, so every device sees the same
    plan, ticks, edits and zones. */
 let SERVER = JSON.parse(document.getElementById('plan-server').textContent);
 const READ_ONLY = !!SERVER.readOnly;
+const FUTURE = SERVER.status === 'future';
+/* The plans just before and after this one in time (among the active and
+   future plans): paging past either end of this plan carries on into them,
+   and the month view shows their days faded. Archived plans have none. */
+const NEIGHBORS = SERVER.neighbors || {};
 
 /* Links to sibling routes on whatever app is currently serving this page
    (e.g. /dashboard, /weekly-summary). Using a root-relative path means the
@@ -208,6 +214,16 @@ const APP_QUERY = (typeof window !== 'undefined' && window.location && window.lo
 function appLink(path) { return path + APP_QUERY; }
 /* A Garmin activity's detail, on the dashboard (it opens straight away there,
    and closing it comes back here). Carries the ?token= auth. */
+/* Another plan's viewer, keeping the ?token= auth; ``params`` opens it at a
+   week or month (?week=, ?month=). The active plan is the bare URL. */
+function planHref(p, params) {
+  const q = new URLSearchParams(APP_QUERY);
+  ['plan', 'week', 'month', 'view'].forEach(k => q.delete(k));
+  if (p.status !== 'active') q.set('plan', p.id);
+  Object.keys(params || {}).forEach(k => q.set(k, params[k]));
+  return '/training-plan' + (q.toString() ? '?' + q.toString() : '');
+}
+function goToPlan(p, params) { window.location.href = planHref(p, params); }
 function activityLink(id) {
   const q = new URLSearchParams({ tab: 'activity', activity: String(id), from: 'plan' });
   const token = new URLSearchParams(APP_QUERY).get('token');
@@ -228,7 +244,7 @@ function api(path, body) {
 function applyServer(data) {
   PLAN = data.plan;
   SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {},
-    activities: data.activities || {}, startTimes: data.startTimes || {} });
+    activities: data.activities || {}, startTimes: data.startTimes || {}, carryover: data.carryover || null });
   syncStateFromPlan();
   state.revisions = null;
 }
@@ -397,9 +413,9 @@ DESKTOP.addEventListener('change', () => render());
 const state = {
   settingsCat: null,               // the open Settings category (null: the list, on a phone)
   tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
-  planWeekNumber: startWeek(),
+  planWeekNumber: initialWeek(),
   planView: storedPlanView(),                // 'week' | 'month'; month only applies on desktop
-  monthKey: todayStr().slice(0, 7),          // 'YYYY-MM'
+  monthKey: initialMonth(),                  // 'YYYY-MM'
   completed: {},
   activities: {},
   unit: 'metric',
@@ -448,6 +464,20 @@ function startWeek() {
   const today = todayStr();
   const wk = weeks.find(w => today <= String(w.endDate).slice(0, 10));
   return (wk || weeks[weeks.length - 1]).weekNumber;
+}
+/* Where the Plan tab opens: ?week= / ?month= (set when paging over from the
+   plan before or after this one), else the week holding today. */
+function initialWeek() {
+  const n = Number(new URLSearchParams(APP_QUERY).get('week'));
+  return weekByNumber(n) ? n : startWeek();
+}
+function initialMonth() {
+  const m = new URLSearchParams(APP_QUERY).get('month') || '';
+  if (/^\d{4}-\d{2}$/.test(m)) return m;
+  const [lo, hi] = planMonthRange(), today = todayStr();
+  if (today >= lo && today <= hi) return today.slice(0, 7);
+  const wk = weekByNumber(initialWeek());
+  return wk && wk.startDate ? String(wk.startDate).slice(0, 7) : today.slice(0, 7);
 }
 function weekByNumber(n) { return (PLAN.weeks || []).find(w => w.weekNumber === n); }
 function phaseForWeek(n) { return (PLAN.phases || []).find(p => n >= p.startWeek && n <= p.endWeek) || (PLAN.phases || [])[0] || { name:'Plan', focus:'' }; }
@@ -510,8 +540,20 @@ function weekForMonth(key) {
   const hit = weeks.find(w => String(w.endDate).slice(0, 7) >= key);
   return (hit || weeks[weeks.length - 1] || {}).weekNumber || state.planWeekNumber;
 }
+/* The months the month view can page through: this plan's, plus the plans
+   just before and after it. */
+function navMonthRange() {
+  let [lo, hi] = planMonthRange();
+  if (NEIGHBORS.prev && NEIGHBORS.prev.startDate && NEIGHBORS.prev.startDate < lo) lo = NEIGHBORS.prev.startDate;
+  if (NEIGHBORS.next && NEIGHBORS.next.endDate && NEIGHBORS.next.endDate > hi) hi = NEIGHBORS.next.endDate;
+  return [lo, hi];
+}
+/* The neighboring plan ('prev' / 'next') whose dates hold a day. */
+function neighborKeyAt(dt) {
+  return ['prev', 'next'].find(k => NEIGHBORS[k] && dt >= NEIGHBORS[k].startDate && dt <= NEIGHBORS[k].endDate) || null;
+}
 function monthAtEnd(delta) {
-  const [lo, hi] = planMonthRange();
+  const [lo, hi] = navMonthRange();
   const dt = new Date(+state.monthKey.slice(0, 4), +state.monthKey.slice(5, 7) - 1 + delta, 1);
   const key = dt.getFullYear() + '-' + pad2(dt.getMonth() + 1);
   return key < lo.slice(0, 7) || key > hi.slice(0, 7);
@@ -532,7 +574,7 @@ function setPlanView(v) {
   render();
 }
 function stepMonth(delta) {
-  const [lo, hi] = planMonthRange();
+  const [lo, hi] = navMonthRange();
   const dt = new Date(+state.monthKey.slice(0, 4), +state.monthKey.slice(5, 7) - 1 + delta, 1);
   const key = dt.getFullYear() + '-' + pad2(dt.getMonth() + 1);
   if (key < lo.slice(0, 7) || key > hi.slice(0, 7)) return;
@@ -575,6 +617,8 @@ function monthGridHtml() {
     row.forEach(dt => {
       const info = idx[dt];
       const inMonth = dt.slice(0, 7) === key;
+      const nk = info ? null : neighborKeyAt(dt);
+      if (nk) { h += ghostDayHtml(dt, nk, inMonth, today); return; }
       const ws = byStartTime((byDate[dt] || []).filter(w => w.sport !== 'rest'));
       const isRace = ws.some(w => w.sport === 'race');
       const cls = 'month-day' + (inMonth ? '' : ' out') + (info ? '' : ' off-plan') + (dt === today ? ' today' : '') + (isRace ? ' race' : '');
@@ -591,6 +635,48 @@ function monthGridHtml() {
     h += '</div>';
   });
   return h + '</div>';
+}
+/* A day of the plan before / after this one: faded, read-only here; a click
+   opens that plan at this month. */
+function ghostDayHtml(dt, nk, inMonth, today) {
+  const nb = NEIGHBORS[nk];
+  const ws = (nb.days || {})[dt] || [];
+  const dn = d(dt);
+  const note = dt === today ? 'Today' : dt === nb.startDate ? nb.event + ' starts' : dt === nb.endDate ? nb.event + ' ends'
+    : dn.getDate() === 1 ? dn.toLocaleDateString(undefined, { month:'short' }) : '';
+  let h = '<div class="month-day ghost' + (inMonth ? '' : ' out') + (dt === today ? ' today' : '') + '" data-act="open-plan" data-neighbor="' + nk + '"'
+    + ' title="' + esc(nb.event + ' (' + nb.status + ' plan) — open it') + '">'
+    + '<div class="month-day-top"><span class="month-day-n">' + dn.getDate() + '</span><span class="month-day-note">' + esc(note) + '</span></div>';
+  h += ws.slice(0, 3).map(w => '<div class="month-chip" style="--c:' + (SPORT_COLORS[w.sport] || SPORT_COLORS.rest) + ';">'
+    + '<span class="month-chip-txt"><span class="month-chip-name">' + esc(w.name || w.sport) + '</span>'
+    + (w.durationMinutes ? '<span class="month-chip-dur">' + esc(fmtDuration(w.durationMinutes)) + '</span>' : '') + '</span></div>').join('');
+  if (ws.length > 3) h += '<span class="month-more">+' + (ws.length - 3) + ' more</span>';
+  else if (!ws.length) h += '<span class="month-rest">Rest</span>';
+  return h + '</div>';
+}
+/* Under the month header: which faded days belong to which other plan. */
+function monthNeighborNote(key) {
+  const keys = [...new Set(monthGrid(key).flat().filter(dt => !dayIndex()[dt]).map(neighborKeyAt).filter(Boolean))];
+  if (!keys.length) return '';
+  return '<div class="plan-focus plan-neighbor-note">Faded days are '
+    + keys.map(k => '<a href="' + esc(planHref(NEIGHBORS[k], { month: key })) + '">' + esc(NEIGHBORS[k].event) + '</a> (' + esc(NEIGHBORS[k].status) + ' plan)').join(' and ')
+    + ' — open it to see or change them.</div>';
+}
+/* At either end of the week view: the plan that comes before / after. */
+function neighborCardHtml(nk) {
+  const nb = NEIGHBORS[nk];
+  if (!nb) return '';
+  const [lo, hi] = planMonthRange();
+  /* Days between the two plans: negative is an overlap. */
+  const between = nk === 'next' ? (d(nb.startDate) - d(hi)) / 864e5 - 1 : (d(lo) - d(nb.endDate)) / 864e5 - 1;
+  const days = n => Math.round(n) + ' day' + (Math.round(n) === 1 ? '' : 's');
+  const join = between < 0 ? ' · overlaps by ' + days(-between) : between > 0 ? ' · ' + days(between) + ' with no plan' : '';
+  const when = (nk === 'next' ? 'Up next · starts ' + longDate(nb.startDate) : 'Before this · ends ' + longDate(nb.endDate)) + join;
+  return '<a class="card elev-sm plan-neighbor" href="' + esc(planHref(nb, { week: nk === 'next' ? nb.firstWeek : nb.lastWeek })) + '">'
+    + '<span class="tag ' + (nb.status === 'future' ? 'tag-accent-2' : 'tag-outline') + '">' + esc(nb.status) + '</span>'
+    + '<span style="flex:1; min-width:0;"><span style="display:block; font-size:14px; font-weight:500;">' + esc(nb.event) + '</span>'
+    + '<span style="display:block; font-size:12px; color:var(--color-neutral-400);">' + esc(when) + '</span></span>'
+    + icon(nk === 'next' ? 'right' : 'left') + '</a>';
 }
 function monthStats(key) {
   const ws = allWorkouts().filter(x => x.date.slice(0, 7) === key && x.wo.sport !== 'rest');
@@ -649,11 +735,50 @@ function workoutCard(w, dateStr) {
 }
 
 function readOnlyBanner() {
+  if (FUTURE) {
+    const token = new URLSearchParams(APP_QUERY).get('token');
+    const activate = '/training-plan/plans/' + encodeURIComponent(SERVER.id) + '/activate' + (token ? '?token=' + encodeURIComponent(token) : '');
+    return '<div class="card" style="margin:16px 18px 0; padding:12px 14px; flex-direction:row; align-items:center; gap:10px; flex-wrap:wrap; box-shadow: inset 0 0 0 1px var(--color-accent-700);">'
+      + '<span class="tag tag-accent-2">Future</span>'
+      + '<span style="flex:1; min-width:180px; font-size:13px; color:var(--color-neutral-300);">Planned ahead — starts ' + esc(longDate(PLAN.meta.planStartDate)) + '. '
+        + (String(PLAN.meta.planStartDate) > todayStr() ? 'It becomes the active plan automatically that day; until then' : 'Not active yet:')
+        + ' Today and the calendar feed follow the active plan.</span>'
+      + '<form method="post" action="' + esc(activate) + '" style="margin:0;" onsubmit="return confirm(\'Make this the active plan? The current active plan is archived.\')">'
+      + '<button type="submit" class="btn btn-secondary" style="font-size:12px; padding:5px 10px;">Make active</button></form>'
+      + '<a href="' + esc(appLink('/training-plan/plans')) + '" style="font-size:13px;">All plans</a></div>';
+  }
   if (!READ_ONLY) return '';
   return '<div class="card" style="margin:16px 18px 0; padding:12px 14px; flex-direction:row; align-items:center; gap:10px; box-shadow: inset 0 0 0 1px var(--color-accent-700);">'
     + '<span class="tag tag-outline">Archived</span>'
     + '<span style="flex:1; font-size:13px; color:var(--color-neutral-300);">Read-only view of a past plan.</span>'
     + '<a href="' + esc(appLink('/training-plan/plans')) + '" style="font-size:13px;">All plans</a></div>';
+}
+
+/* After a plan becomes active (by hand, or on its start date): the outgoing
+   plan's thresholds where they differ, to carry over. The ones the athlete
+   set or validated in that plan come pre-ticked. */
+const CARRY_UNITS = { ftp:' W', bikeLthr:' bpm', runLthr:' bpm' };
+function carryoverBanner() {
+  const c = SERVER.carryover;
+  if (!c || READ_ONLY) return '';
+  const from = esc(c.from.event);
+  let h = '<div class="card elev-sm carry" style="margin:16px 18px 0; padding:14px 16px; box-shadow: inset 0 0 0 1px var(--color-accent-700);">'
+    + '<div style="font-size:13.5px; color:var(--color-neutral-200);">'
+    + (c.auto ? '<b>' + esc(PLAN.meta.event) + '</b> became the active plan on ' + esc(longDate(c.on)) + ' (' + from + ' is archived). '
+              : '<b>' + esc(PLAN.meta.event) + '</b> is now the active plan. ');
+  if (!c.items.length) {
+    return h + 'Its thresholds match ' + from + '.</div><div class="carry-actions"><button type="button" class="btn btn-secondary" data-act="carry-dismiss">OK</button></div></div>';
+  }
+  h += 'Some thresholds differ from ' + from + ' — carry any over?</div><div class="carry-rows">';
+  c.items.forEach(it => {
+    const unit = CARRY_UNITS[it.key] || '';
+    h += '<label class="carry-row"><input type="checkbox" data-carry="' + esc(it.key) + '"' + (it.suggested ? ' checked' : '') + '>'
+      + '<span class="carry-label">' + esc(it.label) + (it.suggested ? ' <span class="tag tag-accent-2" style="font-size:10px;">you set this</span>' : '') + '</span>'
+      + '<span class="carry-vals"><b>' + esc(it.from + unit) + '</b> in ' + from + ' · ' + (it.to != null ? esc(it.to + unit) : 'none') + ' in this plan</span></label>';
+  });
+  return h + '</div><div class="carry-actions">'
+    + '<button type="button" class="btn btn-primary" data-act="carry-apply">Carry over selected</button>'
+    + '<button type="button" class="btn btn-secondary" data-act="carry-dismiss">Keep this plan\'s</button></div></div>';
 }
 
 function statusTag(sport) {
@@ -729,7 +854,7 @@ function planTab() {
       + (nums.length ? ' <span class="plan-head-sub">· Weeks ' + nums[0] + (nums.length > 1 ? '–' + nums[nums.length - 1] : '') + '</span>' : '') + '</div>'
       + '<div class="plan-head-planned"><b>' + esc(st.min ? fmtDuration(st.min) : '0min') + '</b> planned · ' + st.n + ' session' + (st.n === 1 ? '' : 's') + ' · ' + st.done + ' done</div>';
   };
-  let h = readOnlyBanner() + '<div class="plan-head">'
+  let h = readOnlyBanner() + carryoverBanner() + '<div class="plan-head">'
     + '<div class="plan-head-main">'
       + '<div class="plan-head-kicker">' + esc(PLAN.meta.event) + esc(race) + '</div>'
       + (month ? monthHeadHtml() : '<div class="plan-head-week">Week ' + n + ' <span class="plan-head-sub">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>')
@@ -748,15 +873,18 @@ function planTab() {
     + '<div class="plan-head-nav">'
       + '<div class="seg view-seg" role="group" aria-label="Plan view">'
         + '<button type="button" class="seg-opt' + (month ? '' : ' on') + '" data-act="view-week" aria-pressed="' + !month + '">Week</button>'
-        + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '">Month</button></div>'
+        + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '">Month</button>'
+        + '<a class="seg-opt" href="' + esc(appLink('/training-plan/season')) + '" title="Every plan on one timeline">Season</a></div>'
       + (month
         ? '<button type="button" class="btn btn-icon" data-act="prev"' + (monthAtEnd(-1) ? ' disabled' : '') + ' aria-label="Previous month">' + icon('left') + '</button>'
           + '<button type="button" class="btn btn-icon" data-act="next"' + (monthAtEnd(1) ? ' disabled' : '') + ' aria-label="Next month">' + icon('right') + '</button>'
-        : '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 ? ' disabled' : '') + ' aria-label="Previous week">' + icon('left') + '</button>'
-          + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last ? ' disabled' : '') + ' aria-label="Next week">' + icon('right') + '</button>')
+        : '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 && !NEIGHBORS.prev ? ' disabled' : '')
+            + ' aria-label="' + esc(n <= 1 && NEIGHBORS.prev ? 'Previous plan: ' + NEIGHBORS.prev.event : 'Previous week') + '">' + icon('left') + '</button>'
+          + '<button type="button" class="btn btn-icon" data-act="next"' + (n >= last && !NEIGHBORS.next ? ' disabled' : '')
+            + ' aria-label="' + esc(n >= last && NEIGHBORS.next ? 'Next plan: ' + NEIGHBORS.next.event : 'Next week') + '">' + icon('right') + '</button>')
     + '</div></div>';
 
-  if (month) return h + monthGridHtml();
+  if (month) return h + monthNeighborNote(state.monthKey) + monthGridHtml();
 
   const focus = wk ? wk.focus : phase.focus;
   if (!month && (focus || (wk && wk.isRecoveryWeek))) {
@@ -787,6 +915,8 @@ function planTab() {
       + (workouts.length ? workouts.map(w => workoutCard(w, day.date)).join('') : '<div class="rest-slot" data-day-date="' + esc(day.date) + '">Rest day</div>')
     + '</div>';
   }).join('') + '</div>';
+  if (n >= last) h += neighborCardHtml('next');
+  if (n <= first) h += neighborCardHtml('prev');
   return h;
 }
 
@@ -843,7 +973,7 @@ function settingsPane(key) {
     h += '</div>';
   } else if (key === 'plan') {
     h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
-      + '<div class="card-title" style="margin-bottom:4px;">Active plan</div>'
+      + '<div class="card-title" style="margin-bottom:4px;">' + (FUTURE ? 'Future plan' : READ_ONLY ? 'Archived plan' : 'Active plan') + '</div>'
       + '<div style="font-size:13px; color:var(--color-neutral-300); line-height:1.6;">Generated by ' + esc(PLAN.meta.generatedBy || 'Claude Coach')
         + ' on ' + esc(new Date(PLAN.meta.createdAt).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })) + '.'
         + (PLAN.meta.pilot ? '<br>' + esc(PLAN.meta.pilot) : '') + '</div>'
@@ -851,9 +981,11 @@ function settingsPane(key) {
       + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
     h += settingsLinkCard('Plan PDF', 'A printable wall chart of the whole plan, with the current zones.',
       appLink('/training-plan/pdf'), 'down', 'Download');
-    h += settingsLinkCard('All plans', 'Switch the active plan, or open an archived plan read-only.',
+    h += settingsLinkCard('All plans', 'Switch the active plan, plan ahead with future plans, or open an archived plan read-only.',
       appLink('/training-plan/plans'), 'list', 'View plans');
-    h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach. A new plan id becomes the active plan; the same id replaces this plan after a confirmation.',
+    h += settingsLinkCard('Season', 'Every plan on one timeline — weekly hours, phases and races, with today marked.',
+      appLink('/training-plan/season'), 'chartbar', 'Open');
+    h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach — as a future plan (it takes over on its start date), or as the active plan if you tick the box. The same id replaces that plan after a confirmation.',
       appLink('/training-plan/upload'), 'up', 'Upload');
     h += historySection();
   } else if (key === 'calendar') {
@@ -1275,7 +1407,11 @@ function render() {
 /* Move the Plan tab one week back (-1) or forward (+1), sliding the new week
    in from the side it comes from. A no-op at the plan's first / last week. */
 function stepWeek(delta) {
-  const n = Math.min(PLAN.meta.totalWeeks, Math.max(1, state.planWeekNumber + delta));
+  const target = state.planWeekNumber + delta;
+  /* Past either end, carry on into the plan before / after this one. */
+  if (target > PLAN.meta.totalWeeks && NEIGHBORS.next) return goToPlan(NEIGHBORS.next, { week: NEIGHBORS.next.firstWeek });
+  if (target < 1 && NEIGHBORS.prev) return goToPlan(NEIGHBORS.prev, { week: NEIGHBORS.prev.lastWeek });
+  const n = Math.min(PLAN.meta.totalWeeks, Math.max(1, target));
   if (n === state.planWeekNumber) return;
   state.planWeekNumber = n;
   render();
@@ -1333,6 +1469,7 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'view-week' || a === 'view-month') return setPlanView(a.slice(5));
   /* Browsing a week is not an edit, so archived plans can do it too. */
   if (a === 'open-week') { state.planView = 'week'; persistView(); state.planWeekNumber = +act.dataset.week; return render(); }
+  if (a === 'open-plan') return goToPlan(NEIGHBORS[act.dataset.neighbor], { month: state.monthKey });
   if (a === 'prev') return isMonth() ? stepMonth(-1) : stepWeek(-1);
   if (a === 'next') return isMonth() ? stepMonth(1) : stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
@@ -1394,6 +1531,16 @@ document.getElementById('app').addEventListener('click', e => {
     const sport = act.getAttribute('data-sport');
     const cur = state.zonesValidated[sport];
     return saveOps([{ op: 'set_zone_validation', sport, validated: !(cur && cur.validated), at: new Date().toISOString().slice(0,10) }]);
+  }
+  if (a === 'carry-apply' || a === 'carry-dismiss') {
+    const keys = [...document.querySelectorAll('[data-carry]:checked')].map(x => x.getAttribute('data-carry'));
+    if (a === 'carry-apply' && !keys.length) return alert('Tick the thresholds to carry over, or keep this plan\'s.');
+    state.saving = true; render();
+    api(a === 'carry-apply' ? 'carryover' : 'carryover/dismiss', a === 'carry-apply' ? { keys } : {})
+      .then(applyServer)
+      .catch(err => alert('Could not save: ' + err.message))
+      .finally(() => { state.saving = false; render(); });
+    return;
   }
   if (a === 'restore') {
     const version = act.getAttribute('data-version');
@@ -1747,6 +1894,18 @@ select.input { appearance:auto; }
 .month-day.today { box-shadow:0 0 0 1px var(--color-accent); }
 .month-day.race { box-shadow:0 0 0 1px #d9b35a; }
 .month-day.out { opacity:.42; }
+a.seg-opt { color:inherit; text-decoration:none; }
+.carry-rows { display:flex; flex-direction:column; gap:6px; margin:12px 0 4px; }
+.carry-row { display:grid; grid-template-columns:auto minmax(110px, 180px) 1fr; align-items:center; gap:10px; font-size:13px; cursor:pointer; }
+.carry-row input { accent-color:var(--color-accent); margin:0; }
+.carry-vals { color:var(--color-neutral-400); } .carry-vals b { color:var(--color-text); font-weight:500; }
+.carry-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+@media (max-width: 899px) { .carry-row { grid-template-columns:auto 1fr; } .carry-vals { grid-column:2; } }
+.month-day.ghost { background:transparent; box-shadow:none; border:1px dashed var(--color-neutral-700); opacity:.6; }
+.month-day.ghost:hover { opacity:.85; box-shadow:none; }
+.plan-neighbor-note a { color:var(--color-accent-300); }
+.plan-neighbor { display:flex; align-items:center; gap:12px; margin:16px 18px 0; padding:12px 14px; flex-direction:row; color:var(--color-text); text-decoration:none; }
+.plan-neighbor:hover { box-shadow:var(--shadow-md); }
 .month-day.off-plan { background:transparent; box-shadow:none; border:1px dashed var(--color-neutral-800); cursor:default; }
 .month-day-top { display:flex; justify-content:space-between; align-items:center; gap:6px; min-height:22px; }
 .month-day-n { font-size:13px; font-weight:500; padding-left:2px; }

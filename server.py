@@ -399,7 +399,8 @@ def get_training_plan(
 ) -> dict:
     """
     Read the athlete's training plan (the Claude Coach plan uploaded at
-    /training-plan). Defaults to the active plan.
+    /training-plan). Defaults to the active plan; pass plan_id to read a
+    future plan (planned ahead) or an archived one.
 
     Always returns the plan meta, version, current thresholds (FTP, LTHRs,
     threshold pace, CSS — including any updated in the viewer), phases, and a
@@ -409,6 +410,9 @@ def get_training_plan(
     workout carries its id, date, completion state, the Garmin activity that
     completed it, and any Garmin Connect workout already scheduled for it
     (garminWorkoutId) — check that before scheduling to avoid duplicates.
+    When the active plan just took over from another and the two plans'
+    thresholds differ, thresholdCarryover lists them (the athlete picks which
+    to keep in the viewer).
 
     Args:
         plan_id: Plan id (meta.id). Omit for the active plan.
@@ -422,8 +426,11 @@ def get_training_plan(
 @mcp.tool()
 def list_training_plans() -> list:
     """
-    List every stored training plan (id, event, athlete, dates, status
-    active/archived, version, last update). Only one plan is active.
+    List every stored training plan (id, event, athlete, dates, status,
+    version, last update): the active plan first, then future plans by start
+    date, then archived ones. Only one plan is active; future plans are
+    planned ahead, can be amended (pass their plan_id), and become active by
+    themselves on their start date; archived plans are read-only.
     """
     return plan_tools.list_training_plans()
 
@@ -431,10 +438,11 @@ def list_training_plans() -> list:
 @mcp.tool()
 def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[str] = None) -> dict:
     """
-    Change a few days of the active training plan without regenerating it.
-    All operations apply atomically (all or none), are saved as one revision
-    labelled with `reason` (restorable from the plan's history), and weekly
-    totals are recomputed. Archived plans are read-only.
+    Change a few days of the active training plan — or of a future plan,
+    with its plan_id — without regenerating it. All operations apply
+    atomically (all or none), are saved as one revision labelled with
+    `reason` (restorable from the plan's history), and weekly totals are
+    recomputed. Archived plans are read-only.
 
     Operations (each a dict with "op"):
       {"op": "add_workout", "date": "YYYY-MM-DD", "workout": {"sport": "run",
@@ -464,7 +472,7 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     Args:
         operations: The edits, applied in order.
         reason: Short why, shown in the plan history (e.g. "Travel Thu–Fri").
-        plan_id: Omit for the active plan.
+        plan_id: Omit for the active plan; a future plan's id to amend it.
 
     Returns the new version, one message per change, the touched workout ids,
     and the recomputed summaries of the affected weeks.
@@ -521,6 +529,30 @@ def link_plan_workout_to_garmin(
         plan_id: Omit for the active plan.
     """
     return plan_tools.link_plan_workout_to_garmin(workout_id, garmin_workout_id, scheduled_date, plan_id)
+
+
+@mcp.tool()
+def set_training_plan_status(plan_id: str, status: str) -> dict:
+    """
+    Queue a stored plan as a future plan, or archive one — e.g. bring an
+    archived block back as the next one, or shelve a future plan that's no
+    longer wanted.
+
+    A future plan stays editable (amend_training_plan with its plan_id) and
+    becomes the active plan by itself on its start date. Which plan is
+    active is the athlete's call: this tool can't activate a plan or change
+    the active one — they do that at /training-plan/plans. New plans are
+    uploaded there too (as future unless they choose to activate them).
+
+    Returns the new status, the plan's dates, when it takes over
+    (becomes_active_on) and any overlap or gap with the plans around it
+    (timeline) — mention those to the athlete.
+
+    Args:
+        plan_id: The plan's id (from list_training_plans).
+        status: "future" or "archived".
+    """
+    return plan_tools.set_training_plan_status(plan_id, status)
 
 
 @mcp.tool()

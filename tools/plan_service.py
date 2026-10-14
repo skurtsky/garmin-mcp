@@ -13,6 +13,7 @@ Every function raises ``PlanStorageUnavailable`` when DATABASE_URL isn't set,
 upload or edit (its message is safe to show to the user).
 """
 import json
+import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 from tools.local_time import local_today
@@ -20,6 +21,15 @@ from tools.local_time import local_today
 import db
 from tools import plan_doc
 from tools.plan_doc import PlanError
+
+logger = logging.getLogger(__name__)
+
+STATUSES = ("active", "future", "archived")
+
+# app_settings keys: the last day future plans were checked for a start date
+# that has arrived, and the pending threshold carry-over offer.
+AUTOSWITCH_KEY = "plan_autoswitch_checked"
+CARRYOVER_KEY = "plan_threshold_carryover"
 
 MAX_UPLOAD_BYTES = int(os.environ.get("TRAINING_PLAN_MAX_BYTES", 20 * 1024 * 1024))
 
@@ -64,7 +74,15 @@ def _iso(value):
 def get_plan(plan_id: str | None = None) -> dict | None:
     """The stored row for a plan (or the active one), or None."""
     _require_db()
-    return db.get_training_plan(plan_id)
+    return active_plan() if plan_id is None else db.get_training_plan(plan_id)
+
+
+def active_plan() -> dict | None:
+    """The active plan's row, after switching to a future plan whose start
+    date has arrived. Everything that reads "the active plan" goes through
+    here, so the switch happens on whichever read comes first that day."""
+    advance_plans()
+    return db.get_training_plan(None)
 
 
 def require_plan(plan_id: str | None = None) -> dict:
@@ -75,9 +93,10 @@ def require_plan(plan_id: str | None = None) -> dict:
 
 
 def require_editable(plan_id: str | None = None) -> dict:
+    """The active plan or a future one — archived plans are read-only."""
     row = require_plan(plan_id)
-    if row["status"] != "active":
-        raise PlanError("Archived plans are read-only — activate the plan to change it.")
+    if row["status"] == "archived":
+        raise PlanError("Archived plans are read-only — make the plan active or future to change it.")
     return row
 
 
@@ -102,10 +121,12 @@ def view_payload(row: dict) -> dict:
         states = db.get_workout_states(row["id"])
         return states, db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
 
-    with ThreadPoolExecutor(max_workers=2) as pool:      # two independent round trips
+    with ThreadPoolExecutor(max_workers=3) as pool:      # independent round trips
         start_times = pool.submit(plan_calendar.start_times, row["plan"])
+        neighbors = pool.submit(adjacent_plans, row)
+        carryover = pool.submit(pending_carryover, row)
         (states, briefs) = completions()
-        start_times = start_times.result()
+        start_times, neighbors, carryover = start_times.result(), neighbors.result(), carryover.result()
     activities = {}
     for wid, s in states.items():
         act = briefs.get(s.get("activity_id"))
@@ -118,10 +139,313 @@ def view_payload(row: dict) -> dict:
         "id": row["id"],
         "status": row["status"],
         "version": row["version"],
-        "readOnly": row["status"] != "active",
+        "readOnly": row["status"] == "archived",
         "completed": {wid: True for wid, s in states.items() if s.get("completed")},
         "activities": activities,
         "startTimes": start_times,
+        "neighbors": neighbors,
+        "carryover": carryover,
+    }
+
+
+def adjacent_plans(row: dict) -> dict:
+    """The plans just before and after this one in time, among the active and
+    future plans — so paging past the end of the active plan in the viewer
+    carries on into the next one. Each has its date range and a light copy
+    of its workouts (for the month view). Archived plans have none."""
+    if row["status"] == "archived":
+        return {}
+    timeline = sorted(
+        (p for p in db.list_training_plans() if p["status"] in ("active", "future")),
+        key=lambda p: (p.get("start_date") or "", p["id"]),
+    )
+    ids = [p["id"] for p in timeline]
+    if row["id"] not in ids:
+        return {}
+    i = ids.index(row["id"])
+    out = {}
+    for key, j in (("prev", i - 1), ("next", i + 1)):
+        if 0 <= j < len(timeline):
+            neighbor = db.get_training_plan(timeline[j]["id"])
+            if neighbor is not None:
+                out[key] = _neighbor_view(neighbor)
+    return out
+
+
+def _neighbor_view(row: dict) -> dict:
+    plan = row["plan"]
+    meta = plan.get("meta") or {}
+    weeks = [w for w in plan.get("weeks") or [] if w.get("startDate") and w.get("endDate")]
+    days = {}
+    for _, d, w in plan_doc.iter_workouts(plan):
+        if w.get("sport") == "rest":
+            continue
+        days.setdefault(str(d.get("date"))[:10], []).append(
+            {k: w.get(k) for k in ("sport", "name", "durationMinutes") if w.get(k) is not None}
+        )
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "event": meta.get("event") or row["id"],
+        "startDate": str(weeks[0]["startDate"])[:10] if weeks else meta.get("planStartDate"),
+        "endDate": str(weeks[-1]["endDate"])[:10] if weeks else meta.get("planEndDate"),
+        "firstWeek": weeks[0].get("weekNumber") if weeks else 1,
+        "lastWeek": weeks[-1].get("weekNumber") if weeks else meta.get("totalWeeks"),
+        "days": days,
+    }
+
+
+# ── AUTOMATIC SWITCH ──────────────────────────────────────────────────────────
+# A future plan becomes active when its start date arrives. Only a start date
+# that arrives after the last daily check counts, so a plan uploaded as future
+# with a start date already past (or moved back to future by hand) stays put.
+
+_checked_day: date | None = None   # this process already checked on this day
+
+
+def advance_plans(today: date | None = None) -> dict | None:
+    """Activate the future plan whose start date arrived since the last check
+    (the latest, when several did — the earlier ones are archived). Returns
+    the plan listing row it activated, or None. Never raises: a failure here
+    must not break the read that triggered it."""
+    global _checked_day
+    if not db.is_configured():
+        return None
+    today = today or local_today()
+    if _checked_day == today:
+        return None
+    _checked_day = today                    # at most one attempt per day per process
+    try:
+        last = db.get_setting(AUTOSWITCH_KEY)
+        due = [] if last is None else sorted(   # the first run only notes the day
+            (p for p in db.list_training_plans()
+             if p["status"] == "future" and last < str(p.get("start_date") or "")[:10] <= today.isoformat()),
+            key=lambda p: str(p["start_date"])[:10],
+        )
+        for skipped in due[:-1]:
+            db.set_training_plan_status(skipped["id"], "archived")
+        if due:
+            activate(due[-1]["id"], auto=True, on=today)
+            logger.info("Plan %s started today — made it the active plan", due[-1]["id"])
+        # Recorded only once the switch is done, so a failure is retried later.
+        if last is None or last < today.isoformat():
+            db.set_setting(AUTOSWITCH_KEY, today.isoformat())
+        return due[-1] if due else None
+    except Exception:
+        logger.exception("Switching to a future plan that starts today failed")
+        return None
+
+
+def activate(plan_id: str, auto: bool = False, on: date | None = None) -> None:
+    """Make a plan active (archiving the current one), and offer to carry the
+    outgoing plan's thresholds over when they differ."""
+    previous = db.get_training_plan(None)
+    if not db.set_training_plan_status(plan_id, "active"):
+        raise LookupError(f"No plan with id {plan_id!r}.")
+    _offer_carryover(previous, plan_id, auto, on)
+
+
+# ── THRESHOLD CARRY-OVER ──────────────────────────────────────────────────────
+# A field test during one block updates its FTP / LTHR / pace / CSS; the next
+# block's file may still have the older numbers. When a plan becomes active,
+# the viewer offers the outgoing plan's values where the two differ.
+
+# (effective_thresholds key, label, sport, set_zones key)
+_CARRY = (
+    ("ftp", "FTP", "bike", "ftp"),
+    ("bikeLthr", "Cycling LTHR", "bike", "bikeLthr"),
+    ("runLthr", "Run LTHR", "run", "runLthr"),
+    ("thresholdPace", "Threshold pace", "run", "thresholdPace"),
+    ("css", "CSS", "swim", "cssLabel"),
+)
+
+
+def carryover_items(new_plan: dict, old_plan: dict) -> list[dict]:
+    """The thresholds the outgoing plan has that differ from the new one's.
+    ``suggested`` marks the ones the athlete set (or validated by a test) in
+    the outgoing plan, rather than numbers that came with its file."""
+    old, new = plan_doc.effective_thresholds(old_plan), plan_doc.effective_thresholds(new_plan)
+    overrides = old_plan.get("overrides") or {}
+    validated = old_plan.get("zonesValidated") or {}
+    items = []
+    for key, label, sport, op_key in _CARRY:
+        was, now = old.get(key), new.get(key)
+        if was is None or str(was).strip() == str(now).strip():
+            continue
+        items.append({
+            "key": key, "label": label, "sport": sport, "from": was, "to": now,
+            "suggested": op_key in overrides or bool((validated.get(sport) or {}).get("validated")),
+        })
+    return items
+
+
+def _offer_carryover(previous: dict | None, plan_id: str, auto: bool, on: date | None) -> None:
+    if previous is not None and previous["id"] == plan_id:
+        return                              # it was already the active plan
+    offer = None
+    if previous is not None:
+        new = db.get_training_plan(plan_id)
+        if auto or carryover_items(new["plan"], previous["plan"]):
+            offer = {"plan_id": plan_id, "from_id": previous["id"], "auto": auto,
+                     "on": on.isoformat() if on else None}
+    db.set_setting(CARRYOVER_KEY, offer)
+
+
+def pending_carryover(row: dict) -> dict | None:
+    """The carry-over offer for the active plan ``row``, or None."""
+    if row["status"] != "active":
+        return None
+    offer = db.get_setting(CARRYOVER_KEY)
+    if not offer or offer.get("plan_id") != row["id"]:
+        return None
+    old = db.get_training_plan(offer["from_id"])
+    if old is None:
+        return None
+    items = carryover_items(row["plan"], old["plan"])
+    if not items and not offer.get("auto"):
+        return None
+    return {
+        "from": {"id": old["id"], "event": (old["plan"].get("meta") or {}).get("event") or old["id"]},
+        "auto": bool(offer.get("auto")), "on": offer.get("on"), "items": items,
+    }
+
+
+def apply_carryover(keys: list[str], source: str) -> dict:
+    """Copy the chosen thresholds (and, for a sport whose values come over,
+    its validated flag) from the outgoing plan into the active one, as one
+    revision. Clears the offer. Returns the updated row."""
+    row = require_plan(None)
+    pending = pending_carryover(row)
+    if pending is None:
+        raise PlanError("There's nothing to carry over.")
+    chosen = [i for i in pending["items"] if i["key"] in set(keys or [])]
+    if not chosen:
+        raise PlanError("Pick at least one threshold to carry over.")
+    old = db.get_training_plan(pending["from"]["id"])["plan"]
+    op_keys = {key: op_key for key, _, _, op_key in _CARRY}
+    operations = [{"op": "set_zones", **{op_keys[i["key"]]: i["from"] for i in chosen}}]
+    for sport in sorted({i["sport"] for i in chosen}):
+        flag = (old.get("zonesValidated") or {}).get(sport) or {}
+        if flag.get("validated"):
+            operations.append({"op": "set_zone_validation", "sport": sport, "validated": True, "at": flag.get("at")})
+    result = apply_operations(row["id"], operations, source, f"Carried thresholds from {pending['from']['event']}")
+    db.set_setting(CARRYOVER_KEY, None)
+    return result["row"]
+
+
+def dismiss_carryover() -> None:
+    _require_db()
+    db.set_setting(CARRYOVER_KEY, None)
+
+
+# ── TIMELINE ──────────────────────────────────────────────────────────────────
+
+def timeline_notes(plans: list[dict] | None = None) -> list[dict]:
+    """Overlaps and gaps between consecutive active / future plans (by start
+    date). A plan starting the day after the previous one ends is neither."""
+    rows = sorted(
+        (p for p in (plans if plans is not None else db.list_training_plans())
+         if p["status"] in ("active", "future") and p.get("start_date") and p.get("end_date")),
+        key=lambda p: (str(p["start_date"])[:10], p["id"]),
+    )
+    notes = []
+    for a, b in zip(rows, rows[1:]):
+        a_end = plan_doc.parse_date(str(a["end_date"])[:10])
+        b_start = plan_doc.parse_date(str(b["start_date"])[:10])
+        b_end = plan_doc.parse_date(str(b["end_date"])[:10])
+        if b_start <= a_end:
+            end = min(a_end, b_end)
+            notes.append({"kind": "overlap", "first": a, "second": b, "days": (end - b_start).days + 1,
+                          "start": b_start.isoformat(), "end": end.isoformat()})
+        elif (b_start - a_end).days > 1:
+            notes.append({"kind": "gap", "first": a, "second": b, "days": (b_start - a_end).days - 1,
+                          "start": (a_end + timedelta(days=1)).isoformat(),
+                          "end": (b_start - timedelta(days=1)).isoformat()})
+    return notes
+
+
+def note_text(note: dict) -> str:
+    a, b = note["first"], note["second"]
+    name = lambda p: p.get("event") or p["id"]
+    days = f"{note['days']} day{'s' if note['days'] != 1 else ''}"
+    if note["kind"] == "overlap":
+        text = (f"{name(b)} overlaps {name(a)} by {days} ({note['start']} – {note['end']}).")
+        if b["status"] == "future":
+            text += f" It becomes the active plan on {note['start']}, cutting {name(a)} short."
+        return text
+    return (f"{days} with no plan between {name(a)} and {name(b)} "
+            f"({note['start']} – {note['end']}).")
+
+
+def timeline_warnings(plan_id: str) -> list[str]:
+    """The overlap / gap notes that involve one plan."""
+    return [note_text(n) for n in timeline_notes() if plan_id in (n["first"]["id"], n["second"]["id"])]
+
+
+# ── SEASON ────────────────────────────────────────────────────────────────────
+
+SEASON_HISTORY_DAYS = 365   # archived plans that ended longer ago than this are left out
+
+
+def season(today: date | None = None) -> dict:
+    """Every plan on one timeline: per week the planned and completed minutes,
+    phase and recovery flag; the phase spans; and the races. The active and
+    future plans, plus archived ones from the last year."""
+    _require_db()
+    today = today or local_today()
+    cutoff = (today - timedelta(days=SEASON_HISTORY_DAYS)).isoformat()
+    listed = sorted(
+        (p for p in db.list_training_plans()
+         if p["status"] != "archived" or str(p.get("end_date") or "")[:10] >= cutoff),
+        key=lambda p: (str(p.get("start_date") or ""), p["id"]),
+    )
+    plans = []
+    for p in listed:
+        row = db.get_training_plan(p["id"])
+        if row is not None:
+            plans.append(_season_plan(row, db.get_workout_states(row["id"])))
+    return {"today": today.isoformat(), "plans": [p for p in plans if p["weeks"]]}
+
+
+def _season_plan(row: dict, states: dict) -> dict:
+    plan = row["plan"]
+    meta = plan.get("meta") or {}
+    phase_of = {}
+    for ph in plan.get("phases") or []:
+        for n in range(int(ph.get("startWeek") or 0), int(ph.get("endWeek") or -1) + 1):
+            phase_of.setdefault(n, ph.get("name"))
+    weeks, races = [], []
+    for w in sorted((w for w in plan.get("weeks") or [] if w.get("startDate") and w.get("endDate")),
+                    key=lambda w: str(w["startDate"])):
+        planned = done = 0
+        for d in w.get("days") or []:
+            for x in d.get("workouts") or []:
+                if x.get("sport") == "rest":
+                    continue
+                minutes = float(x.get("durationMinutes") or 0)
+                planned += minutes
+                if (states.get(x.get("id")) or {}).get("completed"):
+                    done += minutes
+                if x.get("sport") == "race":
+                    races.append({"date": str(d.get("date"))[:10], "name": x.get("name") or "Race"})
+        weeks.append({
+            "weekNumber": w.get("weekNumber"), "start": str(w["startDate"])[:10], "end": str(w["endDate"])[:10],
+            "phase": w.get("phase") or phase_of.get(w.get("weekNumber")) or "",
+            "recovery": bool(w.get("isRecoveryWeek")), "plannedMin": round(planned), "doneMin": round(done),
+        })
+    event = (plan.get("raceStrategy") or {}).get("event") or {}
+    if event.get("date") and str(event["date"])[:10] not in {r["date"] for r in races}:
+        races.append({"date": str(event["date"])[:10], "name": event.get("name") or meta.get("event") or "Race"})
+    phases = []
+    for w in weeks:
+        if phases and phases[-1]["name"] == w["phase"]:
+            phases[-1]["end"] = w["end"]
+        else:
+            phases.append({"name": w["phase"], "start": w["start"], "end": w["end"]})
+    return {
+        "id": row["id"], "status": row["status"], "event": meta.get("event") or row["id"],
+        "start": weeks[0]["start"] if weeks else None, "end": weeks[-1]["end"] if weeks else None,
+        "weeks": weeks, "phases": phases, "races": sorted(races, key=lambda r: r["date"]),
     }
 
 
@@ -175,8 +499,10 @@ def upload_preview(plan: dict) -> dict | None:
     }
 
 
-def save_upload(plan: dict) -> dict:
-    """Store an uploaded plan as the active plan (replacing same-id content).
+def save_upload(plan: dict, activate: bool = True) -> dict:
+    """Store an uploaded plan (replacing same-id content) — as the active
+    plan, or with ``activate=False`` as a future plan (a stored plan keeps its
+    status then; an archived one becomes a future plan).
 
     The unit choice carries over from the stored copy; zone overrides and
     validation flags do not — the uploaded file's zones are authoritative.
@@ -188,17 +514,25 @@ def save_upload(plan: dict) -> dict:
         plan["unit"] = existing["plan"]["unit"]
     plan_doc.normalize_plan(plan)
     summary = "Uploaded plan" if existing is None else "Replaced plan content (upload)"
-    return db.save_uploaded_training_plan(plan_id, plan, summary)
+    previous = db.get_training_plan(None) if activate else None
+    row = db.save_uploaded_training_plan(plan_id, plan, summary, activate)
+    if activate:
+        _offer_carryover(previous, plan_id, False, None)
+    return row
 
 
 def set_status(plan_id: str, status: str) -> None:
     _require_db()
+    if status not in STATUSES:
+        raise PlanError(f"Unknown plan status {status!r}.")
+    if status == "active":
+        return activate(plan_id)
     if not db.set_training_plan_status(plan_id, status):
         raise LookupError(f"No plan with id {plan_id!r}.")
 
 
 def delete_plan(plan_id: str) -> None:
-    """Permanently delete an archived plan (the active one can't be deleted)."""
+    """Permanently delete a future or archived plan (the active one can't be deleted)."""
     row = require_plan(plan_id)
     if row["status"] == "active":
         raise PlanError("Archive the active plan before deleting it.")
@@ -376,7 +710,7 @@ def match_new_activities(activity_ids: list[int], plan_id: str | None = None) ->
     """
     if not activity_ids or not db.is_configured():
         return []
-    row = db.get_training_plan(plan_id)
+    row = active_plan() if plan_id is None else db.get_training_plan(plan_id)
     if row is None or row["status"] != "active":
         return []
     states = db.get_workout_states(row["id"])
@@ -413,7 +747,7 @@ def link_completed_workouts(plan_id: str | None = None, workout_ids: list[str] |
     un-ticks anything. ``workout_ids`` limits it to those workouts."""
     if not db.is_configured():
         return []
-    row = db.get_training_plan(plan_id)
+    row = active_plan() if plan_id is None else db.get_training_plan(plan_id)
     if row is None or row["status"] != "active":
         return []
     today = today or local_today()
@@ -550,4 +884,5 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
         "phases": [{k: p.get(k) for k in ("name", "startWeek", "endWeek", "focus")} for p in plan.get("phases") or []],
         "weekSummaries": [week_line(w) for w in weeks],
         "weeks": detail,
+        **({"thresholdCarryover": carry} if (carry := pending_carryover(row)) else {}),
     }

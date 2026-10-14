@@ -88,7 +88,8 @@ def planned_sessions(start: date, end: date, today: date) -> list[dict]:
     """The active plan's sessions in a range; [] without a database or plan."""
     if not db.is_configured():
         return []
-    row = db.get_training_plan(None)
+    from tools.plan_service import active_plan
+    row = active_plan()
     if row is None:
         return []
     states = db.get_workout_states(row["id"])

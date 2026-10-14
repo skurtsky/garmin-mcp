@@ -311,6 +311,6 @@ def feed() -> str:
     """The feed for whichever plan is active right now."""
     plan_service._require_db()
     default_time, slots = _schedule()
-    row = db.get_training_plan(None)
+    row = plan_service.active_plan()
     completed = set(plan_service.completed_map(row["id"])) if row else set()
     return build_ics(row, completed, default_time, slots)
