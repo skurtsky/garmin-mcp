@@ -419,6 +419,13 @@ _PHASE_DEFAULT = "#7c8194"
 
 _SEASON_STYLE = """
 main { max-width:1180px; }
+.season-head { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+.view-switch { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; font-size:.85rem; }
+.view-switch a, .view-switch span { padding:.4rem .85rem; color:var(--fg); text-decoration:none; }
+.view-switch a + a, .view-switch a + span { border-left:1px solid var(--line); }
+.view-switch a:hover { background:color-mix(in srgb, var(--fg) 7%, transparent); }
+.view-switch span { color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
+@media (max-width: 899px) { .view-switch .month-only { display:none; } }
 .legend { display:flex; gap:1rem; flex-wrap:wrap; font-size:.8rem; color:var(--muted); margin:0 0 .6rem; }
 .legend span { display:inline-flex; align-items:center; gap:.4rem; }
 .legend i { display:inline-block; width:12px; height:12px; border-radius:3px; }
@@ -572,7 +579,11 @@ def render_season_html(data: dict, token: str | None) -> str:
             rx = x_of(_day(race["date"])) + WEEK / 14
             svg.append(f'<line class="s-race" x1="{rx:.1f}" x2="{rx:.1f}" y1="{y + RACE_Y}" y2="{y + BAND_Y + BAND_H}"/>')
             svg.append(f'<path class="s-race-m" d="M{rx:.1f},{y + RACE_Y - 5}l5,5l-5,5l-5,-5Z"/>')
-            svg.append(f'<text class="s-race-l" x="{rx + 8:.1f}" y="{y + RACE_Y + 4}">{_e(race["name"])}</text>')
+            # Flip the label to the marker's left when it would run off the right edge.
+            fits = rx + 8 + len(race["name"]) * 6.4 <= width - 4
+            anchor = "" if fits else ' text-anchor="end"'
+            svg.append(f'<text class="s-race-l" x="{rx + 8 if fits else rx - 8:.1f}" y="{y + RACE_Y + 4}"{anchor}>'
+                       f'{_e(race["name"])}</text>')
         svg.append("</g>")
 
     if origin <= today <= span_end:
@@ -595,7 +606,11 @@ def render_season_html(data: dict, token: str | None) -> str:
         )
     body = (
         f"<style>{_SEASON_STYLE}</style>"
-        "<h1>Season</h1>"
+        '<div class="season-head"><h1>Season</h1>'
+        '<nav class="view-switch" aria-label="Plan view">'
+        f'<a href="{_e(_url("/training-plan", token, mode="week"))}">Week</a>'
+        f'<a class="month-only" href="{_e(_url("/training-plan", token, mode="month"))}">Month</a>'
+        '<span aria-current="page">Season</span></nav></div>'
         '<div class="meta">Every active and future plan, and archived ones from the last year. '
         "Columns are each week's planned hours, filled in as workouts are done; a column opens that week.</div>"
         '<div class="legend">'

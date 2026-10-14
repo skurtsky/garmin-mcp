@@ -406,6 +406,14 @@ function sportStatus(sport) {
 }
 
 function storedPlanView() { try { return localStorage.getItem('pv-plan-view') === 'month' ? 'month' : 'week'; } catch (e) { return 'week'; } }
+/* ?week= opens that week, so in the week view whatever this device last
+   used; ?mode=week|month (the Season page's switch) picks and keeps a view. */
+function initialView() {
+  const q = new URLSearchParams(APP_QUERY);
+  const mode = q.get('mode');
+  if (mode === 'week' || mode === 'month') { try { localStorage.setItem('pv-plan-view', mode); } catch (e) {} return mode; }
+  return q.get('week') ? 'week' : storedPlanView();
+}
 function persistView() { try { localStorage.setItem('pv-plan-view', state.planView); } catch (e) {} }
 const DESKTOP = window.matchMedia('(min-width: 900px)');
 DESKTOP.addEventListener('change', () => render());
@@ -414,7 +422,7 @@ const state = {
   settingsCat: null,               // the open Settings category (null: the list, on a phone)
   tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
   planWeekNumber: initialWeek(),
-  planView: storedPlanView(),                // 'week' | 'month'; month only applies on desktop
+  planView: initialView(),                   // 'week' | 'month'; month only applies on desktop
   monthKey: initialMonth(),                  // 'YYYY-MM'
   completed: {},
   activities: {},

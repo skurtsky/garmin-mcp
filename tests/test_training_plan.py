@@ -728,3 +728,18 @@ def test_season_page(client, fake_db):
     assert "/training-plan?plan=next-block&amp;week=2&amp;token=t0k" in r.text   # a column opens its week
     assert "/training-plan?week=1&amp;token=t0k" in r.text                        # the active plan's
     assert "50m done" in r.text   # the ticked tempo run, in its week's tooltip
+
+
+def test_season_page_switches_back_to_week_and_month_and_keeps_race_names_in_view(client):
+    plan = sample_plan()
+    plan["weeks"][1]["days"][0]["workouts"].append(
+        {"id": "w2-race", "sport": "race", "name": "A Very Long Race Name Championship", "durationMinutes": 45})
+    _upload(client, plan)
+
+    r = client.get("/training-plan/season", params=TOKEN)
+
+    assert '<a href="/training-plan?mode=week&amp;token=t0k">Week</a>' in r.text
+    assert 'href="/training-plan?mode=month&amp;token=t0k">Month</a>' in r.text
+    assert '<span aria-current="page">Season</span>' in r.text
+    # the race is in the last week: its label sits to the marker's left, inside the chart
+    assert re.search(r'<text class="s-race-l" x="[\d.]+" y="[\d.]+" text-anchor="end">A Very Long Race', r.text)
