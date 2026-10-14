@@ -251,3 +251,37 @@ def test_the_ftp_dialogs_write_back_updates_the_plan(plan):
     ftp_row = next(t for t in ctx["thresholds"] if t["key"] == "ftp")
     assert ftp_row["plan"] == "248 W" and ftp_row["status"] == "Tested"
     assert ctx["zones"]["bike"][4]["watts"] == "248–260"
+
+
+def test_sync_drops_an_activity_deleted_from_garmin_and_links_its_replacement(monkeypatch, plan):
+    # A swim re-uploaded from a fixed FIT file comes back under a new id.
+    plan.add_activity(1, "2026-09-14", "lap_swimming", "Swim")
+    plan.add_activity(9, "2026-09-13", "running", "Older run")   # beyond the fetched window
+    plan_service.match_new_activities([1])
+    assert _state(plan, "w1-mon-swim").get("activity_id") == 1
+
+    rows = [{"id": 2, "date": "2026-09-14T07:00:00", "type": "lap_swimming", "name": "Swim (fixed)"},
+            {"id": 3, "date": "2026-09-14T06:00:00", "type": "running", "name": "Run"}]
+    monkeypatch.setattr("tools.activities.get_activities", lambda **kw: rows)
+    monkeypatch.setattr(db, "update_sync_state", lambda *a, **k: None)
+
+    def upsert(garmin_id, **kw):
+        plan.add_activity(garmin_id, kw["activity_date"][:10], kw["activity_type"], kw["name"])
+        return True
+    monkeypatch.setattr(db, "upsert_activity", upsert)
+
+    sync_garmin.sync_activities()
+
+    assert set(plan.activities) == {2, 3, 9}
+    state = _state(plan, "w1-mon-swim")
+    assert state["completed"] and state["activity_id"] == 2
+
+
+def test_an_empty_garmin_answer_prunes_nothing(monkeypatch, plan):
+    plan.add_activity(1, "2026-09-14", "lap_swimming", "Swim")
+    monkeypatch.setattr("tools.activities.get_activities", lambda **kw: [])
+    monkeypatch.setattr(db, "update_sync_state", lambda *a, **k: None)
+
+    sync_garmin.sync_activities()
+
+    assert set(plan.activities) == {1}

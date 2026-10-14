@@ -536,6 +536,13 @@ python sync_garmin.py --activities-only --activities-since 2026-03-01
 python sync_garmin.py --details-only --detail-limit 999 --overwrite
 ```
 
+These (and any other `sync_garmin.py` run) can also be started from the app:
+**Settings → Garmin Sync** shows when each kind of data last synced, has a form
+with a field for each flag, and runs the sync on the server in the background.
+The run's output is saved to the `sync_runs` table as it goes, so you can leave
+the page and come back to see its progress and log, or cancel it. One run goes
+at a time; it runs alongside (not instead of) the scheduled job.
+
 The Fitness tab's triathlon predictions are estimated from CSS (or, without
 one, the swim records), FTP and threshold pace. Their per-distance
 multipliers can be changed with `TRI_PREDICTOR_CONFIG`, a JSON object such as

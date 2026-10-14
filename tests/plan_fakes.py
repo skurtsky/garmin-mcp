@@ -228,6 +228,21 @@ class FakePlanDB:
             return str((a.get("summary") or {}).get("date") or a["activity_date"].isoformat())[:10]
         return sorted((dict(a) for a in self.activities.values() if start_date <= day(a) < end_date), key=day)
 
+    def delete_activities_not_in(self, keep_ids, start=None, end=None, after=None):
+        def stamp(a):
+            return str((a.get("summary") or {}).get("date") or a["activity_date"].isoformat())
+        removed = [
+            gid for gid, a in self.activities.items()
+            if gid not in keep_ids and (start is None or stamp(a) >= start)
+            and (end is None or stamp(a) < end) and (after is None or stamp(a) > after)
+        ]
+        for gid in removed:
+            del self.activities[gid]
+        for state in self.states.values():
+            if state.get("activity_id") in removed:
+                state["activity_id"] = None
+        return removed
+
     def get_setting(self, key):
         return copy.deepcopy(self.settings.get(key))
 
@@ -243,7 +258,7 @@ PATCHED = [
     "update_training_plan", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
     "get_workout_states", "get_season_plans", "upsert_workout_state", "get_activity_brief",
-    "get_activities_by_ids", "get_activities_in_range", "get_setting", "set_setting",
+    "get_activities_by_ids", "get_activities_in_range", "delete_activities_not_in", "get_setting", "set_setting",
     "get_calendar_settings", "save_calendar_schedule", "set_calendar_token",
 ]
 

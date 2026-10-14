@@ -384,6 +384,7 @@ def ensure_schema():
             cur.execute(TRAINING_PLAN_SCHEMA)
             cur.execute(CALENDAR_SCHEMA)
             cur.execute(DASHBOARD_HISTORY_SCHEMA)
+            cur.execute(SYNC_RUNS_SCHEMA)
     logger.info("Database schema verified")
 
 
@@ -858,6 +859,39 @@ def upsert_activity(garmin_id: int, **kwargs) -> bool:
             return bool(row and row[0])
 
 
+def delete_activities_not_in(keep_ids: list[int], start: str | None = None,
+                             end: str | None = None, after: str | None = None) -> list[int]:
+    """Delete the synced activities in a window that aren't in ``keep_ids`` —
+    ones since deleted from Garmin Connect — with their details, best efforts
+    and overrides. The window is ``start`` (inclusive) to ``end`` (exclusive),
+    or strictly ``after`` a timestamp. A planned workout they completed stays
+    ticked but loses its link, so the next sync can attach a replacement.
+    Returns the deleted ids."""
+    if start is None and after is None:
+        raise ValueError("delete_activities_not_in needs start or after")
+    where = ["NOT (garmin_id = ANY(%(keep)s))"]
+    if start is not None:
+        where.append("activity_date >= %(start)s")
+    if end is not None:
+        where.append("activity_date < %(end)s")
+    if after is not None:
+        where.append("activity_date > %(after)s")
+    params = {"keep": list(keep_ids), "start": start, "end": end, "after": after}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM activities WHERE {' AND '.join(where)} RETURNING garmin_id", params)
+            removed = [row[0] for row in cur.fetchall()]
+            if removed:
+                for table in ("activity_details", "activity_best_efforts", "activity_overrides"):
+                    cur.execute(f"DELETE FROM {table} WHERE garmin_id = ANY(%s)", (removed,))
+                cur.execute(
+                    """UPDATE training_plan_workout_state SET activity_id = NULL, updated_at = now()
+                       WHERE activity_id = ANY(%s)""",
+                    (removed,),
+                )
+            return removed
+
+
 def get_activity_ids_needing_detail(limit: int = 10) -> list[int]:
     """Activity ids with no detail row yet, or whose detail predates the
     parent activity's last sync, most recent activity first."""
@@ -1043,6 +1077,120 @@ def update_sync_state(data_type: str, last_date: str, status: str = "ok",
                    WHERE data_type = %s""",
                 (last_date, status, error, data_type),
             )
+
+
+# ── SYNC RUNS (started from Settings → Garmin Sync) ───────────────────────────
+# One row per sync_garmin.py run started from the web app (tools/sync_runner.py).
+# The output is streamed in as it runs, so any page load — on any replica —
+# can show a run's progress; heartbeat_at going quiet means the server that
+# ran it went away mid-run.
+SYNC_RUNS_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS sync_runs (
+        id                SERIAL PRIMARY KEY,
+        options           JSONB NOT NULL DEFAULT '{}'::jsonb,
+        argv              JSONB NOT NULL DEFAULT '[]'::jsonb,
+        status            TEXT NOT NULL DEFAULT 'running'
+                          CHECK (status IN ('running', 'succeeded', 'failed', 'cancelled', 'interrupted')),
+        exit_code         INTEGER,
+        log               TEXT NOT NULL DEFAULT '',
+        cancel_requested  BOOLEAN NOT NULL DEFAULT FALSE,
+        started_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        heartbeat_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+        finished_at       TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs (started_at DESC);
+"""
+
+# Keep the newest output when a run's log grows past this (a full history
+# backfill logs a line or two per activity).
+SYNC_LOG_MAX_CHARS = 400_000
+_SYNC_RUN_COLUMNS = """id, options, argv, status, exit_code, cancel_requested,
+    started_at, heartbeat_at, finished_at"""
+
+
+def create_sync_run(options: dict, argv: list[str], stale_after_s: int) -> dict | None:
+    """Start a run's row, or None when another run is still going. A running
+    row whose heartbeat stopped more than ``stale_after_s`` ago is first
+    marked interrupted, so a crashed server never blocks new runs."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("LOCK TABLE sync_runs IN SHARE ROW EXCLUSIVE MODE")
+            _expire_stale_sync_runs(cur, stale_after_s)
+            cur.execute("SELECT 1 FROM sync_runs WHERE status = 'running'")
+            if cur.fetchone():
+                return None
+            cur.execute(
+                f"""INSERT INTO sync_runs (options, argv) VALUES (%s, %s)
+                    RETURNING {_SYNC_RUN_COLUMNS}""",
+                (Jsonb(options), Jsonb(argv)),
+            )
+            return cur.fetchone()
+
+
+def _expire_stale_sync_runs(cur, stale_after_s: int):
+    cur.execute(
+        """UPDATE sync_runs SET status = 'interrupted', finished_at = heartbeat_at,
+               log = log || E'\\n[The server running this sync stopped before it finished.]\\n'
+           WHERE status = 'running' AND heartbeat_at < now() - make_interval(secs => %s)""",
+        (stale_after_s,),
+    )
+
+
+def append_sync_run_log(run_id: int, text: str) -> bool:
+    """Add output to a run and beat its heartbeat. Returns whether a cancel
+    has been asked for."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE sync_runs SET log = right(log || %s, %s), heartbeat_at = now()
+                   WHERE id = %s RETURNING cancel_requested""",
+                (text, SYNC_LOG_MAX_CHARS, run_id),
+            )
+            row = cur.fetchone()
+            return bool(row and row[0])
+
+
+def finish_sync_run(run_id: int, status: str, exit_code: int | None, text: str = ""):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE sync_runs SET status = %s, exit_code = %s, finished_at = now(),
+                       heartbeat_at = now(), log = right(log || %s, %s)
+                   WHERE id = %s""",
+                (status, exit_code, text, SYNC_LOG_MAX_CHARS, run_id),
+            )
+
+
+def request_sync_run_cancel(run_id: int) -> bool:
+    """Flag a running run to stop; the server running it acts on its next
+    heartbeat. False when the run isn't running."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sync_runs SET cancel_requested = TRUE WHERE id = %s AND status = 'running'",
+                (run_id,),
+            )
+            return cur.rowcount > 0
+
+
+def list_sync_runs(limit: int, stale_after_s: int) -> list[dict]:
+    """The newest runs first, without their logs."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            _expire_stale_sync_runs(cur, stale_after_s)
+            cur.execute(
+                f"SELECT {_SYNC_RUN_COLUMNS} FROM sync_runs ORDER BY started_at DESC, id DESC LIMIT %s",
+                (limit,),
+            )
+            return cur.fetchall()
+
+
+def get_sync_run(run_id: int) -> dict | None:
+    """One run with its log."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(f"SELECT {_SYNC_RUN_COLUMNS}, log FROM sync_runs WHERE id = %s", (run_id,))
+            return cur.fetchone()
 
 
 # ── TRAINING PLANS ────────────────────────────────────────────────────────────

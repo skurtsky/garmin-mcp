@@ -132,3 +132,36 @@ def test_close_pool_is_idempotent_and_reopens():
     assert db._pool is None and pool.closed
     db.close_pool()
     assert db.get_setting("anything") is None   # a fresh pool opens on demand
+
+
+def test_delete_activities_not_in_drops_activities_gone_from_garmin():
+    _activity(1, "2026-10-01 07:00:00")
+    _activity(2, "2026-10-05 07:00:00", kind="lap_swimming")   # deleted from Garmin
+    _activity(3, "2026-10-05 08:00:00", kind="lap_swimming")   # its re-upload
+    _activity(4, "2026-10-09 07:00:00")
+    db.upsert_activity_detail(2, {"best_efforts": [
+        {"sport": "swimming", "record_type": "swim_100m", "value": 95.0}]}, None)
+    db.set_commute_override(2, True)
+    with db.get_conn() as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM training_plan_workout_state")
+        cur.execute("DELETE FROM training_plans WHERE id = 'prune-test'")
+        cur.execute("""INSERT INTO training_plans (id, plan, status) VALUES ('prune-test', '{}', 'archived')""")
+        cur.execute("""INSERT INTO training_plan_workout_state (plan_id, workout_id, completed, activity_id)
+                       VALUES ('prune-test', 'w1', TRUE, 2)""")
+
+    assert db.delete_activities_not_in([3, 4], after="2026-10-01 07:00:00+00:00") == [2]
+
+    with db.get_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT garmin_id FROM activities ORDER BY garmin_id")
+        assert [r[0] for r in cur.fetchall()] == [1, 3, 4]   # 1 sits on the window's edge
+        cur.execute("SELECT count(*) FROM activity_details WHERE garmin_id = 2")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM activity_best_efforts WHERE garmin_id = 2")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT count(*) FROM activity_overrides WHERE garmin_id = 2")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT completed, activity_id FROM training_plan_workout_state WHERE workout_id = 'w1'")
+        assert cur.fetchone() == (True, None)
+        cur.execute("DELETE FROM training_plans WHERE id = 'prune-test'")
+
+    assert db.delete_activities_not_in([], start="2026-10-09", end="2026-10-10") == [4]

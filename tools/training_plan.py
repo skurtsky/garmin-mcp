@@ -43,6 +43,11 @@ JSON API used by the viewer:
     POST /training-plan/api/goal-race/clear → same shape (goal: null)
     GET  /training-plan/api/timezone     — {timezone, effective, source, now} for Settings' Time zone
     POST /training-plan/api/timezone     — {timezone: "America/Toronto" | null} → same shape
+    GET  /training-plan/api/sync         — Settings' Garmin Sync: {lastSync, dataTypes, runs, latest, modes}
+    POST /training-plan/api/sync         — {mode, days?, since?, ...}: start sync_garmin.py in the
+                                           background (tools/sync_runner.py) → the new run
+    GET  /training-plan/api/sync/runs/{id}        — one run with its log
+    POST /training-plan/api/sync/runs/{id}/cancel — stop a running sync → the run
 """
 import html
 import json
@@ -58,7 +63,7 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 import db
-from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service
+from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service, sync_runner
 from tools.navbar import ICON_LINKS, THEME_BOOT, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import inject_pdf_links, render_plan_pdf
 from tools.plan_doc import PlanError
@@ -1003,6 +1008,56 @@ async def api_save_timezone(request):
     return await api_get_timezone(request)
 
 
+def _sync_error(exc: sync_runner.SyncRunError) -> JSONResponse:
+    return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+
+
+def _sync_storage_error() -> JSONResponse | None:
+    if db.is_configured():
+        return None
+    return JSONResponse({"error": "Garmin Sync needs the database — set DATABASE_URL."}, status_code=503)
+
+
+async def api_sync_overview(request):
+    if (err := _sync_storage_error()) is not None:
+        return err
+    return JSONResponse(await run_in_threadpool(sync_runner.overview), headers=_NO_STORE)
+
+
+async def api_sync_start(request):
+    if (err := _sync_storage_error()) is not None:
+        return err
+    try:
+        body = await _json_body(request)
+        run = await run_in_threadpool(sync_runner.start, body)
+    except PlanError as e:
+        return _api_error(e)
+    except sync_runner.SyncRunError as e:
+        return _sync_error(e)
+    return JSONResponse(sync_runner.run_view(run), status_code=202, headers=_NO_STORE)
+
+
+async def api_sync_run(request):
+    if (err := _sync_storage_error()) is not None:
+        return err
+    try:
+        return JSONResponse(await run_in_threadpool(sync_runner.run_detail, request.path_params["run_id"]),
+                            headers=_NO_STORE)
+    except sync_runner.SyncRunError as e:
+        return _sync_error(e)
+
+
+async def api_sync_cancel(request):
+    if (err := _sync_storage_error()) is not None:
+        return err
+    run_id = request.path_params["run_id"]
+    try:
+        await run_in_threadpool(sync_runner.cancel, run_id)
+        return JSONResponse(await run_in_threadpool(sync_runner.run_detail, run_id), headers=_NO_STORE)
+    except sync_runner.SyncRunError as e:
+        return _sync_error(e)
+
+
 ROUTES = [
     Route("/training-plan", serve_plan, methods=["GET"]),
     Route("/training-plan/plans", serve_plans, methods=["GET"]),
@@ -1027,6 +1082,10 @@ ROUTES = [
     Route("/training-plan/api/goal-race/clear", api_clear_goal_race, methods=["POST"]),
     Route("/training-plan/api/timezone", api_get_timezone, methods=["GET"]),
     Route("/training-plan/api/timezone", api_save_timezone, methods=["POST"]),
+    Route("/training-plan/api/sync", api_sync_overview, methods=["GET"]),
+    Route("/training-plan/api/sync", api_sync_start, methods=["POST"]),
+    Route("/training-plan/api/sync/runs/{run_id:int}", api_sync_run, methods=["GET"]),
+    Route("/training-plan/api/sync/runs/{run_id:int}/cancel", api_sync_cancel, methods=["POST"]),
 ]
 
 PATH_PREFIX = "/training-plan"
