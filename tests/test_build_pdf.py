@@ -86,7 +86,7 @@ def test_week_page_has_seven_days_sorted_and_summed():
     plan["weeks"][0]["days"][1]["workouts"][1]["startTime"] = "06:00"   # strength
     html = b.week_page(plan, plan["weeks"][0], 2)
 
-    assert html.count('class="day"') == 7                 # missing days filled in
+    assert html.count('class="dh"') == 7                  # missing days filled in
     assert html.count("Rest day") == 4
     assert html.index("Strength A") < html.index("Tempo run")   # by start time
     assert ">3:50<" in html                                # 45+50+45+90 minutes
@@ -152,3 +152,75 @@ def test_real_render_one_page_per_week():
     plan = sample_plan()
     pages = HTML(string=b.build_html(plan)).render().pages
     assert len(pages) == 1 + len(plan["weeks"])     # overview + one per week
+
+
+# ── no-race plans, narrow phases, busy and empty weeks ──
+
+def _long_plan():
+    """24 weeks with one-week phases whose names cannot fit their cell."""
+    plan = sample_plan()
+    base = plan["weeks"][0]
+    weeks = []
+    for n in range(1, 25):
+        wk = dict(base, weekNumber=n, days=[] if n == 9 else base["days"])
+        weeks.append(wk)
+    plan["weeks"] = weeks
+    plan["phases"] = [
+        {"name": "Recovery & Transition", "startWeek": 1, "endWeek": 1},
+        {"name": "Base Build", "startWeek": 2, "endWeek": 23},
+        {"name": "Re-entry", "startWeek": 24, "endWeek": 24},
+    ]
+    return plan
+
+
+def test_narrow_phases_are_numbered_and_keyed():
+    plan = _long_plan()
+    html = b.cover_page(plan)
+    assert "<b>Base Build</b>" in html
+    assert "<b>Recovery &amp; Transition</b>" not in html and "<b>1</b>" in html
+    assert "Phases: 1 Recovery &amp; Transition (Wk 1) · 3 Re-entry (Wk 24)." in html
+
+
+def test_cover_without_race_shows_plan_dates_and_dashes_empty_weeks():
+    plan = _long_plan()
+    html = b.cover_page(plan)
+    assert "Monday, September 14, 2026 – Sunday, September 27, 2026" in html
+    assert '<div class="bt">—</div>' in html          # week 9 has no sessions
+
+
+def test_week_rows_line_up_across_days():
+    """One table row per session slot: a day with three sessions sets the
+    row count for every day, padded with empty slots."""
+    plan = sample_plan()
+    tue = plan["weeks"][0]["days"][1]["workouts"]
+    tue.append({"id": "x", "sport": "bike", "name": "PM commute", "durationMinutes": 55})
+    html = b.week_page(plan, plan["weeks"][0], 2)
+    grid = html[html.index('<table class="grid">'):]
+    assert grid.count("<tr") == 1 + 3 + 1             # day heads, 3 slots, notes
+    assert grid.count('class="card"') == 5
+    assert grid.count('<td class="slot"></td>') == 2 + 2   # Mon and Thu pad two rows each
+
+
+def test_empty_week_is_one_block():
+    plan = _long_plan()
+    html = b.week_page(plan, plan["weeks"][8], 24)
+    assert html.count("No sessions this week") == 1
+    assert "Rest day" not in html
+
+
+def test_tidy_spaces_minutes():
+    assert b.tidy("2 x 20min easy, ~99min.") == "2 × 20 min easy, ~99 min."
+
+
+def test_long_race_card_grows_its_rows():
+    """The race card is laid out out of flow, so its rows must be sized for it."""
+    plan = sample_plan()
+    plan["raceStrategy"] = {"event": {"name": "Test Tri", "date": "2026-09-27"}, "pacing": {}}
+    plan["weeks"][1]["days"].append({"date": "2026-09-27", "dayOfWeek": "Sunday", "workouts": [
+        {"id": "race", "sport": "race", "name": "A Very Long Race Name " * 6,
+         "keyTargets": "Hold back early, then race the second half. " * 6}]})
+    html = b.week_page(plan, plan["weeks"][1], 2)
+    heights = [int(h) for h in __import__("re").findall(r'<tr style="height:(\d+)px">', html)]
+    card = html[html.index('class="card race"'):]
+    assert sum(heights) + 6 * (len(heights) - 1) >= b.race_card_height(card)
+    assert sum(heights) > b.SLOT_AREA
