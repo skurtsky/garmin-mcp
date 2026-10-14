@@ -817,12 +817,15 @@ def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) 
 
 def plan_overview(plan_id: str | None = None, week_number: int | None = None,
                   start_date: str | None = None, end_date: str | None = None,
-                  include_details: bool = True, today: date | None = None) -> dict:
+                  include_details: bool = True, today: date | None = None,
+                  sections: list | None = None) -> dict:
     """A token-friendly read of a plan for the coach.
 
     Always: meta, status/version, current thresholds, phases and a one-line
     summary per week. Workouts: the requested week, or the weeks overlapping
     start_date..end_date, or by default the current and next week.
+    ``sections`` adds those top-level parts of the document verbatim (e.g.
+    raceStrategy, assessment, zones) under ``sections`` — what set_field edits.
     """
     row = require_plan(plan_id)
     plan = row["plan"]
@@ -852,9 +855,19 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
             "workouts": len(ids), "completed": sum(1 for i in ids if (states.get(i) or {}).get("completed")),
         }
 
+    if sections is not None and (not isinstance(sections, list)
+                                 or not all(isinstance(k, str) for k in sections)):
+        raise PlanError("sections must be a list of top-level keys, e.g. ['raceStrategy', 'zones'].")
+    unknown = [k for k in sections or [] if k == "weeks" or k not in plan]
+    if unknown:
+        available = ", ".join(k for k in plan if k != "weeks")
+        raise PlanError(f"No section {', '.join(map(repr, unknown))} in this plan (available: {available}).")
+
     detail = []
     for w in selected:
         detail.append({
+            # Any extra week fields the coach added, then the standard view.
+            **{k: v for k, v in w.items() if k not in ("days", "summary")},
             **week_line(w),
             "focus": w.get("focus"),
             "summary": w.get("summary"),
@@ -878,5 +891,6 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
         "phases": [{k: p.get(k) for k in ("name", "startWeek", "endWeek", "focus")} for p in plan.get("phases") or []],
         "weekSummaries": [week_line(w) for w in weeks],
         "weeks": detail,
+        **({"sections": {k: plan[k] for k in sections}} if sections else {}),
         **({"thresholdCarryover": carry} if (carry := pending_carryover(row)) else {}),
     }

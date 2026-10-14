@@ -396,6 +396,7 @@ def get_training_plan(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     include_details: bool = True,
+    sections: Optional[list[str]] = None,
 ) -> dict:
     """
     Read the athlete's training plan (the Claude Coach plan uploaded at
@@ -419,8 +420,13 @@ def get_training_plan(
         week_number: One week of detail.
         start_date / end_date: YYYY-MM-DD range of weeks to detail.
         include_details: False omits description/humanReadable to save tokens.
+        sections: Top-level parts of the plan document to return in full
+            under "sections" — e.g. ["raceStrategy", "assessment", "zones",
+            "phases", "preferences"] — before editing them with
+            amend_training_plan's set_field/append_to_list.
     """
-    return plan_tools.get_training_plan(plan_id, week_number, start_date, end_date, include_details)
+    return plan_tools.get_training_plan(plan_id, week_number, start_date, end_date, include_details,
+                                        sections)
 
 
 @mcp.tool()
@@ -438,7 +444,7 @@ def list_training_plans() -> list:
 @mcp.tool()
 def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[str] = None) -> dict:
     """
-    Change a few days of the active training plan — or of a future plan,
+    Change any part of the active training plan — or of a future plan,
     with its plan_id — without regenerating it. All operations apply
     atomically (all or none), are saved as one revision labelled with
     `reason` (restorable from the plan's history), and weekly totals are
@@ -456,11 +462,29 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
       {"op": "remove_workout", "workout_id": "..."}
       {"op": "update_week", "week_number": 5, "fields": {"focus": "...",
           "targetHours": 8.5, "isRecoveryWeek": true, "phase": "..."}}
+          — any week field except weekNumber, startDate, endDate, days and
+            summary; null removes one
       {"op": "set_zones", "ftp": 262, "bikeLthr": 164, "runLthr": 170,
           "thresholdPace": "4:10", "cssLabel": "2:05/100m"}  — any subset;
             null resets one to the plan's original value
       {"op": "set_zone_validation", "sport": "bike", "validated": true}
       {"op": "set_unit", "unit": "metric" | "imperial"}
+      {"op": "set_field", "path": "raceStrategy.pacing.bike.targetPower",
+          "value": "NP 210W"}  — set anything else in the plan document by
+            dotted path (list items by index: "phases.2.focus" or
+            "phases[2].focus"; -1 is the last); missing objects are created;
+            a value may be a whole object or list; null removes the field or
+            list item. Covers meta (event, eventDate, athlete, planEndDate,
+            totalWeeks…), preferences, assessment, zones (the plan's own
+            zone tables and source notes), phases and raceStrategy.
+      {"op": "append_to_list", "path": "raceStrategy.keyRisks",
+          "value": "...", "index": 0}  — add an item to a list (created if
+            missing); index is optional (default: the end)
+    set_field/append_to_list can't touch meta.id, meta.updatedAt or weeks
+    (use update_week and the workout ops), nor overrides/zonesValidated/unit
+    (use set_zones/set_zone_validation/set_unit). Changing meta or phase
+    dates doesn't move any weeks or workouts. Read the plan first
+    (get_training_plan) to see the current structure.
 
     sport is one of swim, bike, run, brick, strength, race, rest, other.
     A workout may carry "startTime": "HH:MM" (24-hour) — the calendar feed

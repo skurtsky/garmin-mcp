@@ -51,6 +51,21 @@ def test_overview_by_week_and_range(plan):
         plan_tools.get_training_plan(week_number=7)
 
 
+def test_sections_return_parts_of_the_document_for_editing(plan):
+    plan_tools.amend_training_plan([
+        {"op": "set_field", "path": "raceStrategy.keyRisks", "value": ["Heat"]},
+        {"op": "update_week", "week_number": 1, "fields": {"notes": "Away Sat"}},
+    ], "Race notes")
+
+    out = plan_tools.get_training_plan(week_number=1, sections=["raceStrategy", "preferences"])
+    assert out["sections"] == {"raceStrategy": {"keyRisks": ["Heat"]},
+                               "preferences": {"swim": "meters", "bike": "kilometers", "run": "kilometers"}}
+    assert out["weeks"][0]["notes"] == "Away Sat"
+    assert "sections" not in plan_tools.get_training_plan()
+    with pytest.raises(ToolError, match="No section 'assessment'"):
+        plan_tools.get_training_plan(sections=["assessment"])
+
+
 def test_amend_needs_a_reason_and_reports_changes(plan):
     with pytest.raises(ToolError, match="reason"):
         plan_tools.amend_training_plan([{"op": "set_unit", "unit": "metric"}], " ")

@@ -13,7 +13,9 @@ rules:
   actually contains, so the totals can't drift from the sessions after an edit.
 * ``apply_operations`` — the edit vocabulary shared by the viewer and the
   ``amend_training_plan`` MCP tool (add/update/move/remove a workout, edit a
-  week, zones, units).
+  week, zones, units, and ``set_field``/``append_to_list`` for any other part
+  of the document — meta, preferences, assessment, zones, phases,
+  raceStrategy).
 
 Viewer settings live in the document as top-level keys the renderers already
 understand: ``unit``, ``overrides`` (live FTP/LTHR/threshold-pace/CSS values)
@@ -40,7 +42,24 @@ THRESHOLD_KEYS = ("ftp", "bikeLthr", "runLthr", "thresholdPace", "cssLabel", "cs
 ZONE_SPORTS = ("swim", "bike", "run")
 UNITS = ("metric", "imperial")
 
+# Week fields with a known type; update_week takes any other field as-is.
 WEEK_FIELDS = {"focus": str, "targetHours": (int, float), "isRecoveryWeek": bool, "phase": str}
+# Week fields update_week can't change: identity, dates (the days hang off
+# them), the workouts (workout ops) and the recomputed summary.
+WEEK_LOCKED = ("weekNumber", "startDate", "endDate", "days", "summary")
+
+# Paths set_field/append_to_list refuse, each with the op to use instead.
+# A path is refused when it is one of these, lies under one, or contains one
+# (replacing "meta" wholesale would change meta.id too).
+LOCKED_PATHS = {
+    ("meta", "id"): "the plan id is its storage key — upload a new plan instead",
+    ("meta", "updatedAt"): "it's stamped on every edit",
+    ("weeks",): "use update_week for a week and the workout ops for its sessions",
+    ("overrides",): "use set_zones",
+    ("zonesValidated",): "use set_zone_validation",
+    ("unit",): "use set_unit",
+}
+_PATH_PART_RE = re.compile(r"[^.\[\]]+|\[(-?\d+)\]")
 
 _DOW = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 _MMSS_RE = re.compile(r"(\d+):(\d{1,2})")
@@ -366,13 +385,137 @@ def _op_update_week(plan, op):
     if not isinstance(fields, dict) or not fields:
         raise PlanError("update_week needs fields to change.")
     for key, value in fields.items():
+        if key in WEEK_LOCKED:
+            raise PlanError(f"Week field {key!r} can't be edited (locked: {', '.join(WEEK_LOCKED)}).")
+        if value is None:
+            week.pop(key, None)
+            continue
         kind = WEEK_FIELDS.get(key)
-        if kind is None:
-            raise PlanError(f"Week field {key!r} can't be edited (allowed: {', '.join(WEEK_FIELDS)}).")
-        if not isinstance(value, kind) or (kind != bool and isinstance(value, bool)):
+        if kind and (not isinstance(value, kind) or (kind != bool and isinstance(value, bool))):
             raise PlanError(f"Week field {key!r} has the wrong type.")
         week[key] = value
     return f"Updated week {number} ({', '.join(fields)})", None
+
+
+def parse_path(path) -> list:
+    """``"raceStrategy.pacing.bike.bySection[0].power"`` (or ``...bySection.0...``)
+    as a list of keys and list indexes."""
+    if not isinstance(path, str) or not path.strip():
+        raise PlanError("path must be a dotted path like 'raceStrategy.pacing.bike.targetPower'.")
+    parts = []
+    for m in _PATH_PART_RE.finditer(path.strip()):
+        token = m.group(1) if m.group(1) is not None else m.group(0)
+        parts.append(int(token) if re.fullmatch(r"-?\d+", token) else token)
+    if not parts:
+        raise PlanError(f"Invalid path {path!r}.")
+    return parts
+
+
+def _check_path(parts: list) -> None:
+    keys = tuple(parts)
+    for locked, why in LOCKED_PATHS.items():
+        n = min(len(keys), len(locked))
+        if keys[:n] == locked[:n]:
+            raise PlanError(f"{'.'.join(map(str, locked))} can't be changed this way — {why}.")
+
+
+def _walk(plan: dict, parts: list, create: bool):
+    """The container holding the last part of the path. Missing objects are
+    created along the way when ``create``; list indexes must exist."""
+    node = plan
+    for i, part in enumerate(parts[:-1]):
+        where = ".".join(map(str, parts[:i + 1]))
+        if isinstance(node, list):
+            if not isinstance(part, int) or not -len(node) <= part < len(node):
+                raise PlanError(f"{where}: no such list item.")
+            node = node[part]
+        elif isinstance(node, dict):
+            key = str(part)
+            if key not in node or node[key] is None:
+                if not create or isinstance(parts[i + 1], int):
+                    raise PlanError(f"{where} doesn't exist.")
+                node[key] = {}
+            node = node[key]
+        else:
+            raise PlanError(f"{where} isn't an object or a list.")
+    if not isinstance(node, (dict, list)):
+        raise PlanError(f"{'.'.join(map(str, parts[:-1]))} isn't an object or a list.")
+    return node
+
+
+def _check_value(parts: list, value) -> None:
+    """Light checks on what the renderers parse: dates and the phases list."""
+    last = parts[-1]
+    if isinstance(last, str) and last.endswith("Date") and isinstance(value, str):
+        parse_date(value, last)
+    if parts[0] == "phases":
+        items = value if len(parts) == 1 else [value] if len(parts) == 2 else []
+        if not isinstance(items, list) or not all(isinstance(p, dict) for p in items):
+            raise PlanError("phases must be a list of objects.")
+
+
+def _op_set_field(plan, op):
+    if "value" not in op:
+        raise PlanError("set_field needs a value (null removes the field).")
+    parts = parse_path(op.get("path"))
+    _check_path(parts)
+    value = op["value"]
+    path = ".".join(map(str, parts))
+    if value is None:
+        try:
+            container = _walk(plan, parts, create=False)
+        except PlanError:
+            return None   # already absent
+        last = parts[-1]
+        if isinstance(container, list):
+            if not isinstance(last, int) or not -len(container) <= last < len(container):
+                return None
+            container.pop(last)
+        elif str(last) in container:
+            del container[str(last)]
+        else:
+            return None
+        return f"Removed {path}", None
+    _check_value(parts, value)
+    container = _walk(plan, parts, create=True)
+    last = parts[-1]
+    if isinstance(container, list):
+        if not isinstance(last, int) or not -len(container) <= last < len(container):
+            raise PlanError(f"{path}: no such list item (use append_to_list to add one).")
+        container[last] = value
+    else:
+        container[str(last)] = value
+    return f"Set {path}", None
+
+
+def _op_append_to_list(plan, op):
+    if op.get("value") is None:
+        raise PlanError("append_to_list needs a value.")
+    parts = parse_path(op.get("path"))
+    _check_path(parts)
+    path = ".".join(map(str, parts))
+    value = op["value"]
+    _check_value(parts + [0], value)
+    parent = _walk(plan, parts, create=True)
+    last = parts[-1]
+    if isinstance(parent, list):
+        if not isinstance(last, int) or not -len(parent) <= last < len(parent):
+            raise PlanError(f"{path}: no such list item.")
+        container = parent[last]
+    else:
+        container = parent.setdefault(str(last), [])
+        if container is None:
+            container = parent[str(last)] = []
+    if not isinstance(container, list):
+        raise PlanError(f"{path} isn't a list.")
+    index = op.get("index")
+    if index is None:
+        container.append(value)
+    elif isinstance(index, int) and not isinstance(index, bool):
+        container.insert(index, value)
+    else:
+        raise PlanError("index must be a whole number.")
+    return f"Added to {path}", None
 
 
 def _op_set_zones(plan, op):
@@ -442,6 +585,8 @@ OPERATIONS = {
     "set_zones": _op_set_zones,
     "set_zone_validation": _op_set_zone_validation,
     "set_unit": _op_set_unit,
+    "set_field": _op_set_field,
+    "append_to_list": _op_append_to_list,
 }
 
 
