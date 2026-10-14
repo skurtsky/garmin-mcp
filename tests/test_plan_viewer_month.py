@@ -76,3 +76,11 @@ def test_viewer_offers_the_threshold_carry_over_and_links_the_season():
     assert "a === 'carry-apply' || a === 'carry-dismiss'" in html
     assert "carryover: data.carryover || null" in html     # applyServer keeps it current
     assert "appLink('/training-plan/season')" in html
+
+
+def test_a_week_link_opens_the_week_view_and_mode_picks_the_view():
+    html = _html()
+    assert "planView: initialView()," in html
+    body = html.split("function initialView() {", 1)[1].split("\n}", 1)[0]
+    assert "q.get('week') ? 'week' : storedPlanView()" in body
+    assert "mode === 'week' || mode === 'month'" in body
