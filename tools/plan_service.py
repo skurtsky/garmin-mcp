@@ -394,20 +394,14 @@ def season(today: date | None = None) -> dict:
     _require_db()
     today = today or local_today()
     cutoff = (today - timedelta(days=SEASON_HISTORY_DAYS)).isoformat()
-    listed = sorted(
-        (p for p in db.list_training_plans()
-         if p["status"] != "archived" or str(p.get("end_date") or "")[:10] >= cutoff),
-        key=lambda p: (str(p.get("start_date") or ""), p["id"]),
-    )
-    plans = []
-    for p in listed:
-        row = db.get_training_plan(p["id"])
-        if row is not None:
-            plans.append(_season_plan(row, db.get_workout_states(row["id"])))
+    # Two queries for the whole page, however many plans there are.
+    rows, done = db.get_season_plans(cutoff)
+    rows.sort(key=lambda r: (str((r["plan"].get("meta") or {}).get("planStartDate") or ""), r["id"]))
+    plans = [_season_plan(row, done.get(row["id"], set())) for row in rows]
     return {"today": today.isoformat(), "plans": [p for p in plans if p["weeks"]]}
 
 
-def _season_plan(row: dict, states: dict) -> dict:
+def _season_plan(row: dict, done_ids: set[str]) -> dict:
     plan = row["plan"]
     meta = plan.get("meta") or {}
     phase_of = {}
@@ -424,7 +418,7 @@ def _season_plan(row: dict, states: dict) -> dict:
                     continue
                 minutes = float(x.get("durationMinutes") or 0)
                 planned += minutes
-                if (states.get(x.get("id")) or {}).get("completed"):
+                if x.get("id") in done_ids:
                     done += minutes
                 if x.get("sport") == "race":
                     races.append({"date": str(d.get("date"))[:10], "name": x.get("name") or "Race"})

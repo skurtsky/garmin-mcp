@@ -169,6 +169,15 @@ class FakePlanDB:
         rev = next((r for r in self.revisions.get(plan_id, []) if r["version"] == version), None)
         return copy.deepcopy(rev)
 
+    def get_season_plans(self, archived_since):
+        rows = [copy.deepcopy(r) for r in self.plans.values()
+                if r["status"] != "archived" or (r["plan"]["meta"].get("planEndDate") or "") >= archived_since]
+        done = {}
+        for (pid, wid), s in self.states.items():
+            if s.get("completed"):
+                done.setdefault(pid, set()).add(wid)
+        return rows, done
+
     def get_workout_states(self, plan_id):
         return {wid: dict(s) for (pid, wid), s in self.states.items() if pid == plan_id}
 
@@ -233,7 +242,7 @@ PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
     "update_training_plan", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
-    "get_workout_states", "upsert_workout_state", "get_activity_brief",
+    "get_workout_states", "get_season_plans", "upsert_workout_state", "get_activity_brief",
     "get_activities_by_ids", "get_activities_in_range", "get_setting", "set_setting",
     "get_calendar_settings", "save_calendar_schedule", "set_calendar_token",
 ]

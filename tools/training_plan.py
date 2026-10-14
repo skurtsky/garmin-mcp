@@ -60,7 +60,7 @@ from starlette.routing import Route
 import db
 from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service
 from tools.navbar import ICON_LINKS, THEME_BOOT, inject_icon_links, inject_nav, render_nav_html
-from tools.pdf_route import render_plan_pdf
+from tools.pdf_route import inject_pdf_links, render_plan_pdf
 from tools.plan_doc import PlanError
 from tools.plan_service import PlanStorageUnavailable
 
@@ -186,7 +186,7 @@ def render_viewer_html(row: dict, token: str | None = None, goal_future=None, tz
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
     athlete = (row["plan"].get("meta") or {}).get("athlete")
-    return inject_icon_links(inject_nav(page, "plan", token, title=athlete))
+    return inject_pdf_links(inject_icon_links(inject_nav(page, "plan", token, title=athlete)))
 
 
 def render_message_html(title: str, message: str, token: str | None) -> str:
@@ -356,6 +356,7 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
         actions = [
             f'<a class="btn btn-primary" href="{_e(_plan_href(p, token))}">'
             f'{"View (read-only)" if status == "archived" else "View"}</a>',
+            f'<a class="btn" data-pdf href="{_e(_url("/training-plan/pdf", token, plan=p["id"]))}">Download PDF</a>',
             f'<a class="btn" href="{_e(_url("/training-plan/export.json", token, plan=p["id"]))}">Download JSON</a>',
         ]
 
@@ -399,7 +400,7 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
         f'<a href="{_e(_url("/training-plan/season", token))}">Season view</a>'
         f'<a href="{_e(_url("/training-plan", token))}">Active plan</a></div>'
     )
-    return _page("Training plans", body, token, active="settings")
+    return inject_pdf_links(_page("Training plans", body, token, active="settings"))
 
 
 # ── SEASON ────────────────────────────────────────────────────────────────────
@@ -627,6 +628,10 @@ def render_season_html(data: dict, token: str | None) -> str:
         f'<div class="links"><a href="{_e(_url("/training-plan", token))}">Active plan</a>'
         f'<a href="{_e(_url("/training-plan/plans", token))}">All plans</a></div>'
         f"<script>{_SEASON_SCRIPT}</script>"
+        # Week / Month: start loading the plan page when the pointer rests on them.
+        '<script type="speculationrules">'
+        '{"prerender":[{"where":{"selector_matches":".view-switch a"},"eagerness":"moderate"}]}'
+        "</script>"
     )
     return _page("Season", body, token)
 

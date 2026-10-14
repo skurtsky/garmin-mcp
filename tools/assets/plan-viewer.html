@@ -411,7 +411,13 @@ function storedPlanView() { try { return localStorage.getItem('pv-plan-view') ==
 function initialView() {
   const q = new URLSearchParams(APP_QUERY);
   const mode = q.get('mode');
-  if (mode === 'week' || mode === 'month') { try { localStorage.setItem('pv-plan-view', mode); } catch (e) {} return mode; }
+  if (mode === 'week' || mode === 'month') {
+    /* A page the browser loads ahead of a click (see below) must not change
+       the remembered view unless it's actually opened. */
+    const keep = () => { try { localStorage.setItem('pv-plan-view', mode); } catch (e) {} };
+    if (document.prerendering) document.addEventListener('prerenderingchange', keep, { once: true }); else keep();
+    return mode;
+  }
   return q.get('week') ? 'week' : storedPlanView();
 }
 function persistView() { try { localStorage.setItem('pv-plan-view', state.planView); } catch (e) {} }
@@ -988,7 +994,7 @@ function settingsPane(key) {
       + '<div class="hr" style="margin:12px 0;"></div>'
       + '<div style="font-size:12px; color:var(--color-neutral-500);">Plan ID ' + esc(PLAN.meta.id) + ' · version ' + esc(SERVER.version) + '</div></div>';
     h += settingsLinkCard('Plan PDF', 'A printable wall chart of the whole plan, with the current zones.',
-      appLink('/training-plan/pdf'), 'down', 'Download');
+      appLink('/training-plan/pdf'), 'down', 'Download', true);
     h += settingsLinkCard('All plans', 'Switch the active plan, plan ahead with future plans, or open an archived plan read-only.',
       appLink('/training-plan/plans'), 'list', 'View plans');
     h += settingsLinkCard('Season', 'Every plan on one timeline — weekly hours, phases and races, with today marked.',
@@ -1143,11 +1149,11 @@ function tzSubmit(zone) {
     .finally(() => { state.tzSaving = false; render(); });
 }
 
-function settingsLinkCard(title, text, href, iconName, label) {
+function settingsLinkCard(title, text, href, iconName, label, pdf) {
   return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
     + '<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:4px;">'
       + '<div class="card-title">' + esc(title) + '</div>'
-      + '<a class="btn btn-secondary" href="' + esc(href) + '" style="font-size:12px; padding:5px 10px;">' + icon(iconName, 14) + ' ' + esc(label) + '</a></div>'
+      + '<a class="btn btn-secondary"' + (pdf ? ' data-pdf' : '') + ' href="' + esc(href) + '" style="font-size:12px; padding:5px 10px; white-space:nowrap;">' + icon(iconName, 14) + ' ' + esc(label) + '</a></div>'
     + '<div style="color:var(--color-neutral-400); font-size:13px;">' + esc(text) + '</div></div>';
 }
 
@@ -1795,6 +1801,18 @@ document.addEventListener('click', e => {
 })();
 
 render();
+
+/* The Season page is a separate page load (Week / Month switch in place), so
+   let the browser start loading it as soon as the pointer rests on a link to
+   it — the click then shows it instantly. Browsers without speculation
+   rules just navigate as usual. */
+(function () {
+  if (!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('speculationrules'))) return;
+  const rules = document.createElement('script');
+  rules.type = 'speculationrules';
+  rules.textContent = JSON.stringify({ prerender: [{ urls: [appLink('/training-plan/season')], eagerness: 'moderate' }] });
+  document.head.appendChild(rules);
+})();
 if (state.tab === 'settings') setView('settings');
 </script>
 <style>/* Settings: category list + form pane on a desktop; on a phone the list, then

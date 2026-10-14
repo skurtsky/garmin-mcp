@@ -171,3 +171,15 @@ def test_auto_switch_and_carry_over(monkeypatch):
     assert plan_service.pending_carryover(row)["items"][0]["from"] == 270
     assert plan_service.apply_carryover(["ftp"], "web")["plan"]["overrides"]["ftp"] == 270
     assert db.get_setting(plan_service.CARRYOVER_KEY) is None
+
+
+def test_season_reads_plans_and_completions_together():
+    plan_service.save_upload(sample_plan())
+    plan_service.save_upload(sample_plan(id="old", planEndDate="2024-01-01"), activate=False)
+    plan_service.set_status("old", "archived")
+    plan_service.set_completion(None, "w1-tue-run", True)
+
+    rows, done = db.get_season_plans("2025-01-01")
+
+    assert [r["id"] for r in rows] == ["test-block-2026"]
+    assert done == {"test-block-2026": {"w1-tue-run"}}
