@@ -85,6 +85,9 @@ SIDE_CHARS = 22         # … and in the side-note box
 SLOT_AREA = 380
 SLOT_GAP = 6
 CHART_H = 230
+CONTENT_W = 979         # 10.2in: Letter landscape less the side margins
+NAME_CHAR_W = 6.2       # px per character, phase names (condensed bold 10.5pt)
+LABEL_CHAR_W = 5.0      # px per character, phase week/hours labels (8.5pt)
 GRID_SLACK = 12
 
 
@@ -196,7 +199,7 @@ def tidy(text):
     t = re.sub(r"\s+", " ", str(text or "")).strip()
     t = re.sub(r"(\d)\s*[xX]\s*(\d)", r"\1 × \2", t)
     t = re.sub(r"(?<=\d)K\b", " km", t)
-    t = re.sub(r"(?<=\d)(m|km|W|g|lb|kg|mi|yd)\b", r" \1", t)
+    t = re.sub(r"(?<=\d)(m|km|min|W|g|lb|kg|mi|yd)\b", r" \1", t)
     t = _DATE_OR_RANGE.sub(lambda m: m.group(0) if m.group(1) is None
                            else f"{m.group(1)}–{m.group(2)}", t)
     return t
@@ -303,6 +306,9 @@ def cover_page(plan):
         if d.get("run") is not None:
             sub.append(f"{_num(d['run'])} km run")
 
+    if not sub and meta.get("planStartDate") and meta.get("planEndDate"):
+        sub.append(f"{full_date(meta['planStartDate'])} – {full_date(meta['planEndDate'])}")
+
     boxes = ""
     if goals.get("a"):
         boxes += goal_box("A goal", goals["a"], strong=True)
@@ -330,11 +336,15 @@ def cover_page(plan):
         f'<span class="lg"><span class="sw" style="background:{SPORT_COLORS[s]}"></span>{s.capitalize()}</span>'
         for s in SPORT_ORDER if any(sport_minutes(w).get(s) for w in weeks)
     )
+    caption = "Bar label = planned hours, summed from the sessions. REC = recovery week."
+    key = phase_key(plan, weeks)
+    if key:
+        caption += " Phases: " + " · ".join(key) + "."
     volume = f"""
     <section class="volume">
       <div class="sec-head"><div class="legend">{legend}</div><h2>{e(span)}</h2></div>
       {volume_table(plan, weeks)}
-      <div class="caption">Bar label = planned hours, summed from the sessions. REC = recovery week.</div>
+      <div class="caption">{e(caption)}</div>
     </section>"""
 
     cols = zone_columns(plan) + splits_column(plan)
@@ -348,6 +358,29 @@ def goal_box(label, value, strong=False, outline=False):
     return f'<div class="{cls}"><span class="gl">{e(label)}</span><span class="gv">{e(value)}</span></div>'
 
 
+def _fits(name, width):
+    """Does a phase name fit a band cell: every word on one line, at most
+    three lines? Character widths are Barlow Condensed Bold 10.5pt averages."""
+    words = name.split()
+    if not words or max(len(w) for w in words) * NAME_CHAR_W > width:
+        return False
+    return len(name) * NAME_CHAR_W <= width * 3
+
+
+def phase_key(plan, weeks):
+    """'1 Recovery & Transition (Wk 1)' for each phase too narrow to name."""
+    if not weeks:
+        return []
+    col_w = CONTENT_W / len(weeks)
+    out = []
+    for i, p in enumerate(plan.get("phases", []), 1):
+        n = p["endWeek"] - p["startWeek"] + 1
+        if n > 0 and not _fits(str(p["name"]), n * col_w - 16):
+            wk = f"Wk {p['startWeek']}" if n == 1 else f"Wk {p['startWeek']}–{p['endWeek']}"
+            out.append(f"{i} {p['name']} ({wk})")
+    return out
+
+
 def volume_table(plan, weeks):
     """Phase band and weekly volume bars share one table, so a phase cell
     always sits exactly over its weeks."""
@@ -358,18 +391,30 @@ def volume_table(plan, weeks):
 
     band = ""
     covered = 0
-    for p in phases:
+    col_w = CONTENT_W / len(weeks)
+    for i, p in enumerate(phases, 1):
         n = p["endWeek"] - p["startWeek"] + 1
         if n <= 0:
             continue
         covered += n
+        inner = n * col_w - 4 - 12          # cell spacing and padding
         hr = p.get("weeklyHoursRange") or {}
         weeks_lbl = f"Wk {p['startWeek']}" if n == 1 else f"Wk {p['startWeek']}–{p['endWeek']}"
         hours_lbl = ""
-        if hr.get("low") is not None and hr.get("high") is not None:
-            hours_lbl = f" · {hr['low']:g}–{hr['high']:g} h" if n > 1 else ""
+        if hr.get("low") is not None and hr.get("high") is not None and (hr["low"] or hr["high"]):
+            hours_lbl = f" · {hr['low']:g}–{hr['high']:g} h"
+        if len(weeks_lbl + hours_lbl) * LABEL_CHAR_W > inner:
+            hours_lbl = ""
+        if len(weeks_lbl) * LABEL_CHAR_W > inner:
+            weeks_lbl = ""          # the bars below and the key carry it
+        name = str(p["name"])
+        if _fits(name, inner):
+            label = f'<b>{e(name)}</b>'
+        else:
+            # Too narrow for its name: a number here, the name in the key below.
+            label = f'<b>{i}</b>'
         band += (f'<td colspan="{n}" class="phase" style="{styles.get(p["name"], "")}">'
-                 f'<b>{e(p["name"])}</b><span>{e(weeks_lbl + hours_lbl)}</span></td>')
+                 f'{label}' + (f'<span>{e(weeks_lbl + hours_lbl)}</span>' if weeks_lbl else "") + '</td>')
     if covered < len(weeks):
         band += f'<td colspan="{len(weeks) - covered}"></td>'
 
@@ -387,7 +432,7 @@ def volume_table(plan, weeks):
         if other:
             segs += f'<div style="height:{other * scale:.1f}px;background:#8a8f9c"></div>'
         tot = sum(m.values())
-        bars += (f'<td class="bar"><div class="bt">{tot / 60:.1f}</div>'
+        bars += (f'<td class="bar"><div class="bt">{f"{tot / 60:.1f}" if tot else "—"}</div>'
                  f'<div class="stack">{segs}</div></td>')
         rec = '<span class="rec">REC</span>' if w.get("isRecoveryWeek") else ""
         labels += f'<td class="wl"><b>W{e(w["weekNumber"])}</b>{rec}</td>'
@@ -584,7 +629,7 @@ def checkbox(done=False):
     return f'<span class="cb{" done" if done else ""}"></span>'
 
 
-def session_card(w, prefs, min_h):
+def session_card(w, prefs):
     sport = w.get("sport", "")
     color = SPORT_COLORS.get(sport, SPORT_COLORS["rest"])
     meta = [hm(w.get("durationMinutes")), distance_label(w, prefs), zone_short(w.get("primaryZone"))]
@@ -592,17 +637,17 @@ def session_card(w, prefs, min_h):
         meta[1] = "Rouvy"
     kt = tidy(key_targets(w))
     return (
-        f'<div class="card" style="border-top-color:{color};min-height:{min_h:.0f}px">'
+        f'<td class="card" style="border-top-color:{color}">'
         f'<div class="ch"><span class="tm">{e(w.get("startTime") or "")}{checkbox(w.get("completed"))}</span>'
         f'<span class="sp" style="color:{color}">{e(sport)}</span></div>'
         f'<div class="ct">{e(w.get("name"))}</div>'
         f'<div class="cm">{e(" · ".join(x for x in meta if x))}</div>'
         + (f'<div class="cr"></div><div class="ck">{e(kt)}</div>' if kt else "")
-        + "</div>"
+        + "</td>"
     )
 
 
-def race_card(plan, w):
+def race_card(plan, w, rowspan=1):
     rs = plan.get("raceStrategy") or {}
     ev = rs.get("event") or {}
     pacing = rs.get("pacing") or {}
@@ -616,9 +661,9 @@ def race_card(plan, w):
 
     stats = ""
     if total:
-        stats += f'<td class="rs"><span>Proj.</span><b>{e(fmt_split("total", total)[:-3])}</b></td>'
+        stats += f'<div class="rs"><span>Proj.</span><b>{e(fmt_split("total", total)[:-3])}</b></div>'
     if goals.get("a"):
-        stats += f'<td class="rs"><span>A goal</span><b>{e(re.sub(r"^sub-", "", str(goals["a"])))}</b></td>'
+        stats += f'<div class="rs"><span>A goal</span><b>{e(re.sub(r"^sub-", "", str(goals["a"])))}</b></div>'
 
     lines = []
     swim, bike, run = (pacing.get(k) or {} for k in ("swim", "bike", "run"))
@@ -641,22 +686,69 @@ def race_card(plan, w):
 
     body = "".join(f'<div class="rl"><b>{e(k)}</b> {e(v)}</div>' for k, v in lines)
     return (
-        f'<div class="card race" style="min-height:{SLOT_AREA}px">'
+        f'<td class="card race" rowspan="{rowspan}"><div class="race-in">'
         f'<div class="ch"><span class="tm">{e(w.get("startTime") or "")}{checkbox(w.get("completed"))}</span>'
         f'<span class="sp" style="color:{SPORT_COLORS["race"]}">Race day</span></div>'
         f'<div class="ct big">{e(w.get("name") or ev.get("name"))}</div>'
         + (f'<div class="cm">{e(dist)}</div>' if dist else "")
-        + (f'<table class="rstats"><tr>{stats}</tr></table>' if stats else "")
+        # Plain blocks, not a nested table: WeasyPrint mis-sizes the rows a
+        # rowspanning cell covers when that cell contains a table.
+        + (f'<div class="rstats">{stats}</div>' if stats else "")
         + (f'<div class="cr gold"></div>{body}' if body else "")
         + ('<div class="cm note">Full plan on the last page.</div>' if rs.get("event") else "")
-        + "</div>"
+        + "</div></td>"
     )
 
 
+def race_card_height(card_html):
+    """Conservative height in px of a race card's content (it is laid out
+    out of flow, so the rows it spans must be made tall enough for it):
+    each text block wrapped at ~18 characters a line, plus the fixed parts."""
+    blocks = re.findall(r'<div class="(?:ct big|cm|cm note|rl)">(.*?)</div>', card_html, re.S)
+    lines = sum(max(1, -(-len(re.sub(r"<[^>]+>", "", t)) // 18)) for t in blocks)
+    stats = 52 if 'class="rstats"' in card_html else 0
+    return 48 + stats + lines * 18
+
+
 def notes_block(label="Notes", right="RPE ___"):
-    lines = "<i></i>" * 14
+    lines = "<i></i>" * 30
     return (f'<div class="notes"><div class="nh"><span class="nr">{e(right)}</span>{e(label)}</div>'
             f'<div class="ruled">{lines}</div></div>')
+
+
+def week_grid(plan, days, per_day, slots, slot_h, prefs):
+    """Seven day columns as one table with a row per session slot, so every
+    card in a row shares its height and the notes start level across the
+    week. Rows have a minimum height and grow with their tallest card; the
+    wrapper around the table clips the spare notes rules at the page floor."""
+    head = "".join(f'<th class="dh"><span>{e(short_date(d["date"]))}</span>'
+                   f'<b>{e(d.get("dayOfWeek", "")[:3])}</b></th>' for d in days)
+
+    # cells[row][col] → html, or None where a rowspan above covers it
+    cells = [[None] * len(days) for _ in range(slots)]
+    if not any(per_day):
+        cells[0][0] = f'<td class="slot rest" colspan="{len(days)}" rowspan="{slots}">No sessions this week</td>'
+    else:
+        for c, ws in enumerate(per_day):
+            races = [w for w in ws if w.get("sport") == "race"]
+            if races:
+                cells[0][c] = race_card(plan, races[0], slots)
+                need = race_card_height(cells[0][c])
+                span = slots * slot_h + (slots - 1) * SLOT_GAP
+                if need > span:
+                    slot_h += (need - span) / slots
+            elif not ws:
+                cells[0][c] = f'<td class="slot rest" rowspan="{slots}">Rest day</td>'
+            else:
+                for r in range(slots):
+                    cells[r][c] = session_card(ws[r], prefs) if r < len(ws) else '<td class="slot"></td>'
+
+    rows = "".join(f'<tr style="height:{slot_h:.0f}px">' + "".join(x for x in row if x) + "</tr>"
+                   for row in cells)
+    notes = "".join(
+        f'<td class="ncell">{notes_block("Result", "___:___") if any(w.get("sport") == "race" for w in ws) else notes_block()}</td>'
+        for ws in per_day)
+    return f'<table class="grid"><tr>{head}</tr>{rows}<tr>{notes}</tr></table>'
 
 
 def week_page(plan, week, total_weeks):
@@ -688,7 +780,7 @@ def week_page(plan, week, total_weeks):
 
     days = seven_days(week)
     per_day = [sessions(d) for d in days]
-    slots = max([len([w for w in s if w.get("sport") != "race"]) for s in per_day] + [2])
+    slots = max([0 if any(w.get("sport") == "race" for w in s) else len(s) for s in per_day] + [2])
     slot_h = (SLOT_AREA - SLOT_GAP * (slots - 1)) / slots
 
     focus_lines = max(-(-len(focus) // FOCUS_CHARS), -(-len(side) // SIDE_CHARS) if side else 0, 1)
@@ -696,23 +788,7 @@ def week_page(plan, week, total_weeks):
     # GRID_SLACK absorbs rounding; a grid even 1px too tall moves to a new page.
     grid_h = PAGE_H - HEAD_H - focus_h - 2 * BLOCK_GAP - GRID_SLACK
 
-    cols = ""
-    for day, ws in zip(days, per_day):
-        cards = ""
-        is_race_day = any(w.get("sport") == "race" for w in ws)
-        for w in ws:
-            cards += race_card(plan, w) if w.get("sport") == "race" else session_card(w, prefs, slot_h)
-        if not ws:
-            cards = f'<div class="slot rest" style="min-height:{SLOT_AREA}px">Rest day</div>'
-        elif not is_race_day:
-            cards += "".join(f'<div class="slot" style="height:{slot_h:.0f}px"></div>'
-                             for _ in range(slots - len(ws)))
-        cols += (f'<td class="day"><div class="dayin" style="height:{grid_h}px">'
-                 f'<div class="dh"><span>{e(short_date(day["date"]))}</span>'
-                 f'<b>{e(day.get("dayOfWeek", "")[:3])}</b></div>'
-                 f'<div class="cards">{cards}</div>'
-                 + (notes_block("Result", "___:___") if is_race_day else notes_block())
-                 + '</div></td>')
+    grid = week_grid(plan, days, per_day, slots, slot_h, prefs)
 
     side_html = (f'<td class="fl side">{e(side_label)}</td>'
                  f'<td class="sidep"><p>{e(tidy(side))}</p></td>') if side else ""
@@ -730,7 +806,7 @@ def week_page(plan, week, total_weeks):
         <td class="fl">Focus</td><td class="fmain"><p>{e(tidy(focus))}</p></td>
         {side_html}
       </tr></table>
-      <table class="grid"><tr>{cols}</tr></table>
+      <div class="gridwrap" style="height:{grid_h}px">{grid}</div>
     </section>"""
 
 
@@ -997,13 +1073,13 @@ h1 {{ font-size: 32pt; line-height: 1.05; font-weight: 700; margin: 3px 0 4px; }
 .fmain {{ padding-right: 20px; }}
 .sidep {{ width: 1.75in; }}
 
-.grid {{ width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 6px 0;
-  margin: 0 -6px; width: calc(100% + 12px); }}
-.dayin {{ overflow: hidden; }}
-.dh {{ border-bottom: 2px solid {INK}; padding-bottom: 2px; margin-bottom: 5px; }}
+.gridwrap {{ overflow: hidden; }}
+.grid {{ table-layout: fixed; border-collapse: separate; border-spacing: 6px;
+  margin: -6px -6px 0; width: calc(100% + 12px); }}
+.grid td, .grid th {{ vertical-align: top; }}
+.dh {{ text-align: left; font-weight: normal; border-bottom: 2px solid {INK}; padding: 0 0 2px; }}
 .dh b {{ font: 700 12pt "Barlow Condensed", sans-serif; }}
 .dh span {{ float: right; font-size: 9pt; font-weight: 500; color: {MUTED}; padding-top: 3px; }}
-.card, .slot {{ margin-bottom: {SLOT_GAP}px; }}
 .card {{ background: {PANEL}; border-top: 3px solid {INK}; border-radius: 2px; padding: 5px 7px 7px;
   overflow-wrap: break-word; }}
 .sp {{ font: 700 9pt "Barlow Condensed", sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }}
@@ -1019,14 +1095,20 @@ h1 {{ font-size: 32pt; line-height: 1.05; font-weight: 700; margin: 3px 0 4px; }
 .cr.gold {{ background: #e0cf9e; margin: 6px 0; }}
 .ck {{ font-size: 9pt; line-height: 12pt; color: {INK_2}; }}
 .slot {{ border: 1px dashed #d5d8de; border-radius: 2px; }}
-.slot.rest {{ padding-top: 40%; text-align: center;
+.slot.rest {{ vertical-align: middle; text-align: center;
   font: 600 10pt "Barlow Condensed", sans-serif; letter-spacing: 0.08em; text-transform: uppercase;
   color: {MUTED}; }}
 .card.race {{ background: #fbf4e0; border: 1.2pt solid {SPORT_COLORS['race']};
-  border-top: 3pt solid {SPORT_COLORS['race']}; padding: 7px 8px 9px; }}
-.rstats {{ width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 6px; }}
-.rs {{ width: 50%; background: #ffffff; border: 1px solid #e0cf9e; border-radius: 2px; padding: 3px 5px; }}
-.rs + .rs {{ border-left-width: 4px; border-left-color: #fbf4e0; }}
+  border-top: 3pt solid {SPORT_COLORS['race']}; padding: 0; position: relative; }}
+/* Out of flow on purpose: WeasyPrint grows the last spanned row to a
+   rowspanning cell's full content height, which pushed the notes off the
+   page. The card fills the rows it spans; week_page makes sure they are
+   tall enough for it. */
+.race-in {{ position: absolute; top: 7px; left: 8px; right: 8px; }}
+.rstats {{ margin-top: 6px; white-space: nowrap; }}
+.rs {{ display: inline-block; width: 48%; background: #ffffff; border: 1px solid #e0cf9e; border-radius: 2px;
+  padding: 3px 5px; white-space: normal; }}
+.rs + .rs {{ margin-left: 4%; }}
 .rs span {{ display: block; font: 600 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.06em;
   text-transform: uppercase; color: {MUTED}; }}
 .rs b {{ font: 700 12.5pt/1.1 "Barlow Condensed", sans-serif; }}
@@ -1034,7 +1116,7 @@ h1 {{ font-size: 32pt; line-height: 1.05; font-weight: 700; margin: 3px 0 4px; }
 .rl b {{ color: {INK}; }}
 /* Fourteen rules, more than any column shows: the day wrapper clips the
    spare ones, so long cards shorten the notes instead of the page. */
-.notes {{ margin-top: 2px; }}
+.ncell {{ padding-top: 2px; }}
 .nh {{ font: 700 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.1em;
   text-transform: uppercase; color: {MUTED}; }}
 .nr {{ float: right; }}
