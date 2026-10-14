@@ -105,8 +105,8 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 
 ### Training Plan
 
-`get_training_plan`, `list_training_plans`, `amend_training_plan`,
-`complete_plan_workout`, `link_plan_workout_to_garmin`,
+`get_training_plan`, `list_training_plans`, `set_training_plan_status`,
+`amend_training_plan`, `complete_plan_workout`, `link_plan_workout_to_garmin`,
 `get_training_plan_revisions` and `restore_training_plan_revision` read and
 edit the Claude Coach plan stored in PostgreSQL — see
 [Training Plan](#training-plan).
@@ -364,6 +364,7 @@ to, so plan edits show up in the calendar without re-importing anything.
 |---|---|
 | `get_training_plan` | Plan meta, current thresholds, phases, a one-line summary per week, and workout detail for the current + next week (or a given week / date range), with completion and Garmin-link state |
 | `list_training_plans` | Every stored plan and its status |
+| `set_training_plan_status` | Queue a plan as future (it takes over on its start date) or archive one. It can't activate a plan or touch the active one — that stays with the athlete in the web app |
 | `amend_training_plan` | Atomic edits with a reason: add / update / move / remove workouts, edit a week, set zones or units |
 | `complete_plan_workout` | Mark a planned workout complete by id, or from a Garmin activity (matched by date and sport) |
 | `link_plan_workout_to_garmin` | Record the Garmin Connect workout scheduled for a planned workout, so it isn't scheduled twice |

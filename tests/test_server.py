@@ -98,3 +98,9 @@ def test_create_workout_docstring_documents_strength_timers_reps_and_pounds():
     doc = server.create_workout.__doc__
     for needle in ("duration_s", "reps", "rest_duration_s", "weight_lb", "set_weights_lb", "warnings", "SIDE_PLANK"):
         assert needle in doc
+
+
+def test_plan_status_tool_is_registered():
+    schema = _get_tool_schema("set_training_plan_status")
+    assert set(schema["required"]) == {"plan_id", "status"}
+    assert "athlete's call" in server.set_training_plan_status.__doc__

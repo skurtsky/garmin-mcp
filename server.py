@@ -532,6 +532,30 @@ def link_plan_workout_to_garmin(
 
 
 @mcp.tool()
+def set_training_plan_status(plan_id: str, status: str) -> dict:
+    """
+    Queue a stored plan as a future plan, or archive one — e.g. bring an
+    archived block back as the next one, or shelve a future plan that's no
+    longer wanted.
+
+    A future plan stays editable (amend_training_plan with its plan_id) and
+    becomes the active plan by itself on its start date. Which plan is
+    active is the athlete's call: this tool can't activate a plan or change
+    the active one — they do that at /training-plan/plans. New plans are
+    uploaded there too (as future unless they choose to activate them).
+
+    Returns the new status, the plan's dates, when it takes over
+    (becomes_active_on) and any overlap or gap with the plans around it
+    (timeline) — mention those to the athlete.
+
+    Args:
+        plan_id: The plan's id (from list_training_plans).
+        status: "future" or "archived".
+    """
+    return plan_tools.set_training_plan_status(plan_id, status)
+
+
+@mcp.tool()
 def get_training_plan_revisions(plan_id: Optional[str] = None, limit: int = 20) -> list:
     """
     List a plan's revision history, newest first: version, source (upload /

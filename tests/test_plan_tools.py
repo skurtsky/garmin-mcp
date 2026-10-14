@@ -261,3 +261,40 @@ def test_season_data(plan, fake_db):
     assert first["weeks"][0] == {"weekNumber": 1, "start": "2026-09-14", "end": "2026-09-20", "phase": "Base",
                                  "recovery": False, "plannedMin": 230, "doneMin": 50}
     assert first["phases"] == [{"name": "Base", "start": "2026-09-14", "end": "2026-09-27"}]
+
+
+def test_coach_can_queue_and_archive_plans_but_not_change_the_active_one(plan, fake_db, monkeypatch):
+    monkeypatch.setattr(plan_tools, "local_today", lambda: date(2026, 9, 20))
+    plan_service.save_upload(_shifted("winter", "2026-09-28"), activate=False)
+
+    out = plan_tools.set_training_plan_status("winter", "archived")
+    assert (out["status"], out["previous_status"]) == ("archived", "future")
+    assert fake_db.plans["winter"]["status"] == "archived"
+
+    out = plan_tools.set_training_plan_status("winter", "future")
+    assert out["status"] == "future" and out["becomes_active_on"] == "2026-09-28"
+    assert out["timeline"] == []        # starts the day after the active plan ends
+
+    with pytest.raises(ToolError, match="Only the athlete"):
+        plan_tools.set_training_plan_status("winter", "active")
+    with pytest.raises(ToolError, match="is the active plan"):
+        plan_tools.set_training_plan_status("test-block-2026", "archived")
+    with pytest.raises(ToolError, match="'future' or 'archived'"):
+        plan_tools.set_training_plan_status("winter", "paused")
+    with pytest.raises(ToolError, match="No plan with id"):
+        plan_tools.set_training_plan_status("nope", "future")
+    assert fake_db.plans["test-block-2026"]["status"] == "active"
+
+
+def test_queueing_a_plan_reports_overlaps_and_a_past_start(plan, fake_db, monkeypatch):
+    monkeypatch.setattr(plan_tools, "local_today", lambda: date(2026, 9, 20))
+    plan_service.save_upload(_shifted("clash", "2026-09-21"), activate=False)
+    plan_service.set_status("clash", "archived")
+
+    out = plan_tools.set_training_plan_status("clash", "future")
+
+    assert "overlaps" in out["timeline"][0]
+    assert "becomes_active_on" in out
+    plan_service.set_status("clash", "archived")
+    plan_service.save_upload(_shifted("old", "2026-08-03"), activate=False)
+    assert "won't take over by itself" in plan_tools.set_training_plan_status("old", "future")["note"]
