@@ -301,6 +301,7 @@ const ICONS = {
   trash:'<path d="M216 48h-40v-8a24 24 0 0 0-24-24h-48a24 24 0 0 0-24 24v8H40a8 8 0 0 0 0 16h8v144a16 16 0 0 0 16 16h128a16 16 0 0 0 16-16V64h8a8 8 0 0 0 0-16ZM96 40a8 8 0 0 1 8-8h48a8 8 0 0 1 8 8v8H96Zm96 168H64V64h128Zm-80-104v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Zm48 0v64a8 8 0 0 1-16 0v-64a8 8 0 0 1 16 0Z"/>',
   plus:'<path d="M224 128a8 8 0 0 1-8 8h-80v80a8 8 0 0 1-16 0v-80H40a8 8 0 0 1 0-16h80V40a8 8 0 0 1 16 0v80h80a8 8 0 0 1 8 8Z"/>',
   flag:'<path d="M227.32,48.75A8,8,0,0,0,218.76,50c-28,24.22-51.72,12.48-79.21-1.13C111.07,34.76,78.78,18.79,42.76,50A8,8,0,0,0,40,56V224a8,8,0,0,0,16,0V179.77c26.79-21.16,49.87-9.75,76.45,3.41,28.49,14.09,60.77,30.06,96.79-1.13a8,8,0,0,0,2.76-6V56A8,8,0,0,0,227.32,48.75ZM216,71.6v40.65c-14,11.06-27,13.22-40,10.88V79.34A60.05,60.05,0,0,0,216,71.6Zm-56,3.76v43c-6.66-2.67-13.43-6-20.45-9.48-8.82-4.37-18-8.91-27.55-12.18v-43c6.66,2.66,13.43,6,20.45,9.48C141.27,67.55,150.46,72.09,160,75.36ZM96,48.91V92.69a60.06,60.06,0,0,0-40,7.75V59.78C70,48.72,83,46.57,96,48.91ZM86.58,152A60.06,60.06,0,0,0,56,160.43V119.78c14-11.06,27-13.22,40-10.88v43.8A65.61,65.61,0,0,0,86.58,152ZM112,156.67v-43c6.66,2.66,13.43,6,20.45,9.48,8.82,4.37,18,8.9,27.55,12.17v43c-6.66-2.67-13.43-6-20.45-9.48C130.73,164.47,121.54,159.94,112,156.67Zm64,26.45v-43.8a65.61,65.61,0,0,0,9.42.72A60.11,60.11,0,0,0,216,131.57v40.68C202,183.31,189,185.46,176,183.12Z"/>',
+  sync:'<path d="M240 56v48a8 8 0 0 1-8 8h-48a8 8 0 0 1 0-16h27.4l-26.59-24.36-.25-.24a80 80 0 1 0-1.67 114.78 8 8 0 0 1 11 11.63A95.44 95.44 0 0 1 128 224h-1.32A96 96 0 1 1 195.75 60L224 85.8V56a8 8 0 1 1 16 0Z"/>',
   history:'<path d="M136 80v43.5l36.1 21.7a8 8 0 0 1-8.2 13.7l-40-24A8 8 0 0 1 120 128V80a8 8 0 0 1 16 0Zm-8-48a95.4 95.4 0 0 0-67.9 28.1C54 66.3 48.3 72.4 43 78.5V64a8 8 0 0 0-16 0v40a8 8 0 0 0 8 8h40a8 8 0 0 0 0-16H52.1c5.7-6.8 11.4-13.2 19.3-21.2a80 80 0 1 1 1.7 114.8 8 8 0 1 0-11 11.6A96 96 0 1 0 128 32Z"/>'
 };
 function icon(name, size) {
@@ -426,6 +427,12 @@ DESKTOP.addEventListener('change', () => render());
 
 const state = {
   settingsCat: null,               // the open Settings category (null: the list, on a phone)
+  sync: null,                      // Settings → Garmin Sync: the server's overview (null: not loaded)
+  syncError: '',
+  syncForm: { mode: 'full' },      // the Run sync form; blank fields use sync_garmin.py's defaults
+  syncFormError: '',
+  syncStarting: false,
+  syncRun: null,                   // a past run opened from Recent runs (null: the newest run)
   tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
   planWeekNumber: initialWeek(),
   planView: initialView(),                   // 'week' | 'month'; month only applies on desktop
@@ -936,17 +943,18 @@ function planTab() {
 
 /* Settings are grouped by what they belong to: General (this device and
    units), Training (goal race, zones), Plan (the active plan, its files and
-   history), Calendar and About. On a desktop a category list sits beside the
+   history), Calendar, Garmin Sync and About. On a desktop a category list sits beside the
    form; on a phone it's a grouped list with value summaries that drills into
    a page with a back arrow. */
 const SETTINGS_CATS = [['general', 'General', 'gear'], ['training', 'Training', 'flag'], ['plan', 'Plan', 'list'],
-  ['calendar', 'Calendar', 'calendar'], ['about', 'About', 'history']];
+  ['calendar', 'Calendar', 'calendar'], ['sync', 'Garmin Sync', 'sync'], ['about', 'About', 'history']];
 function settingsSummary(key) {
   const ov = state.overrides;
   if (key === 'general') return [capitalize(theme()), state.unit === 'imperial' ? 'Imperial' : 'Metric', state.tz && state.tz.effective].filter(Boolean).join(' · ');
   if (key === 'training') return [state.goal && state.goal.goal ? state.goal.goal.name : 'No goal race', ov.ftp ? 'FTP ' + ov.ftp + ' W' : ''].filter(Boolean).join(' · ');
   if (key === 'plan') return [PLAN.meta.title || PLAN.meta.id, 'v' + SERVER.version].join(' · ');
   if (key === 'calendar') return state.calendar && state.calendar.defaultTime ? 'Default start ' + state.calendar.defaultTime : 'Publish to a calendar app';
+  if (key === 'sync') return syncSummary();
   return 'Garmin + ' + (PLAN.meta.generatedBy || 'Claude Coach');
 }
 function settingsPane(key) {
@@ -1004,6 +1012,8 @@ function settingsPane(key) {
     h += historySection();
   } else if (key === 'calendar') {
     h += calendarSection();
+  } else if (key === 'sync') {
+    h += syncSection();
   } else {
     h += '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">'
       + '<div class="card-title" style="margin-bottom:4px;">About</div>'
@@ -1013,6 +1023,7 @@ function settingsPane(key) {
 }
 function settingsTab() {
   const cat = state.settingsCat;
+  if (state.sync === null && !state.syncError) loadSync();   // for the summary line too
   const cur = cat || 'general';            // a desktop always shows a pane
   const info = SETTINGS_CATS.find(c => c[0] === cur) || SETTINGS_CATS[0];
   const list = SETTINGS_CATS.map(c => '<button type="button" class="set-cat' + (c[0] === cur ? ' on' : '') + '" data-act="settings-cat" data-cat="' + c[0] + '"' + (c[0] === cur ? ' aria-current="true"' : '') + '>'
@@ -1290,6 +1301,187 @@ function loadRevisions() {
     .finally(() => { if (state.tab === 'settings') render(); });
 }
 
+/* Garmin Sync: when each kind of data last came in from Garmin, and a form
+   that runs sync_garmin.py on the server with the flags the scheduled job
+   would take. A run goes on in the background on the server; its log is
+   saved as it runs, so leaving and coming back here picks it up again.
+   While a run is going the runs card refreshes on its own, without
+   re-rendering the form being filled in. */
+const SYNC_FIELDS = {
+  days: { flag: '--days', label: 'Recent days of daily metrics', type: 'number', placeholder: '3',
+    hint: 'Sleep, HRV, readiness and the rest, for this many days back. Ignored when a start date is set.' },
+  since: { flag: '--since', label: 'Daily metrics from', type: 'date' },
+  end_date: { flag: '--end-date', label: 'Daily metrics to', type: 'date', hint: 'Blank: today.' },
+  activities_since: { flag: '--activities-since', label: 'Activities from', type: 'date',
+    hint: 'Every activity from this date — blank syncs just the latest 20. Activities deleted from Garmin in the range are removed.' },
+  activities_end_date: { flag: '--activities-end-date', label: 'Activities to', type: 'date', hint: 'Blank: today.' },
+  detail_limit: { flag: '--detail-limit', label: 'Activity details per run', type: 'number', placeholder: '10',
+    hint: 'Splits, zones, routes and best efforts — several Garmin calls each, so large numbers take a while.' },
+  overwrite: { flag: '--overwrite', label: 'Re-fetch details already stored', type: 'switch',
+    hint: 'Refresh the most recent activities\' details even when they\'re current — after an update adds new fields.' },
+  history_days: { flag: '--history-days', label: 'Days of history', type: 'number', placeholder: '365',
+    hint: 'How far back to fill threshold (FTP, LTHR, pace, VO2max) and race-prediction history. Garmin allows up to 365.' },
+};
+const SYNC_MODES = {
+  full: { flag: '', fields: ['days', 'since', 'end_date', 'activities_since', 'activities_end_date', 'detail_limit', 'overwrite'],
+    text: 'Daily metrics, activities, activity details, records, profile, gear and goals — what the scheduled sync runs.' },
+  daily: { flag: '--daily-only', fields: ['days', 'since', 'end_date'], text: 'Only daily health metrics — for backfilling trends.' },
+  activities: { flag: '--activities-only', fields: ['activities_since', 'activities_end_date'], text: 'Only the activity list — for an activity history backfill.' },
+  details: { flag: '--details-only', fields: ['detail_limit', 'overwrite'], text: 'Only activity details — e.g. a one-time backfill with a large limit.' },
+  history: { flag: '--backfill-history', fields: ['history_days'], text: 'One-off: fill threshold and race-prediction history from Garmin, then stop.' },
+};
+const SYNC_STATUS = { running: 'Running', succeeded: 'Done', failed: 'Failed', cancelled: 'Cancelled', interrupted: 'Interrupted' };
+function syncArgs(form) {
+  const mode = SYNC_MODES[form.mode] || SYNC_MODES.full;
+  const args = mode.flag ? [mode.flag] : [];
+  mode.fields.forEach(k => {
+    const v = form[k];
+    if (SYNC_FIELDS[k].type === 'switch') { if (v) args.push(SYNC_FIELDS[k].flag); }
+    else if (v !== undefined && v !== null && String(v).trim() !== '') args.push(SYNC_FIELDS[k].flag, String(v).trim());
+  });
+  return args;
+}
+function syncBody(form) {
+  const body = { mode: form.mode };
+  (SYNC_MODES[form.mode] || SYNC_MODES.full).fields.forEach(k => { if (form[k] !== undefined && form[k] !== '') body[k] = form[k]; });
+  return body;
+}
+function agoLabel(iso) {
+  if (!iso) return 'Never';
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return 'Just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  return new Date(iso).toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' });
+}
+function durationLabel(start, end) {
+  const s = Math.max(0, Math.round(((end ? new Date(end) : new Date()) - new Date(start)) / 1000));
+  return s < 60 ? s + 's' : s < 3600 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+}
+function syncRunning() { return !!(state.sync && state.sync.latest && state.sync.latest.status === 'running'); }
+function syncSummary() {
+  if (!state.sync) return 'Last sync, run a sync or backfill';
+  return (syncRunning() ? 'Sync running · ' : '') + 'Last synced ' + agoLabel(state.sync.lastSync).toLowerCase();
+}
+function syncSection() {
+  if (state.syncError && !state.sync) return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Garmin Sync</div>'
+    + '<div style="font-size:13px; color:var(--color-neutral-400);">' + esc(state.syncError) + '</div></div>';
+  if (!state.sync) return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div style="font-size:13px; color:var(--color-neutral-400);">Loading…</div></div>';
+  return syncLastSection() + syncFormSection() + '<div id="sync-runs">' + syncRunsSection() + '</div>';
+}
+function syncLastSection() {
+  const sy = state.sync;
+  const rows = sy.dataTypes.map(t => {
+    const failed = t.status && t.status !== 'ok';
+    return '<div><span>' + esc(t.label) + '</span><span' + (failed ? ' style="color:var(--color-danger);"' : '')
+      + ' title="' + esc(failed ? (t.error || t.status) : t.lastSyncTime ? new Date(t.lastSyncTime).toLocaleString() : '') + '">'
+      + (failed ? 'Error · ' : '') + esc(agoLabel(t.lastSyncTime)) + '</span></div>';
+  }).join('');
+  return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div class="card-title" style="margin-bottom:2px;">Last sync</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">'
+      + (sy.lastSync ? 'Garmin data last came in ' + esc(agoLabel(sy.lastSync).toLowerCase()) + ' (' + esc(new Date(sy.lastSync).toLocaleString(undefined, { weekday:'short', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })) + ').'
+        : 'Nothing has synced yet.') + ' The scheduled sync keeps this current; run one below to catch up now or backfill.</div>'
+    + '<div class="goal-info" style="margin-bottom:0;">' + rows + '</div></div>';
+}
+function syncFormSection() {
+  const f = state.syncForm;
+  const mode = SYNC_MODES[f.mode] || SYNC_MODES.full;
+  const busy = state.syncStarting || syncRunning();
+  const lock = busy ? ' disabled' : '';
+  const field = k => {
+    const def = SYNC_FIELDS[k];
+    const hint = def.hint ? '<div class="sync-hint">' + esc(def.hint) + '</div>' : '';
+    if (def.type === 'switch') return '<div class="sync-field sync-field-wide"><button type="button" class="goal-toggle" data-act="sync-toggle" data-field="' + k + '" role="switch" aria-checked="' + !!f[k] + '"' + lock + '>'
+      + '<span style="font-size:13px;">' + esc(def.label) + ' <code class="sync-flag">' + def.flag + '</code></span><span class="switch' + (f[k] ? ' on' : '') + '"></span></button>' + hint + '</div>';
+    return '<div class="sync-field' + (def.hint && def.type !== 'date' ? ' sync-field-wide' : '') + '"><div class="field"><label>' + esc(def.label) + ' <code class="sync-flag">' + def.flag + '</code></label>'
+      + '<input class="input" type="' + def.type + '"' + (def.type === 'number' ? ' inputmode="numeric" min="1"' : '') + (def.placeholder ? ' placeholder="' + def.placeholder + '"' : '')
+      + ' data-sync-field="' + k + '" value="' + esc(f[k] || '') + '"' + lock + '></div>' + hint + '</div>';
+  };
+  return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
+    + '<div class="card-title" style="margin-bottom:2px;">Run sync</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">Runs on the server in the background — you can leave this page; come back here to see how it\'s going. Blank fields use the sync\'s defaults.</div>'
+    + '<div class="field" style="margin-bottom:6px;"><label>What to sync</label><select class="input" data-sync-mode' + lock + '>'
+      + state.sync.modes.map(m => '<option value="' + esc(m.key) + '"' + (m.key === f.mode ? ' selected' : '') + '>' + esc(m.label) + '</option>').join('') + '</select></div>'
+    + '<div class="sync-hint" style="margin-bottom:12px;">' + esc(mode.text) + '</div>'
+    + '<div class="sync-fields">' + mode.fields.map(field).join('') + '</div>'
+    + '<div class="sync-cmd"><span>Runs</span><code data-sync-cmd>' + esc(['python sync_garmin.py'].concat(syncArgs(f)).join(' ')) + '</code></div>'
+    + (state.syncFormError ? '<div class="goal-error">' + esc(state.syncFormError) + '</div>' : '')
+    + '<div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; margin-top:12px;">'
+      + (syncRunning() ? '<span style="font-size:12px; color:var(--color-neutral-500);">A sync is running.</span>' : '')
+      + '<button type="button" class="btn btn-primary" data-act="sync-start"' + lock + '>' + icon('sync', 14) + (state.syncStarting ? ' Starting…' : ' Run sync') + '</button></div>'
+    + '</div>';
+}
+function syncStatusTag(status) {
+  return '<span class="sync-status sync-' + esc(status) + '">' + (status === 'running' ? '<span class="sync-pulse"></span>' : '') + esc(SYNC_STATUS[status] || status) + '</span>';
+}
+function syncRunsSection() {
+  const sy = state.sync;
+  if (!sy.latest) return '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Runs</div>'
+    + '<div style="font-size:13px; color:var(--color-neutral-400);">No syncs started from here yet. The scheduled sync\'s own runs aren\'t listed — only ones run from this page.</div></div>';
+  const run = state.syncRun && state.syncRun.id !== sy.latest.id ? state.syncRun : sy.latest;
+  const isLatest = run.id === sy.latest.id;
+  const head = '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px;">'
+    + '<div class="card-title">' + (isLatest ? 'Latest run' : 'Run #' + run.id) + '</div>' + syncStatusTag(run.status)
+    + '<span style="font-size:12px; color:var(--color-neutral-500);">' + esc(agoLabel(run.startedAt)) + ' · ' + esc(durationLabel(run.startedAt, run.finishedAt)) + (run.exitCode != null && run.status !== 'succeeded' ? ' · exit ' + esc(run.exitCode) : '') + '</span>'
+    + '<span style="margin-left:auto; display:flex; gap:6px;">'
+      + (!isLatest ? '<button type="button" class="btn btn-secondary" data-act="sync-latest" style="font-size:12px; padding:5px 10px;">Back to latest</button>' : '')
+      + (run.status === 'running' ? '<button type="button" class="btn btn-secondary" data-act="sync-cancel" data-run="' + run.id + '" style="font-size:12px; padding:5px 10px; color:var(--color-danger);"' + (run.cancelRequested ? ' disabled' : '') + '>' + (run.cancelRequested ? 'Cancelling…' : 'Cancel') + '</button>' : '')
+    + '</span></div>';
+  const log = '<code class="sync-flag" style="display:block; margin-bottom:8px; white-space:normal; word-break:break-all;">' + esc(run.command) + '</code>'
+    + '<pre class="sync-log" data-sync-log>' + esc(run.log || (run.status === 'running' ? 'Starting…' : 'No output.')) + '</pre>';
+  const past = sy.runs.length > 1 ? '<div class="sub-label" style="margin-top:14px;">Recent runs</div><div class="rev-list">' + sy.runs.map(r =>
+      '<button type="button" class="rev-row sync-run-row' + (r.id === run.id ? ' on' : '') + '" data-act="sync-open" data-run="' + r.id + '">'
+      + '<div style="flex:1; min-width:0; text-align:left;"><div style="font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">' + esc(r.command.replace(/^python sync_garmin\.py ?/, '') || 'Full sync') + '</div>'
+      + '<div style="font-size:12px; color:var(--color-neutral-500);">#' + r.id + ' · ' + esc(new Date(r.startedAt).toLocaleString(undefined, { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })) + ' · ' + esc(durationLabel(r.startedAt, r.finishedAt)) + '</div></div>'
+      + syncStatusTag(r.status) + '</button>').join('') + '</div>' : '';
+  return '<div class="card elev-sm" style="margin:12px 18px 24px; padding:16px;">' + head + log + past + '</div>';
+}
+/* Swap in the runs card only. The log follows new output unless it has
+   been scrolled up to read something. */
+let syncLogTop = null;            // null: pinned to the bottom
+function pinSyncLog() {
+  const log = document.querySelector('[data-sync-log]');
+  if (log) log.scrollTop = syncLogTop === null ? log.scrollHeight : syncLogTop;
+}
+function refreshSyncRuns() {
+  const box = document.getElementById('sync-runs');
+  if (!box || !state.sync) return render();
+  box.innerHTML = syncRunsSection();
+  pinSyncLog();
+}
+function syncOpen() { return state.tab === 'settings' && state.settingsCat === 'sync'; }
+let syncTimer = null;
+function loadSync(opts) {
+  const quiet = opts && opts.quiet;
+  if (!quiet) state.sync = state.sync || undefined;
+  const wasRunning = syncRunning();
+  return api('sync')
+    .then(data => {
+      state.sync = data; state.syncError = '';
+      if (state.syncRun && state.syncRun.status === 'running') return api('sync/runs/' + state.syncRun.id).then(r => { state.syncRun = r; });
+    })
+    .catch(err => { state.syncError = 'Could not load sync status: ' + err.message; })
+    .finally(() => {
+      if (state.tab !== 'settings') return;
+      // The form unlocks (and Last sync changes) when a run ends; otherwise just the runs card.
+      if (!quiet) syncLogTop = null;
+      if (quiet && wasRunning === syncRunning() && document.getElementById('sync-runs')) refreshSyncRuns(); else render();
+      scheduleSyncPoll();
+    });
+}
+function scheduleSyncPoll() {
+  clearTimeout(syncTimer);
+  const watching = syncRunning() || (state.syncRun && state.syncRun.status === 'running');
+  if (syncOpen() && watching) syncTimer = setTimeout(() => { if (syncOpen()) loadSync({ quiet: true }); }, 2000);
+}
+function startSync() {
+  state.syncStarting = true; state.syncFormError = ''; render();
+  api('sync', syncBody(state.syncForm))
+    .then(() => { state.syncStarting = false; state.syncRun = null; return loadSync(); })   // loadSync renders
+    .catch(err => { state.syncStarting = false; state.syncFormError = err.message; render(); });
+}
+
 function modal() {
   if (!state.modalId) return '';
   const hit = workoutById(state.modalId);
@@ -1415,6 +1607,7 @@ function render() {
   document.getElementById('app').innerHTML =
     '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + modal() + editModal()
     + (state.saving ? '<div class="saving-pill">Saving…</div>' : '');
+  pinSyncLog();
 }
 
 /* ── events ── */
@@ -1488,9 +1681,25 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'next') return isMonth() ? stepMonth(1) : stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
-  if (a === 'settings-cat') { state.settingsCat = act.dataset.cat; render(); window.scrollTo(0, 0); return; }
+  if (a === 'settings-cat') { state.settingsCat = act.dataset.cat; render(); window.scrollTo(0, 0); if (state.settingsCat === 'sync') loadSync({ quiet: true }); return; }
   if (a === 'settings-back') { state.settingsCat = null; render(); window.scrollTo(0, 0); return; }
   if (a === 'toggle-history') { state.historyOpen = !state.historyOpen; return render(); }
+  // Syncing isn't part of the plan, so it works while viewing an archived plan too.
+  if (a === 'sync-start') return startSync();
+  if (a === 'sync-toggle') { const k = act.dataset.field; state.syncForm[k] = !state.syncForm[k]; return render(); }
+  if (a === 'sync-latest') { state.syncRun = null; syncLogTop = null; return refreshSyncRuns(); }
+  if (a === 'sync-open') {
+    const id = Number(act.dataset.run);
+    syncLogTop = null;
+    if (state.sync && state.sync.latest && id === state.sync.latest.id) { state.syncRun = null; return refreshSyncRuns(); }
+    return api('sync/runs/' + id).then(r => { state.syncRun = r; refreshSyncRuns(); scheduleSyncPoll(); })
+      .catch(err => alert('Could not load that run: ' + err.message));
+  }
+  if (a === 'sync-cancel') {
+    if (!confirm('Stop this sync? Whatever it already saved stays.')) return;
+    return api('sync/runs/' + act.dataset.run + '/cancel', {}).then(() => loadSync({ quiet: true }))
+      .catch(err => alert('Could not cancel: ' + err.message));
+  }
   /* The calendar settings aren't part of the plan, so they stay editable
      while viewing an archived plan. */
   if (a && a.startsWith('cal-') && state.calendar && !state.saving) {
@@ -1616,9 +1825,21 @@ document.getElementById('app').addEventListener('click', e => {
 /* Edit-dialog fields update the draft as you type without re-rendering (a
    re-render would steal focus); only the sport picker re-renders, since it
    changes the distance unit. */
+document.getElementById('app').addEventListener('scroll', e => {
+  if (!e.target.hasAttribute || !e.target.hasAttribute('data-sync-log')) return;
+  const log = e.target;
+  syncLogTop = log.scrollTop + log.clientHeight >= log.scrollHeight - 8 ? null : log.scrollTop;
+}, true);
+
 document.getElementById('app').addEventListener('input', e => {
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
+  const syncField = e.target.getAttribute && e.target.getAttribute('data-sync-field');
+  if (syncField) {
+    state.syncForm[syncField] = e.target.value;
+    const cmd = document.querySelector('[data-sync-cmd]');
+    if (cmd) cmd.textContent = ['python sync_garmin.py'].concat(syncArgs(state.syncForm)).join(' ');
+  }
   const goalField = e.target.getAttribute && e.target.getAttribute('data-goal-field');
   if (goalField && state.goalDraft) {
     state.goalDraft[goalField] = e.target.value;
@@ -1628,6 +1849,7 @@ document.getElementById('app').addEventListener('input', e => {
 
 document.getElementById('app').addEventListener('change', e => {
   if (e.target.hasAttribute && e.target.hasAttribute('data-tz-select')) return tzSubmit(e.target.value);
+  if (e.target.hasAttribute && e.target.hasAttribute('data-sync-mode')) { state.syncForm.mode = e.target.value; state.syncFormError = ''; return render(); }
   if (e.target.getAttribute && e.target.getAttribute('data-goal-field') === 'date' && state.goalDraft) {
     state.goalDraft.date = e.target.value;
     state.goalError = '';
@@ -1896,6 +2118,27 @@ if (state.tab === 'settings') setView('settings');
 .switch.on { background: var(--color-accent); }
 .switch.on::after { left:18px; }
 .input[type=date] { color-scheme: inherit; }
+.sync-fields { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px 10px; }
+.sync-field-wide { grid-column:1 / -1; }
+.sync-hint { font-size:12px; color:var(--color-neutral-500); margin-top:4px; }
+.sync-flag { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; color:var(--color-neutral-500); }
+.sync-cmd { display:flex; gap:8px; align-items:baseline; margin-top:14px; padding:8px 10px; border-radius:var(--radius-md);
+  background:color-mix(in srgb, var(--color-bg) 60%, transparent); font-size:12px; color:var(--color-neutral-500); }
+.sync-cmd code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--color-text); word-break:break-all; }
+.sync-log { margin:0; max-height:360px; overflow:auto; padding:10px 12px; border-radius:var(--radius-md); white-space:pre-wrap; word-break:break-word;
+  background:color-mix(in srgb, var(--color-bg) 75%, transparent); color:var(--color-neutral-300);
+  font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11.5px; line-height:1.5; }
+.sync-status { display:inline-flex; align-items:center; gap:6px; flex:0 0 auto; font-size:11px; padding:3px 10px; border-radius:999px;
+  background:var(--color-neutral-900); color:var(--color-neutral-400); }
+.sync-running { background:color-mix(in srgb, var(--color-accent) 18%, transparent); color:var(--color-accent-300); }
+.sync-succeeded { background:var(--color-accent-2-800); color:var(--color-accent-2-100); }
+.sync-failed, .sync-interrupted { background:color-mix(in srgb, var(--color-danger) 18%, transparent); color:var(--color-danger); }
+.sync-pulse { width:7px; height:7px; border-radius:50%; background:currentColor; animation:sync-pulse 1.2s ease-in-out infinite; }
+@keyframes sync-pulse { 50% { opacity:.3; } }
+.sync-run-row { width:100%; border-left:0; border-right:0; border-bottom:0; background:transparent; color:var(--color-text); font:inherit; cursor:pointer; padding-left:6px; padding-right:6px; border-radius:6px; }
+.sync-run-row:hover, .sync-run-row.on { background:color-mix(in srgb, var(--color-text) 5%, transparent); }
+@media (max-width: 899px) { .sync-fields { grid-template-columns:minmax(0,1fr); } }
+@media (prefers-reduced-motion: reduce) { .sync-pulse { animation:none; } }
 .goal-note { margin-top:10px; font-size:12px; color: var(--color-neutral-600); }
 .goal-error { margin-top:10px; font-size:12px; color:var(--color-danger); }
 .rev-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--color-neutral-800); }
