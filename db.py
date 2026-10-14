@@ -879,16 +879,20 @@ def delete_activities_not_in(keep_ids: list[int], start: str | None = None,
     params = {"keep": list(keep_ids), "start": start, "end": end, "after": after}
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"DELETE FROM activities WHERE {' AND '.join(where)} RETURNING garmin_id", params)
+            cur.execute(f"SELECT garmin_id FROM activities WHERE {' AND '.join(where)} FOR UPDATE", params)
             removed = [row[0] for row in cur.fetchall()]
-            if removed:
-                for table in ("activity_details", "activity_best_efforts", "activity_overrides"):
-                    cur.execute(f"DELETE FROM {table} WHERE garmin_id = ANY(%s)", (removed,))
-                cur.execute(
-                    """UPDATE training_plan_workout_state SET activity_id = NULL, updated_at = now()
-                       WHERE activity_id = ANY(%s)""",
-                    (removed,),
-                )
+            if not removed:
+                return []
+            # Dependents first: databases created from the performance guide's
+            # schema have activity_details referencing activities.
+            for table in ("activity_details", "activity_best_efforts", "activity_overrides"):
+                cur.execute(f"DELETE FROM {table} WHERE garmin_id = ANY(%s)", (removed,))
+            cur.execute(
+                """UPDATE training_plan_workout_state SET activity_id = NULL, updated_at = now()
+                   WHERE activity_id = ANY(%s)""",
+                (removed,),
+            )
+            cur.execute("DELETE FROM activities WHERE garmin_id = ANY(%s)", (removed,))
             return removed
 
 

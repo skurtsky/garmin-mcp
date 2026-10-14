@@ -135,6 +135,11 @@ def test_close_pool_is_idempotent_and_reopens():
 
 
 def test_delete_activities_not_in_drops_activities_gone_from_garmin():
+    # Databases created from docs/performance-guide.md's schema have this
+    # foreign key (without ON DELETE CASCADE); ensure_schema() doesn't.
+    with db.get_conn() as conn, conn.cursor() as cur:
+        cur.execute("""ALTER TABLE activity_details ADD CONSTRAINT activity_details_garmin_id_fkey
+                       FOREIGN KEY (garmin_id) REFERENCES activities(garmin_id)""")
     _activity(1, "2026-10-01 07:00:00")
     _activity(2, "2026-10-05 07:00:00", kind="lap_swimming")   # deleted from Garmin
     _activity(3, "2026-10-05 08:00:00", kind="lap_swimming")   # its re-upload
