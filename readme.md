@@ -319,11 +319,11 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 |---|---|---|
 | `/training-plan` | `GET` | The viewer for the active plan (`?plan=<id>` for a future one, or an archived one read-only; `&week=` / `&month=` to open at a week or month), or a "No plan active" page |
 | `/training-plan/season` | `GET` | Every plan on one timeline: weekly hours, phases, races, today |
-| `/training-plan/plans` | `GET` | Every stored plan, with view / download / activate / move to future / archive / delete |
+| `/training-plan/plans` | `GET` | Every stored plan, with view / download PDF or JSON / activate / move to future / archive / delete |
 | `/training-plan/plans/{id}/{activate\|future\|archive\|delete}` | `POST` | Plan lifecycle (the active plan can't be deleted) |
 | `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; stored as a future plan unless made active; same-id uploads confirm first) |
 | `/training-plan/export.json` | `GET` | The plan JSON as currently edited |
-| `/training-plan/pdf` | `GET` | Printable PDF of the stored plan (overview, one page per week, race strategy) |
+| `/training-plan/pdf` | `GET` | Printable PDF of the stored plan (overview, one page per week, race strategy); `?plan=<id>` for another plan. A rendered PDF is kept until the plan changes, so repeat downloads are instant |
 | `/training-plan/calendar.ics` | `GET` | The active plan as a calendar feed — `?key=<feed token>`, not the bearer token (see below) |
 | `/training-plan/api/plan` | `GET` | Plan + version, status, completion (used by the viewer) |
 | `/training-plan/api/operations` | `POST` | `{"operations": [...]}` — the same edit operations as `amend_training_plan` |

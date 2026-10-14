@@ -743,3 +743,29 @@ def test_season_page_switches_back_to_week_and_month_and_keeps_race_names_in_vie
     assert '<span aria-current="page">Season</span>' in r.text
     # the race is in the last week: its label sits to the marker's left, inside the chart
     assert re.search(r'<text class="s-race-l" x="[\d.]+" y="[\d.]+" text-anchor="end">A Very Long Race', r.text)
+
+
+def test_plans_list_and_viewer_offer_a_pdf_download_with_progress(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block(), activate=False)
+
+    page = client.get("/training-plan/plans", params=TOKEN).text
+    assert '<a class="btn" data-pdf href="/training-plan/pdf?plan=next-block&amp;token=t0k">Download PDF</a>' in page
+    assert '<a class="btn" data-pdf href="/training-plan/pdf?plan=test-block-2026&amp;token=t0k">Download PDF</a>' in page
+    assert "window.__pdfLinks" in page                     # the "Generating PDF…" behaviour
+    assert "window.__pdfLinks" in client.get("/training-plan", params=TOKEN).text
+
+
+def test_season_page_reads_everything_in_one_call(client, fake_db, monkeypatch):
+    _upload(client, sample_plan())
+    _upload(client, _next_block(), activate=False)
+    calls = []
+    for name in ("get_training_plan", "get_workout_states", "list_training_plans"):
+        original = getattr(db, name)
+        monkeypatch.setattr(db, name, lambda *a, _n=name, _o=original: calls.append(_n) or _o(*a))
+
+    r = client.get("/training-plan/season", params=TOKEN)
+
+    assert r.status_code == 200 and "Next Block" in r.text
+    assert calls == []                                   # just db.get_season_plans
+    assert '<script type="speculationrules">' in r.text  # Week / Month load on hover

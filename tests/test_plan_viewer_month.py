@@ -84,3 +84,10 @@ def test_a_week_link_opens_the_week_view_and_mode_picks_the_view():
     body = html.split("function initialView() {", 1)[1].split("\n}", 1)[0]
     assert "q.get('week') ? 'week' : storedPlanView()" in body
     assert "mode === 'week' || mode === 'month'" in body
+
+
+def test_viewer_preloads_the_season_page_and_pdf_links_show_progress():
+    html = _html()
+    assert "rules.type = 'speculationrules'" in html and "appLink('/training-plan/season')" in html
+    assert "'down', 'Download', true);" in html                # the Plan PDF card is a data-pdf link
+    assert "document.prerendering" in html                     # a preloaded page leaves the stored view alone
