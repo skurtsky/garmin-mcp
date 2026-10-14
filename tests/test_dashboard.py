@@ -1586,3 +1586,23 @@ def test_trends_has_no_training_status_card_and_in_focus_cards_do_not_redirect()
     assert "ts-card" not in trends and "Training status" not in trends
     focus = _section(html, "tp-today").split('class="focus"', 1)[1]
     assert 'for="tab-trends"' not in focus and "<label" not in focus.split("data-title", 1)[1].split("</div>", 1)[0]
+
+
+def test_a_cached_past_week_is_redone_after_activities_are_added_or_removed(monkeypatch):
+    # The sync runs in another process, so it can't clear this cache; it
+    # bumps db.get_activities_changed_at instead (e.g. after removing an
+    # activity deleted in Garmin Connect).
+    import db
+    from tools import activities as activities_mod
+
+    calls, stamp = [], {"at": "2026-10-14T18:00:00+00:00"}
+    monkeypatch.setattr(db, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "get_activities_changed_at", lambda: stamp["at"])
+    monkeypatch.setattr(activities_mod, "get_weekly_summary_from_db",
+                        lambda week_offset=0: calls.append(week_offset) or {"total_activities": len(calls)})
+
+    assert dashboard._past_week_from_db(1)[0] == {"total_activities": 1}
+    assert dashboard._past_week_from_db(1)[0] == {"total_activities": 1}   # unchanged: cached
+    stamp["at"] = "2026-10-14T18:19:22+00:00"
+    assert dashboard._past_week_from_db(1)[0] == {"total_activities": 2}   # changed: redone
+    assert calls == [1, 1]

@@ -84,6 +84,10 @@ _SECTION_CACHE_TTLS: dict[str, int] = {
 # confused with "week" (always the *current*, still-accumulating week).
 _ACTIVITY_WEEK_TTL = 3600
 
+# For past weeks: when activities last changed (db.get_activities_changed_at)
+# as of each cached copy — a copy older than the latest add/remove is redone.
+_past_week_stamps: dict[str, str | None] = {}
+
 # (timestamp, value, error_message) per section key
 _section_cache: dict[str, tuple[float, object, str | None]] = {}
 _section_cache_lock = threading.Lock()
@@ -99,6 +103,7 @@ def _clear_section_cache():
     """Drop all cached sections. Used by tests."""
     with _section_cache_lock:
         _section_cache.clear()
+        _past_week_stamps.clear()
         _refresh_in_progress.clear()
 
 
@@ -242,19 +247,35 @@ def _build_trends_from_db(rows: list[dict], days: int) -> dict:
 def _past_week_from_db(week_offset: int) -> tuple[dict | None, str | None]:
     """One closed week's summary from PostgreSQL, via the per-offset cache.
 
-    A past week's activities don't change, so a week already viewed this
-    session costs no DB round trip at all (issue 85).
+    A past week's activities rarely change, so a week already viewed costs
+    only a one-row lookup (issue 85) — unless the sync has added or removed
+    an activity since it was cached (a backfill, or one deleted in Garmin
+    Connect), which redoes it.
     """
     from tools.activities import get_weekly_summary_from_db
     cache_key = _activity_week_cache_key(week_offset)
+    stamp = _activities_changed_at()
     cached_value, cached_err, is_fresh = _get_cached(cache_key, _ACTIVITY_WEEK_TTL)
-    if is_fresh and (cached_value is not None or cached_err is not None):
+    with _section_cache_lock:
+        same_data = _past_week_stamps.get(cache_key) == stamp
+    if is_fresh and same_data and (cached_value is not None or cached_err is not None):
         logger.info("dashboard timing: weekly_summary(offset=%s) served from cache", week_offset)
         return cached_value, cached_err
     with _timed(f"weekly_summary(offset={week_offset})"):
         value, err = _safe(get_weekly_summary_from_db, week_offset)
     _set_cached(cache_key, value, err)
+    with _section_cache_lock:
+        _past_week_stamps[cache_key] = stamp
     return value, err
+
+
+def _activities_changed_at() -> str | None:
+    import db
+    try:
+        return db.get_activities_changed_at()
+    except Exception:  # noqa: BLE001 — without it, past weeks just keep their TTL
+        logger.warning("Could not read when activities last changed", exc_info=True)
+        return None
 
 
 def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
