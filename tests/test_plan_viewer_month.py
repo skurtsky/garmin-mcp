@@ -49,3 +49,22 @@ def test_settings_are_grouped_into_categories_with_a_phone_drill_down():
     assert 'data-act="settings-cat"' in html and 'data-act="settings-back"' in html
     assert ".set-root .set-pane" in html          # phone: the list, then a page with a back arrow
     assert html.index("a === 'settings-cat'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")
+
+
+def test_paging_carries_on_into_the_neighboring_plans():
+    """Past either end of a plan the week view opens the plan before / after
+    it (server-supplied neighbors), and the month view shows their days."""
+    html = _html()
+    assert "const NEIGHBORS = SERVER.neighbors || {};" in html
+    step = html.split("function stepWeek(delta) {", 1)[1].split("\n}", 1)[0]
+    assert "NEIGHBORS.next" in step and "NEIGHBORS.prev" in step
+    assert 'data-act="open-plan"' in html and "a === 'open-plan'" in html
+    assert ".month-day.ghost" in html
+    assert "get('week')" in html and "get('month')" in html
+
+
+def test_future_plans_get_their_own_banner_and_stay_editable():
+    html = _html()
+    assert "const FUTURE = SERVER.status === 'future';" in html
+    assert "const READ_ONLY = !!SERVER.readOnly;" in html   # the server says archived only
+    assert "/activate" in html.split("function readOnlyBanner()", 1)[1].split("\n}", 1)[0]

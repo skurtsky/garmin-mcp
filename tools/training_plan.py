@@ -5,17 +5,19 @@ The coach skill produces a plan JSON; it's uploaded here, stored as one
 document per plan id (tools/plan_service.py), and served inside the viewer
 template (tools/assets/plan-viewer.html) at request time — so every device
 sees the same plan, completion ticks, edits and zones. One plan is active;
-older plans are archived and viewable read-only.
+future plans are planned ahead and stay editable; archived plans are viewable
+read-only.
 
 Routes (all behind the same ``?token=`` bearer auth as ``/mcp`` and
 ``/dashboard``, enforced by the wrapper in server.py). ``?plan=<id>`` selects
 a plan; without it the active plan is used.
 
     GET  /training-plan                  — the viewer, or a "No plan active" page
-    GET  /training-plan/plans            — every plan: view / activate / archive / delete
-    POST /training-plan/plans/{id}/{action}  — activate | archive | delete
+    GET  /training-plan/plans            — every plan: view / activate / future / archive / delete
+    POST /training-plan/plans/{id}/{action}  — activate | future | archive | delete
     GET  /training-plan/upload           — the upload form
     POST /training-plan/upload           — validate, confirm a same-id replace, store
+                                           (as the active plan only when asked)
     GET  /training-plan/export.json      — the plan JSON as currently edited
     GET  /training-plan/pdf              — printable wall-chart PDF
     GET  /training-plan/calendar.ics     — the active plan as a calendar feed;
@@ -64,6 +66,7 @@ logger = logging.getLogger(__name__)
 FILE_FIELD = "plan_json"
 TEXT_FIELD = "plan_text"  # the JSON carried through the replace confirmation
 CONFIRM_FIELD = "confirm_replace"
+ACTIVATE_FIELD = "make_active"  # checkbox: store the upload as the active plan
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "assets", "plan-viewer.html")
 
@@ -102,8 +105,12 @@ h2 { font-size:1.05rem; font-weight:500; margin:1.5rem 0 .5rem; }
 .tag { display:inline-block; font-size:.7rem; letter-spacing:.04em; text-transform:uppercase; padding:2px 8px; border-radius:6px;
   border:1px solid var(--accent); color:var(--accent); }
 .tag.archived { border-color:var(--line); color:var(--muted); }
+.tag.future { border-color:var(--ok); color:var(--ok); }
 label { display:block; font-size:.82rem; color:var(--muted); margin:0 0 .35rem; }
 input[type=file] { width:100%; font:inherit; color:var(--fg); }
+label.check { display:flex; gap:.6rem; align-items:flex-start; margin:1rem 0 0; font-size:.9rem; color:var(--fg); cursor:pointer; }
+label.check input { margin:.25rem 0 0; accent-color:var(--accent); }
+label.check .sub { display:block; }
 .actions { display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.9rem; }
 button, .btn {
   display:inline-block; padding:.45rem .95rem; font:inherit; font-size:.9rem; border-radius:8px; cursor:pointer;
@@ -188,12 +195,27 @@ def render_message_html(title: str, message: str, token: str | None) -> str:
     return _page(title, body, token)
 
 
-def render_no_plan_html(token: str | None = None) -> str:
-    """Placeholder page shown at /training-plan when no plan is active."""
+def render_no_plan_html(token: str | None = None, future: list[dict] | None = None) -> str:
+    """Placeholder page shown at /training-plan when no plan is active —
+    with the future plans, so the next one is a click from being active."""
+    cards = []
+    for p in future or []:
+        activate_url = _url(f"/training-plan/plans/{p['id']}/activate", token)
+        cards.append(
+            '<div class="card"><div class="row"><div>'
+            f'<div class="title">{_e(p.get("event") or p["id"])}</div>'
+            f'<div class="sub">Starts {_e(p.get("start_date") or "?")}</div></div>'
+            '<span class="tag future">future</span></div><div class="actions">'
+            f'<a class="btn" href="{_e(_url("/training-plan", token, plan=p["id"]))}">View</a>'
+            f'<form class="inline" method="post" action="{_e(activate_url)}">'
+            '<button type="submit" class="btn-primary">Make active</button></form></div></div>'
+        )
+    cards = "".join(cards)
     body = (
         "<h1>No plan active</h1>"
-        '<div class="meta">Upload a Claude Coach plan JSON, or activate an archived plan.</div>'
-        '<div class="card"><div class="actions" style="margin-top:0">'
+        '<div class="meta">Upload a Claude Coach plan JSON, or make a future or archived plan active.</div>'
+        + (f"<h2>Future plans</h2>{cards}" if cards else "")
+        + '<div class="card"><div class="actions" style="margin-top:0">'
         f'<a class="btn btn-primary" href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
         f'<a class="btn" href="{_e(_url("/training-plan/plans", token))}">All plans</a>'
         "</div></div>"
@@ -211,11 +233,16 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
         meta = active["plan"].get("meta") or {}
         current = (
             f'<div class="meta">Active plan: {_e(meta.get("event") or active["id"])} '
-            f'(<code>{_e(active["id"])}</code>). Uploading a plan with a different id '
-            "archives it; the same id replaces its content after a confirmation.</div>"
+            f'(<code>{_e(active["id"])}</code>). A plan with a different id is stored as a '
+            "future plan unless you make it active (which archives this one); the same id "
+            "replaces its content after a confirmation.</div>"
         )
+        activate_hint = f"Archives {_e(meta.get('event') or active['id'])}. Leave unticked to plan ahead — make it active later from All plans."
     else:
         current = '<div class="meta">No plan is active right now.</div>'
+        activate_hint = "No plan is active, so this one can start straight away."
+    # Never pre-ticked while a plan is active: replacing it is a deliberate choice.
+    checked = "" if active else " checked"
 
     error_html = f'<p class="error">{_e(error)}</p>' if error else ""
     body = (
@@ -226,6 +253,8 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
         f'<form method="post" action="{_e(_url("/training-plan/upload", token))}" enctype="multipart/form-data">'
         f'<label for="{FILE_FIELD}">Plan JSON from Claude Coach</label>'
         f'<input id="{FILE_FIELD}" name="{FILE_FIELD}" type="file" accept=".json,application/json" required>'
+        f'<label class="check"><input type="checkbox" name="{ACTIVATE_FIELD}" value="1"{checked}>'
+        f'<span>Make this the active plan<span class="sub">{activate_hint}</span></span></label>'
         '<div class="actions"><button type="submit" class="btn-primary">Upload</button></div>'
         "</form></div>"
         f'<div class="links"><a href="{_e(_url("/training-plan", token))}">View plan</a>'
@@ -234,7 +263,8 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
     return _page("Upload training plan", body, token)
 
 
-def render_confirm_replace_html(plan: dict, preview: dict, warnings: list[str], token: str | None) -> str:
+def render_confirm_replace_html(plan: dict, preview: dict, warnings: list[str], token: str | None,
+                                activate: bool = False) -> str:
     """Shown when an upload's id matches a stored plan: what replacing changes."""
     meta = plan.get("meta") or {}
     items = [
@@ -258,7 +288,10 @@ def render_confirm_replace_html(plan: dict, preview: dict, warnings: list[str], 
     if preview["zone_overrides_reset"]:
         items.append("Zone overrides and validation flags reset to the file's zones.")
     if preview["status"] != "active":
-        items.append("This archived plan becomes the active plan.")
+        if activate:
+            items.append(f"This {_e(preview['status'])} plan becomes the active plan (the current one is archived).")
+        elif preview["status"] == "archived":
+            items.append("This archived plan comes back as a future plan (editable, not active).")
     items.append("The current content is kept as a revision, so this can be undone from Settings → History.")
     warn_html = (
         '<h2>Warnings</h2><ul class="warn">' + "".join(f"<li>{_e(w)}</li>" for w in warnings) + "</ul>"
@@ -272,22 +305,32 @@ def render_confirm_replace_html(plan: dict, preview: dict, warnings: list[str], 
         f'<form method="post" action="{_e(_url("/training-plan/upload", token))}" enctype="multipart/form-data">'
         f'<textarea name="{TEXT_FIELD}" hidden>{_e(json.dumps(plan, ensure_ascii=False))}</textarea>'
         f'<input type="hidden" name="{CONFIRM_FIELD}" value="1">'
-        '<div class="actions"><button type="submit" class="btn-primary">Replace plan</button>'
+        + (f'<input type="hidden" name="{ACTIVATE_FIELD}" value="1">' if activate else "")
+        + '<div class="actions"><button type="submit" class="btn-primary">Replace plan</button>'
         f'<a class="btn" href="{_e(_url("/training-plan/upload", token))}">Cancel</a></div>'
         "</form></div>"
     )
     return _page("Replace existing plan?", body, token)
 
 
+_STATUS_PHRASE = {"active": "now the active plan", "future": "stored as a future plan",
+                  "archived": "stored as an archived plan"}
+
+
+def _plan_href(row: dict, token: str | None) -> str:
+    """The viewer for a plan: the bare /training-plan for the active one."""
+    return _url("/training-plan", token, plan=None if row["status"] == "active" else row["id"])
+
+
 def render_upload_done_html(row: dict, warnings: list[str], token: str | None) -> str:
     """Only shown when an upload succeeded with warnings (otherwise: redirect)."""
     body = (
         "<h1>Plan uploaded</h1>"
-        f'<div class="meta"><code>{_e(row["id"])}</code> is now the active plan (version {row["version"]}).</div>'
+        f'<div class="meta"><code>{_e(row["id"])}</code> is {_STATUS_PHRASE[row["status"]]} (version {row["version"]}).</div>'
         f'<div class="card"><div class="title">{len(warnings)} warning(s)</div><ul class="warn">'
         + "".join(f"<li>{_e(w)}</li>" for w in warnings)
         + "</ul></div>"
-        f'<div class="links"><a href="{_e(_url("/training-plan", token))}">View plan</a></div>'
+        f'<div class="links"><a href="{_e(_plan_href(row, token))}">View plan</a></div>'
     )
     return _page("Plan uploaded", body, token)
 
@@ -296,11 +339,11 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
     """Every stored plan with its actions."""
     cards = []
     for p in plans:
-        active = p["status"] == "active"
+        status = p["status"]
         dates = " – ".join(d for d in (p.get("start_date"), p.get("end_date")) if d)
-        view_href = _url("/training-plan", token, plan=None if active else p["id"])
         actions = [
-            f'<a class="btn btn-primary" href="{_e(view_href)}">{"View" if active else "View (read-only)"}</a>',
+            f'<a class="btn btn-primary" href="{_e(_plan_href(p, token))}">'
+            f'{"View (read-only)" if status == "archived" else "View"}</a>',
             f'<a class="btn" href="{_e(_url("/training-plan/export.json", token, plan=p["id"]))}">Download JSON</a>',
         ]
 
@@ -312,10 +355,15 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
                 f'<button type="submit" class="{cls}">{label}</button></form>'
             )
 
-        if active:
+        if status == "active":
+            actions.append(post("future", "Move to future", confirm="Move this plan to future plans? No plan will be active."))
             actions.append(post("archive", "Archive", confirm="Archive this plan? No plan will be active."))
         else:
             actions.append(post("activate", "Make active"))
+            if status == "archived":
+                actions.append(post("future", "Move to future"))
+            else:
+                actions.append(post("archive", "Archive"))
             actions.append(post("delete", "Delete", "btn-danger",
                                 confirm="Permanently delete this plan, its history and its completion ticks?"))
         cards.append(
@@ -323,13 +371,14 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
             f'<div class="title">{_e(p.get("event") or p["id"])}</div>'
             f'<div class="sub">{_e(p.get("athlete") or "")}{" · " if p.get("athlete") and dates else ""}{_e(dates)}</div>'
             f'<div class="sub"><code>{_e(p["id"])}</code> · version {p["version"]} · updated {_e(str(p["updated_at"])[:10])}</div>'
-            f'</div><span class="tag{"" if active else " archived"}">{_e(p["status"])}</span></div>'
+            f'</div><span class="tag{"" if status == "active" else " " + status}">{_e(status)}</span></div>'
             f'<div class="actions">{"".join(actions)}</div></div>'
         )
     error_html = f'<p class="error">{_e(error)}</p>' if error else ""
     body = (
         "<h1>Training plans</h1>"
-        '<div class="meta">One plan is active at a time. Archived plans stay viewable, read-only.</div>'
+        '<div class="meta">One plan is active at a time. Future plans are planned ahead and stay '
+        "editable (by you or the coach); archived plans stay viewable, read-only.</div>"
         f"{error_html}"
         + ("".join(cards) or '<div class="card">No plans stored yet.</div>')
         + f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
@@ -375,7 +424,8 @@ async def serve_plan(request):
         if plan_id:
             return HTMLResponse(render_message_html("Plan not found", "No plan with that id.", token),
                                 status_code=404, headers=_NO_STORE)
-        return HTMLResponse(render_no_plan_html(token), headers=_NO_STORE)
+        future = [p for p in await run_in_threadpool(plan_service.list_plans) if p["status"] == "future"]
+        return HTMLResponse(render_no_plan_html(token, future), headers=_NO_STORE)
     return HTMLResponse(page, headers=_NO_STORE)
 
 
@@ -390,12 +440,14 @@ async def serve_plans(request):
 
 
 async def handle_plan_action(request):
-    """POST /training-plan/plans/{id}/{action} — activate | archive | delete."""
+    """POST /training-plan/plans/{id}/{action} — activate | future | archive | delete."""
     token = _token(request)
     plan_id, action = request.path_params["plan_id"], request.path_params["action"]
     try:
         if action == "activate":
             plan_service.set_status(plan_id, "active")
+        elif action == "future":
+            plan_service.set_status(plan_id, "future")
         elif action == "archive":
             plan_service.set_status(plan_id, "archived")
         elif action == "delete":
@@ -425,6 +477,7 @@ async def handle_upload(request):
         upload = form.get(FILE_FIELD)
         text = form.get(TEXT_FIELD)
         confirmed = form.get(CONFIRM_FIELD) == "1"
+        activate = form.get(ACTIVATE_FIELD) == "1"
         if hasattr(upload, "read"):
             raw = await upload.read()
         elif isinstance(text, str) and text:
@@ -436,8 +489,9 @@ async def handle_upload(request):
         plan, warnings = plan_service.parse_upload(raw)
         preview = plan_service.upload_preview(plan)
         if preview is not None and not confirmed:
-            return HTMLResponse(render_confirm_replace_html(plan, preview, warnings, token), headers=_NO_STORE)
-        row = plan_service.save_upload(plan)
+            return HTMLResponse(render_confirm_replace_html(plan, preview, warnings, token, activate),
+                                headers=_NO_STORE)
+        row = plan_service.save_upload(plan, activate)
     except PlanError as e:
         return form_error(str(e))
     except PlanStorageUnavailable as e:
@@ -445,7 +499,7 @@ async def handle_upload(request):
 
     if warnings:
         return HTMLResponse(render_upload_done_html(row, warnings, token), headers=_NO_STORE)
-    return RedirectResponse(_url("/training-plan", token), status_code=303)
+    return RedirectResponse(_plan_href(row, token), status_code=303)
 
 
 async def serve_export(request):

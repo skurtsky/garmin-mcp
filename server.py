@@ -399,7 +399,8 @@ def get_training_plan(
 ) -> dict:
     """
     Read the athlete's training plan (the Claude Coach plan uploaded at
-    /training-plan). Defaults to the active plan.
+    /training-plan). Defaults to the active plan; pass plan_id to read a
+    future plan (planned ahead) or an archived one.
 
     Always returns the plan meta, version, current thresholds (FTP, LTHRs,
     threshold pace, CSS — including any updated in the viewer), phases, and a
@@ -422,8 +423,11 @@ def get_training_plan(
 @mcp.tool()
 def list_training_plans() -> list:
     """
-    List every stored training plan (id, event, athlete, dates, status
-    active/archived, version, last update). Only one plan is active.
+    List every stored training plan (id, event, athlete, dates, status,
+    version, last update): the active plan first, then future plans by start
+    date, then archived ones. Only one plan is active; future plans are
+    planned ahead and can be amended (pass their plan_id); archived plans are
+    read-only.
     """
     return plan_tools.list_training_plans()
 
@@ -431,10 +435,11 @@ def list_training_plans() -> list:
 @mcp.tool()
 def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[str] = None) -> dict:
     """
-    Change a few days of the active training plan without regenerating it.
-    All operations apply atomically (all or none), are saved as one revision
-    labelled with `reason` (restorable from the plan's history), and weekly
-    totals are recomputed. Archived plans are read-only.
+    Change a few days of the active training plan — or of a future plan,
+    with its plan_id — without regenerating it. All operations apply
+    atomically (all or none), are saved as one revision labelled with
+    `reason` (restorable from the plan's history), and weekly totals are
+    recomputed. Archived plans are read-only.
 
     Operations (each a dict with "op"):
       {"op": "add_workout", "date": "YYYY-MM-DD", "workout": {"sport": "run",
@@ -464,7 +469,7 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     Args:
         operations: The edits, applied in order.
         reason: Short why, shown in the plan history (e.g. "Travel Thu–Fri").
-        plan_id: Omit for the active plan.
+        plan_id: Omit for the active plan; a future plan's id to amend it.
 
     Returns the new version, one message per change, the touched workout ids,
     and the recomputed summaries of the affected weeks.

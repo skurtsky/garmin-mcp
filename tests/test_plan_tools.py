@@ -8,6 +8,7 @@ from fastmcp.exceptions import ToolError
 
 from tests.plan_fakes import fake_db, sample_plan  # noqa: F401 — fixture
 from tools import plan_service, plan_tools
+from tools.plan_doc import PlanError
 
 
 @pytest.fixture
@@ -143,3 +144,29 @@ def test_sport_for_activity_type():
     assert plan_service.sport_for_activity_type("strength_training") == "strength"
     assert plan_service.sport_for_activity_type("multi_sport") == "brick"
     assert plan_service.sport_for_activity_type("yoga") is None
+
+
+def test_amend_works_on_future_plans_but_not_archived_ones(plan):
+    plan_service.save_upload(sample_plan(id="next-block"), activate=False)
+
+    result = plan_tools.amend_training_plan(
+        [{"op": "remove_workout", "workout_id": "w2-tue-run"}], "Planning ahead", plan_id="next-block")
+    assert result["plan_id"] == "next-block" and result["version"] == 2
+    assert plan_tools.get_training_plan("next-block")["status"] == "future"
+    assert plan_tools.get_training_plan()["id"] == "test-block-2026"   # the active plan is untouched
+
+    plan_service.set_status("next-block", "archived")
+    with pytest.raises(ToolError, match="read-only"):
+        plan_tools.amend_training_plan([{"op": "set_unit", "unit": "imperial"}], "x", plan_id="next-block")
+
+
+def test_list_orders_active_then_future_by_start_then_archived(plan):
+    plan_service.save_upload(sample_plan(id="later", planStartDate="2027-03-01"), activate=False)
+    plan_service.save_upload(sample_plan(id="sooner", planStartDate="2026-11-01"), activate=False)
+    plan_service.save_upload(sample_plan(id="old"), activate=False)
+    plan_service.set_status("old", "archived")
+
+    assert [(p["id"], p["status"]) for p in plan_tools.list_training_plans()] == [
+        ("test-block-2026", "active"), ("sooner", "future"), ("later", "future"), ("old", "archived")]
+    with pytest.raises(PlanError, match="Unknown plan status"):
+        plan_service.set_status("old", "paused")

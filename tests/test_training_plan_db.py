@@ -128,3 +128,26 @@ def test_calendar_settings_round_trip():
     assert revoked["published"] is False and revoked["publishedAt"] is None
     assert revoked["defaultTime"] == "05:45"
     assert not plan_calendar.key_is_valid(key)
+
+
+def test_future_plans():
+    plan_service.save_upload(sample_plan())
+    row = plan_service.save_upload(sample_plan(id="later", planStartDate="2027-03-01"), activate=False)
+    assert row["status"] == "future"
+    plan_service.save_upload(sample_plan(id="sooner", planStartDate="2026-11-01"), activate=False)
+
+    # re-uploading without activating keeps each plan's status
+    assert plan_service.save_upload(sample_plan(), activate=False)["status"] == "active"
+    assert plan_service.save_upload(sample_plan(id="later", planStartDate="2027-03-01"), activate=False)["status"] == "future"
+    assert [(p["id"], p["status"]) for p in plan_service.list_plans()] == [
+        ("test-block-2026", "active"), ("sooner", "future"), ("later", "future")]
+
+    # an archived plan comes back as a future one
+    plan_service.set_status("sooner", "archived")
+    assert plan_service.save_upload(sample_plan(id="sooner"), activate=False)["status"] == "future"
+
+    plan_service.set_status("test-block-2026", "future")
+    assert db.get_training_plan() is None
+    plan_service.set_status("later", "active")
+    assert plan_service.get_plan()["id"] == "later"
+    assert {p["id"]: p["status"] for p in plan_service.list_plans()}["test-block-2026"] == "future"

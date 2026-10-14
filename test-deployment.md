@@ -227,12 +227,14 @@ starts — there's no manual migration step. `docs/postgres-schema.sql` has the
 same DDL if you ever want to create them by hand.
 
 1. Open `DEPLOYED_URL/training-plan/upload?token=YOUR_TOKEN`
-2. Pick the plan `.json` the coach skill produced and submit. A new plan id
-   becomes the active plan (the previous one is archived); an id that's already
-   stored shows what replacing it would change and asks you to confirm.
+2. Pick the plan `.json` the coach skill produced, tick **Make this the active
+   plan** if it should replace the current one (the previous plan is then
+   archived), and submit. Unticked, a new plan id is stored as a future plan;
+   an id that's already stored shows what replacing it would change and asks
+   you to confirm.
 
-Older plans are listed at `DEPLOYED_URL/training-plan/plans?token=YOUR_TOKEN`
-(view read-only, download, make active again, or delete).
+Every plan is listed at `DEPLOYED_URL/training-plan/plans?token=YOUR_TOKEN`
+(view, download, make active, move to future, archive, or delete).
 
 **Checking the tables from Azure Cloud Shell (PowerShell)** — optional, after
 the first deploy. Cloud Shell has `psql` built in. If the server's firewall

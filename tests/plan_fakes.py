@@ -100,7 +100,11 @@ class FakePlanDB:
         return copy.deepcopy(row)
 
     def list_training_plans(self):
-        rows = sorted(self.plans.values(), key=lambda r: (r["status"] != "active", -r["updated_at"].timestamp()))
+        order = {"active": 0, "future": 1, "archived": 2}
+        rows = sorted(self.plans.values(), key=lambda r: (
+            order[r["status"]],
+            r["plan"]["meta"].get("planStartDate") or "" if r["status"] == "future" else "",
+            -r["updated_at"].timestamp()))
         return [{
             "id": r["id"], "status": r["status"], "version": r["version"],
             "created_at": r["created_at"], "updated_at": r["updated_at"], "archived_at": r["archived_at"],
@@ -108,16 +112,21 @@ class FakePlanDB:
             "start_date": r["plan"]["meta"].get("planStartDate"), "end_date": r["plan"]["meta"].get("planEndDate"),
         } for r in rows]
 
-    def save_uploaded_training_plan(self, plan_id, plan, summary):
-        self._archive_others(plan_id)
+    def save_uploaded_training_plan(self, plan_id, plan, summary, activate=True):
+        if activate:
+            self._archive_others(plan_id)
         now = self._now()
         row = self.plans.get(plan_id)
         if row is None:
-            row = {"id": plan_id, "version": 1, "created_at": now, "archived_at": None}
+            row = {"id": plan_id, "version": 0, "created_at": now, "archived_at": None,
+                   "status": "active" if activate else "future"}
             self.plans[plan_id] = row
-        else:
-            row["version"] += 1
-        row.update(status="active", plan=copy.deepcopy(plan), updated_at=now, archived_at=None)
+        row["version"] += 1
+        if activate:
+            row["status"] = "active"
+        elif row["status"] == "archived":
+            row["status"] = "future"
+        row.update(plan=copy.deepcopy(plan), updated_at=now, archived_at=None)
         self._revision(row, "upload", summary)
         return copy.deepcopy(row)
 
@@ -137,6 +146,8 @@ class FakePlanDB:
         if status == "active":
             self._archive_others(plan_id)
             row.update(status="active", archived_at=None)
+        elif status == "future":
+            row.update(status="future", archived_at=None)
         else:
             row.update(status="archived", archived_at=row["archived_at"] or self._now())
         return True

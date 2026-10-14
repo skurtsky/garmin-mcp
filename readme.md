@@ -270,9 +270,18 @@ viewer (`tools/assets/plan-viewer.html`) on every request.
 http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 ```
 
-- **One active plan per id.** A plan is keyed by its `meta.id`. Uploading a new
-  id makes it active and archives the previous plan; archived plans stay
-  viewable read-only from `/training-plan/plans` and can be made active again.
+- **Active, future and archived plans.** A plan is keyed by its `meta.id`, and
+  one plan is active at a time. The upload form has a **Make this the active
+  plan** box — unticked (the default while a plan is active), a new plan is
+  stored as a **future** plan so you can plan ahead without touching the
+  current one; ticked, it becomes active and the previous plan is archived.
+  Future plans stay editable in the viewer and through the MCP tools
+  (`amend_training_plan` with their `plan_id`); archived plans are read-only.
+  `/training-plan/plans` makes any plan active, moves it to future, archives
+  or deletes it.
+- **Paging into the next plan.** Stepping past the last week of a plan (or the
+  first) carries on into the plan after (or before) it, and the month view
+  shows the next plan's days faded, so the hand-over between blocks is visible.
 - **Re-uploading the same id** shows a confirmation first: how many completed
   workouts keep their tick, any completed workouts missing from the new file,
   and any web/MCP edits since the last upload that the file would overwrite.
@@ -292,10 +301,10 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 
 | Route | Method | Description |
 |---|---|---|
-| `/training-plan` | `GET` | The viewer for the active plan (`?plan=<id>` for an archived one, read-only), or a "No plan active" page |
-| `/training-plan/plans` | `GET` | Every stored plan, with view / download / activate / archive / delete |
-| `/training-plan/plans/{id}/{activate\|archive\|delete}` | `POST` | Plan lifecycle (only archived plans can be deleted) |
-| `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; same-id uploads confirm first) |
+| `/training-plan` | `GET` | The viewer for the active plan (`?plan=<id>` for a future one, or an archived one read-only; `&week=` / `&month=` to open at a week or month), or a "No plan active" page |
+| `/training-plan/plans` | `GET` | Every stored plan, with view / download / activate / move to future / archive / delete |
+| `/training-plan/plans/{id}/{activate\|future\|archive\|delete}` | `POST` | Plan lifecycle (the active plan can't be deleted) |
+| `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; stored as a future plan unless made active; same-id uploads confirm first) |
 | `/training-plan/export.json` | `GET` | The plan JSON as currently edited |
 | `/training-plan/pdf` | `GET` | Printable wall-chart PDF of the stored plan |
 | `/training-plan/calendar.ics` | `GET` | The active plan as a calendar feed — `?key=<feed token>`, not the bearer token (see below) |

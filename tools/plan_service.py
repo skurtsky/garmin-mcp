@@ -21,6 +21,8 @@ import db
 from tools import plan_doc
 from tools.plan_doc import PlanError
 
+STATUSES = ("active", "future", "archived")
+
 MAX_UPLOAD_BYTES = int(os.environ.get("TRAINING_PLAN_MAX_BYTES", 20 * 1024 * 1024))
 
 # Garmin activityType.typeKey → plan sport, for matching an activity to the
@@ -75,9 +77,10 @@ def require_plan(plan_id: str | None = None) -> dict:
 
 
 def require_editable(plan_id: str | None = None) -> dict:
+    """The active plan or a future one — archived plans are read-only."""
     row = require_plan(plan_id)
-    if row["status"] != "active":
-        raise PlanError("Archived plans are read-only — activate the plan to change it.")
+    if row["status"] == "archived":
+        raise PlanError("Archived plans are read-only — make the plan active or future to change it.")
     return row
 
 
@@ -102,10 +105,11 @@ def view_payload(row: dict) -> dict:
         states = db.get_workout_states(row["id"])
         return states, db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
 
-    with ThreadPoolExecutor(max_workers=2) as pool:      # two independent round trips
+    with ThreadPoolExecutor(max_workers=3) as pool:      # independent round trips
         start_times = pool.submit(plan_calendar.start_times, row["plan"])
+        neighbors = pool.submit(adjacent_plans, row)
         (states, briefs) = completions()
-        start_times = start_times.result()
+        start_times, neighbors = start_times.result(), neighbors.result()
     activities = {}
     for wid, s in states.items():
         act = briefs.get(s.get("activity_id"))
@@ -118,10 +122,58 @@ def view_payload(row: dict) -> dict:
         "id": row["id"],
         "status": row["status"],
         "version": row["version"],
-        "readOnly": row["status"] != "active",
+        "readOnly": row["status"] == "archived",
         "completed": {wid: True for wid, s in states.items() if s.get("completed")},
         "activities": activities,
         "startTimes": start_times,
+        "neighbors": neighbors,
+    }
+
+
+def adjacent_plans(row: dict) -> dict:
+    """The plans just before and after this one in time, among the active and
+    future plans — so paging past the end of the active plan in the viewer
+    carries on into the next one. Each has its date range and a light copy
+    of its workouts (for the month view). Archived plans have none."""
+    if row["status"] == "archived":
+        return {}
+    timeline = sorted(
+        (p for p in db.list_training_plans() if p["status"] in ("active", "future")),
+        key=lambda p: (p.get("start_date") or "", p["id"]),
+    )
+    ids = [p["id"] for p in timeline]
+    if row["id"] not in ids:
+        return {}
+    i = ids.index(row["id"])
+    out = {}
+    for key, j in (("prev", i - 1), ("next", i + 1)):
+        if 0 <= j < len(timeline):
+            neighbor = db.get_training_plan(timeline[j]["id"])
+            if neighbor is not None:
+                out[key] = _neighbor_view(neighbor)
+    return out
+
+
+def _neighbor_view(row: dict) -> dict:
+    plan = row["plan"]
+    meta = plan.get("meta") or {}
+    weeks = [w for w in plan.get("weeks") or [] if w.get("startDate") and w.get("endDate")]
+    days = {}
+    for _, d, w in plan_doc.iter_workouts(plan):
+        if w.get("sport") == "rest":
+            continue
+        days.setdefault(str(d.get("date"))[:10], []).append(
+            {k: w.get(k) for k in ("sport", "name", "durationMinutes") if w.get(k) is not None}
+        )
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "event": meta.get("event") or row["id"],
+        "startDate": str(weeks[0]["startDate"])[:10] if weeks else meta.get("planStartDate"),
+        "endDate": str(weeks[-1]["endDate"])[:10] if weeks else meta.get("planEndDate"),
+        "firstWeek": weeks[0].get("weekNumber") if weeks else 1,
+        "lastWeek": weeks[-1].get("weekNumber") if weeks else meta.get("totalWeeks"),
+        "days": days,
     }
 
 
@@ -175,8 +227,10 @@ def upload_preview(plan: dict) -> dict | None:
     }
 
 
-def save_upload(plan: dict) -> dict:
-    """Store an uploaded plan as the active plan (replacing same-id content).
+def save_upload(plan: dict, activate: bool = True) -> dict:
+    """Store an uploaded plan (replacing same-id content) — as the active
+    plan, or with ``activate=False`` as a future plan (a stored plan keeps its
+    status then; an archived one becomes a future plan).
 
     The unit choice carries over from the stored copy; zone overrides and
     validation flags do not — the uploaded file's zones are authoritative.
@@ -188,17 +242,19 @@ def save_upload(plan: dict) -> dict:
         plan["unit"] = existing["plan"]["unit"]
     plan_doc.normalize_plan(plan)
     summary = "Uploaded plan" if existing is None else "Replaced plan content (upload)"
-    return db.save_uploaded_training_plan(plan_id, plan, summary)
+    return db.save_uploaded_training_plan(plan_id, plan, summary, activate)
 
 
 def set_status(plan_id: str, status: str) -> None:
     _require_db()
+    if status not in STATUSES:
+        raise PlanError(f"Unknown plan status {status!r}.")
     if not db.set_training_plan_status(plan_id, status):
         raise LookupError(f"No plan with id {plan_id!r}.")
 
 
 def delete_plan(plan_id: str) -> None:
-    """Permanently delete an archived plan (the active one can't be deleted)."""
+    """Permanently delete a future or archived plan (the active one can't be deleted)."""
     row = require_plan(plan_id)
     if row["status"] == "active":
         raise PlanError("Archive the active plan before deleting it.")
