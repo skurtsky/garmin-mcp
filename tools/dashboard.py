@@ -1057,13 +1057,13 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   .tr-cards:not(.tr-cards-fallback) { display:none; }
   /* desktop: the tabs become an underline row under the title / range line */
   .rangebar .trrange { order:2; }
-  .rangebar .trtabs { order:3; flex:0 0 100%; gap:24px; padding:0; border:0; border-radius:0;
+  .rangebar .trtabs { order:3; flex:0 0 100%; gap:28px; padding:0; border:0; border-radius:0;
                       border-bottom:1px solid var(--color-divider); }
-  .rangebar .trtabs label { font-size:13px; padding:8px 2px; border-radius:0; margin-bottom:-1px;
+  .rangebar .trtabs label { font-size:13px; padding:10px 0 11px; border-radius:0; margin-bottom:-1px;
                             border-bottom:2px solid transparent; }
   #trtab-fitness:checked ~ .rangebar label[for=trtab-fitness],
   #trtab-metrics:checked ~ .rangebar label[for=trtab-metrics] {
-    background:transparent !important; color:var(--color-text) !important; border-bottom-color:var(--color-accent); }
+    background:transparent !important; color:var(--color-text) !important; border-bottom-color:var(--color-accent); font-weight:500; }
 }
 #activity-filter-all:checked ~ .tabpanels .activity-filter-all,
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filter-triathlon,
