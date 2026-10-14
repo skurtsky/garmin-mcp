@@ -1,5 +1,5 @@
 # tools/dashboard_trends.py
-"""The Trends tab's fitness & fatigue card and its metric cards.
+"""The Trends tab's fitness & fatigue card and desktop master chart.
 
 Fitness (42-day average of Garmin load), fatigue (7-day) and form (their
 difference) over the selected range, then projected forward — dashed — over
@@ -7,12 +7,11 @@ the plan's upcoming sessions. The goal race gets a marker, the race-day form
 target and a strip under the chart, but only when it falls inside that
 projected window.
 
-Below it, HRV / resting HR / sleep score / stress cards: tap one to draw it,
-rescaled, over the chart. Scrubbing the chart (hover or drag) reads any day:
-the stats, the overlay value and every metric card follow it.
+Scrubbing the chart (hover or drag) reads any day. The Metrics tab's desktop
+master chart (``compare``) overlays any mix of the nine lines.
 
-The chart and cards are server-rendered SVG; ``TRENDS_JS`` only handles the
-scrub and the overlay toggle, reading the days from a JSON data island.
+The charts are server-rendered SVG; ``TRENDS_JS`` only handles the scrub and
+the master chart's line picker, reading the days from a JSON data island.
 """
 import html
 import json
@@ -25,13 +24,6 @@ FATIGUE_COLOR = "#e2734a"
 RACE_COLOR = "#b5abfc"
 FRESH = "#4aa7d8"
 AMBER = "#d9a441"
-# (trends metric key, label, unit, lower is better, colour)
-METRICS = (
-    ("hrv", "HRV", "ms", False, "#7fc9b0"),
-    ("rhr", "Resting HR", "bpm", True, "#cf5a4e"),
-    ("sleep_score", "Sleep score", "/100", False, "#6f9ce8"),
-    ("stress", "Stress", "avg", True, "#d9a441"),
-)
 W, H = 360, 200
 
 
@@ -66,7 +58,7 @@ def _metric_daily(trends: dict, key: str) -> dict[str, float]:
     return {str(p.get("date"))[:10]: p.get("value") for p in daily if p.get("value") is not None}
 
 
-def _chart_svg(win: list[dict], ti: int, race_idx: int | None, overlays: dict[str, tuple[str, list]]) -> str:
+def _chart_svg(win: list[dict], ti: int, race_idx: int | None) -> str:
     n = len(win)
     max_v = max([max(p["fitness"], p["fatigue"]) for p in win] + [1]) * 1.1
 
@@ -115,19 +107,6 @@ def _chart_svg(win: list[dict], ti: int, race_idx: int | None, overlays: dict[st
                     f'fill="{FRESH}" opacity="0.16"/>')
         kids.append(f'<line x1="{x(race_idx) - 0.5:.1f}" x2="{x(race_idx) - 0.5:.1f}" y1="10" y2="{H}" stroke="{RACE_COLOR}" '
                     'stroke-width="1.5" vector-effect="non-scaling-stroke"/>')
-    for key, (color, vals) in overlays.items():
-        present = [v for v in vals if v is not None]
-        if len(present) < 2:
-            continue
-        lo, hi = min(present), max(present)
-        pts, started = [], False
-        for i, v in enumerate(vals):
-            if v is None:
-                continue
-            pts.append(f"{'L' if started else 'M'}{x(i):.1f} {16 + (1 - (v - lo) / ((hi - lo) or 1)) * 96:.1f}")
-            started = True
-        kids.append(f'<path class="ff-overlay" data-ov="{key}" d="{" ".join(pts)}" stroke="{color}" stroke-width="1.25" '
-                    f'opacity="0.9" style="display:none" {stroke}/>')
     kids.append(f'<line class="ff-hover" x1="0" x2="0" y1="0" y2="{H}" style="stroke:var(--color-text)" stroke-width="1" opacity="0" '
                 'vector-effect="non-scaling-stroke"/>')
     return (f'<svg viewBox="0 0 {W} {H}" preserveAspectRatio="none" class="ff-svg" '
@@ -159,85 +138,14 @@ def _ph(name, size=16, color=None) -> str:
     return ph(name, size, color)
 
 
-def _mspark(vals: list, color: str, gid: str) -> str:
-    present = [v for v in vals if v is not None]
-    if len(present) < 2:
-        return '<div style="height:30px"></div>'
-    w, h = 150, 30
-    lo, hi = min(present), max(present)
-    pts, started = [], False
-    xs = []
-    for i, v in enumerate(vals):
-        if v is None:
-            continue
-        px = i / (len(vals) - 1) * w
-        py = h - 2 - (v - lo) / ((hi - lo) or 1) * (h - 6)
-        pts.append(f"{'L' if started else 'M'}{px:.1f} {py:.1f}")
-        xs.append(px)
-        started = True
-    line = " ".join(pts)
-    return (f'<svg viewBox="0 0 {w} {h}" preserveAspectRatio="none" style="width:100%;height:{h}px;display:block">'
-            f'<defs><linearGradient id="{gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="{color}" stop-opacity="0.34"/>'
-            f'<stop offset="1" stop-color="{color}" stop-opacity="0"/></linearGradient></defs>'
-            f'<path d="{line} L{xs[-1]:.1f} {h} L{xs[0]:.1f} {h} Z" fill="url(#{gid})"/>'
-            f'<path d="{line}" fill="none" stroke="{color}" stroke-width="1.5" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>')
-
-
-def _delta(daily: dict[str, float], dates: list[str], lower_better: bool) -> tuple[str, str]:
-    """This range's average vs the range before it."""
-    vals = [daily.get(d) for d in dates]
-    cur = [v for v in vals if v is not None]
-    if not cur or not dates:
-        return "", ""
-    first = date.fromisoformat(dates[0])
-    span = len(dates)
-    prev = [v for d, v in daily.items() if (first - date.fromisoformat(d)).days in range(1, span + 1)]
-    if not prev:
-        return "", ""
-    diff = round(sum(cur) / len(cur) - sum(prev) / len(prev))
-    good = diff <= 0 if lower_better else diff >= 0
-    return (f"+{diff}" if diff > 0 else str(diff)), ("#7fc9b0" if good else "#cf8a80")
-
-
-def render(fit: dict | None, goal: dict | None, trends: dict | None, days: int, uid: str) -> str:
-    """The fitness & fatigue card and the four metric cards for one range
-    (``uid`` keeps element ids unique across the range sets)."""
-    metric_daily = {k: _metric_daily(trends, k) for k, *_ in METRICS}
+def render(fit: dict | None, goal: dict | None, days: int) -> str:
+    """The fitness & fatigue card for one range: no overlays, no metric cards.
+    Empty when there's no load series to draw."""
     series = (fit or {}).get("series") or []
     today = (fit or {}).get("today")
     win, ti = window(series, today, days) if series and today else ([], -1)
-    has_chart = len(win) >= 2 and ti >= 0
-
-    cards_html = ""
-    actual_dates = [p["date"] for p in win[:ti + 1]] if has_chart else []
-    if not actual_dates:
-        daily_dates = sorted(set().union(*[set(v) for v in metric_daily.values()]))[-days:]
-        actual_dates = daily_dates
-    for key, label, unit, lower_better, color in METRICS:
-        daily = metric_daily[key]
-        vals = [daily.get(d) for d in actual_dates]
-        current = next((v for v in reversed(vals) if v is not None), None)
-        delta, delta_color = _delta(daily, actual_dates, lower_better)
-        tag = ('<div class="ff-tag" style="font-size:10px;color:var(--color-neutral-600)">Overlay on chart</div>'
-               if has_chart else "")
-        cards_html += f"""
-        <button type="button" class="ff-metric" data-ov-key="{key}" data-color="{color}" data-label="{_e(label)}" data-unit="{_e(unit)}"
-            {"" if has_chart else "disabled"}>
-          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:6px">
-            <span class="kicker">{_e(label)}</span><span style="font-size:11px;color:{delta_color}">{delta}</span></div>
-          <div style="display:flex;align-items:baseline;gap:4px"><span class="ff-mval" data-today="{_e(round(current) if current is not None else "—")}"
-              style="font-size:22px;line-height:1">{_e(round(current) if current is not None else None)}</span>
-            <span style="font-size:11px;color:var(--color-neutral-500)">{_e(unit)}</span></div>
-          {_mspark(vals, color, f"g-{key}-{uid}")}
-          {tag}
-        </button>"""
-    metrics_block = f"""
-    <div class="ff-metrics-wrap">
-      {'<div style="font-size:11px;color:var(--color-neutral-600)">Tap a card to overlay it on the chart</div>' if has_chart else ""}
-      <div class="ff-metrics">{cards_html}</div>
-    </div>"""
-    if not has_chart:
-        return f'<div class="ff-wrap">{metrics_block}</div>'
+    if not (len(win) >= 2 and ti >= 0):
+        return ""
 
     now = win[ti]
     first = win[0]
@@ -252,11 +160,9 @@ def render(fit: dict | None, goal: dict | None, trends: dict | None, days: int, 
             race_strip = _race_strip(goal, rf)
         else:
             race_idx = None
-    overlays = {key: (color, [metric_daily[key].get(p["date"]) if i <= ti else None for i, p in enumerate(win)])
-                for key, _, _, _, color in METRICS}
     form_color, form_label = _form_text(now["form"])
     days_json = [{"d": p["date"], "l": p["load"], "c": round(p["fitness"]), "a": round(p["fatigue"]), "f": p["form"],
-                  "p": p["projected"], **{k: metric_daily[k].get(p["date"]) for k, *_ in METRICS}} for p in win]
+                  "p": p["projected"]} for p in win]
     zones = "".join(f'<span class="ff-leg"><span style="background:{c}"></span>{label}</span>'
                     for _, _, label, c in training_load.FORM_ZONES)
     race_flag = ""
@@ -293,19 +199,16 @@ def render(fit: dict | None, goal: dict | None, trends: dict | None, days: int, 
         </div>
         <div style="position:relative">
           {race_flag}
-          <div class="ff-ovrow" hidden><span class="ff-ovdot"></span><span class="ff-ovlabel" style="color:var(--color-neutral-500)"></span><span class="ff-ovval" style="font-weight:500"></span></div>
-          <div class="ff-chart">{_chart_svg(win, ti, race_idx, overlays)}</div>
+          <div class="ff-chart">{_chart_svg(win, ti, race_idx)}</div>
           <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--color-neutral-600);margin-top:4px">
             <span>{_mon_day(first['date'])}</span><span>{end_label}</span></div>
         </div>
         <div class="ff-legend">{zones}
           {'<span class="ff-leg"><span style="width:12px;height:0;border-top:1.5px dashed #9397ab;border-radius:0"></span>Planned</span>' if len(win) - 1 > ti else ""}
           {race_leg}
-          <span class="ff-leg ff-ovleg" hidden><span class="ff-ovleg-sw" style="width:12px;height:2px"></span><span class="ff-ovleg-label"></span></span>
         </div>
         {race_strip}
       </div>
-      {metrics_block}
     </div>"""
 
 
@@ -401,9 +304,7 @@ TRENDS_CSS = """
   box-shadow:var(--shadow-sm); border-top:3px solid var(--c); }
 @media (min-width: 900px) {
   .tr-compare { display:flex; }
-  .tr-more-title { display:block !important; }
 }
-.tr-more-title { display:none; }
 
 .ff-wrap { grid-column:1/-1; display:flex; flex-direction:column; gap:12px; }
 .ff-card { padding:16px; gap:12px; box-shadow:0 0 0 1px var(--color-accent-700); }
@@ -411,19 +312,11 @@ TRENDS_CSS = """
 .ff-key span { width:10px; height:2px; border-radius:2px; display:inline-block; }
 .ff-chart { position:relative; cursor:crosshair; touch-action:none; }
 .ff-flag { position:absolute; top:-2px; display:flex; align-items:center; gap:3px; font-size:10px; color:#b5abfc; z-index:1; pointer-events:none; }
-.ff-ovrow { display:flex; align-items:center; gap:6px; font-size:12px; margin-bottom:6px; }
-.ff-ovrow[hidden] { display:none; }
-.ff-ovdot { width:8px; height:8px; border-radius:50%; display:inline-block; }
 .ff-legend { display:flex; flex-wrap:wrap; gap:6px 12px; font-size:10px; color:var(--color-neutral-500); }
 .ff-leg { display:flex; align-items:center; gap:5px; }
 .ff-leg[hidden] { display:none; }
 .ff-leg > span:first-child { width:7px; height:7px; border-radius:2px; display:inline-block; }
 .ff-race { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:8px; background:var(--color-inset); }
-.ff-metrics-wrap { display:flex; flex-direction:column; gap:8px; }
-.ff-metrics { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:10px; }
-.ff-metric { display:flex; flex-direction:column; gap:6px; padding:12px; border-radius:8px; border:0; background:var(--color-surface);
-  box-shadow:var(--shadow-sm); color:inherit; font:inherit; text-align:left; cursor:pointer; }
-.ff-metric:disabled { cursor:default; }
 """
 
 TRENDS_JS = """
@@ -514,7 +407,6 @@ TRENDS_JS = """
     var ti = parseInt(wrap.getAttribute('data-ti'), 10);
     var chart = wrap.querySelector('.ff-chart');
     var hover = wrap.querySelector('.ff-hover');
-    var overlay = null;
     var q = function (sel) { return wrap.querySelector(sel); };
 
     function show(i) {
@@ -537,18 +429,6 @@ TRENDS_JS = """
         hover.setAttribute('x1', x); hover.setAttribute('x2', x);
         hover.setAttribute('opacity', i === null ? 0 : 0.6);
       }
-      wrap.querySelectorAll('.ff-metric').forEach(function (m) {
-        var v = m.querySelector('.ff-mval');
-        var key = m.getAttribute('data-ov-key');
-        if (now) v.textContent = v.getAttribute('data-today');
-        else v.textContent = day.p || day[key] == null ? '—' : Math.round(day[key]);
-      });
-      if (overlay) {
-        var m = wrap.querySelector('.ff-metric[data-ov-key="' + overlay + '"]');
-        var val = now ? m.querySelector('.ff-mval').getAttribute('data-today')
-                      : (day.p || day[overlay] == null ? '—' : Math.round(day[overlay]));
-        q('.ff-ovval').textContent = val + (val === '—' ? '' : ' ' + m.getAttribute('data-unit'));
-      }
     }
     function indexFrom(e) {
       var r = chart.getBoundingClientRect();
@@ -561,36 +441,6 @@ TRENDS_JS = """
     chart.addEventListener('touchmove', scrub, { passive: true });
     chart.addEventListener('mouseleave', function () { show(null); });
     chart.addEventListener('touchend', function () { show(null); });
-
-    wrap.querySelectorAll('.ff-metric').forEach(function (m) {
-      m.addEventListener('click', function () {
-        var key = m.getAttribute('data-ov-key');
-        overlay = overlay === key ? null : key;
-        wrap.querySelectorAll('.ff-overlay').forEach(function (p) {
-          p.style.display = p.getAttribute('data-ov') === overlay ? '' : 'none';
-        });
-        wrap.querySelectorAll('.ff-metric').forEach(function (c) {
-          var on = c.getAttribute('data-ov-key') === overlay;
-          c.style.boxShadow = on ? '0 0 0 1px ' + c.getAttribute('data-color') : '';
-          var tag = c.querySelector('.ff-tag');
-          if (tag) {
-            tag.textContent = on ? 'On chart · tap to remove' : 'Overlay on chart';
-            tag.style.color = on ? c.getAttribute('data-color') : '';
-          }
-        });
-        var row = q('.ff-ovrow'), leg = q('.ff-ovleg');
-        row.hidden = leg.hidden = !overlay;
-        if (overlay) {
-          var color = m.getAttribute('data-color');
-          q('.ff-ovdot').style.background = color;
-          q('.ff-ovval').style.color = color;
-          q('.ff-ovlabel').textContent = m.getAttribute('data-label');
-          q('.ff-ovleg-sw').style.background = color;
-          q('.ff-ovleg-label').textContent = m.getAttribute('data-label') + ' (scaled)';
-        }
-        show(null);
-      });
-    });
   });
 })();
 """
