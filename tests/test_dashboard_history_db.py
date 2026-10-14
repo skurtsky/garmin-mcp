@@ -154,7 +154,10 @@ def test_delete_activities_not_in_drops_activities_gone_from_garmin():
         cur.execute("""INSERT INTO training_plan_workout_state (plan_id, workout_id, completed, activity_id)
                        VALUES ('prune-test', 'w1', TRUE, 2)""")
 
+    before = db.get_activities_changed_at()
+    assert before is not None                                   # inserting marked a change
     assert db.delete_activities_not_in([3, 4], after="2026-10-01 07:00:00+00:00") == [2]
+    assert db.get_activities_changed_at() > before              # so did deleting
 
     with db.get_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT garmin_id FROM activities ORDER BY garmin_id")

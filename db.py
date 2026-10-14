@@ -827,6 +827,25 @@ def upsert_daily_metric(date_str: str, **kwargs):
             )
 
 
+# Bumped whenever an activity is added or removed, so caches of past weeks
+# (tools/dashboard.py) can tell their copy is out of date — a sync runs in a
+# separate process, so it can't clear the web server's memory itself.
+ACTIVITIES_CHANGED_KEY = "activities_changed_at"
+
+
+def _mark_activities_changed(cur):
+    cur.execute(
+        """INSERT INTO app_settings (key, value) VALUES (%s, to_jsonb(clock_timestamp()))
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
+        (ACTIVITIES_CHANGED_KEY,),
+    )
+
+
+def get_activities_changed_at() -> str | None:
+    """When an activity was last added or removed (an ISO timestamp), or None."""
+    return get_setting(ACTIVITIES_CHANGED_KEY)
+
+
 def upsert_activity(garmin_id: int, **kwargs) -> bool:
     """Insert or refresh a synced activity. True when it's new — the first
     time this activity has been synced (xmax is 0 only on a fresh insert)."""
@@ -856,7 +875,10 @@ def upsert_activity(garmin_id: int, **kwargs) -> bool:
                 },
             )
             row = cur.fetchone()
-            return bool(row and row[0])
+            inserted = bool(row and row[0])
+            if inserted:
+                _mark_activities_changed(cur)
+            return inserted
 
 
 def delete_activities_not_in(keep_ids: list[int], start: str | None = None,
@@ -893,6 +915,7 @@ def delete_activities_not_in(keep_ids: list[int], start: str | None = None,
                 (removed,),
             )
             cur.execute("DELETE FROM activities WHERE garmin_id = ANY(%s)", (removed,))
+            _mark_activities_changed(cur)
             return removed
 
 
