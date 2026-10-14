@@ -858,6 +858,39 @@ def upsert_activity(garmin_id: int, **kwargs) -> bool:
             return bool(row and row[0])
 
 
+def delete_activities_not_in(keep_ids: list[int], start: str | None = None,
+                             end: str | None = None, after: str | None = None) -> list[int]:
+    """Delete the synced activities in a window that aren't in ``keep_ids`` —
+    ones since deleted from Garmin Connect — with their details, best efforts
+    and overrides. The window is ``start`` (inclusive) to ``end`` (exclusive),
+    or strictly ``after`` a timestamp. A planned workout they completed stays
+    ticked but loses its link, so the next sync can attach a replacement.
+    Returns the deleted ids."""
+    if start is None and after is None:
+        raise ValueError("delete_activities_not_in needs start or after")
+    where = ["NOT (garmin_id = ANY(%(keep)s))"]
+    if start is not None:
+        where.append("activity_date >= %(start)s")
+    if end is not None:
+        where.append("activity_date < %(end)s")
+    if after is not None:
+        where.append("activity_date > %(after)s")
+    params = {"keep": list(keep_ids), "start": start, "end": end, "after": after}
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM activities WHERE {' AND '.join(where)} RETURNING garmin_id", params)
+            removed = [row[0] for row in cur.fetchall()]
+            if removed:
+                for table in ("activity_details", "activity_best_efforts", "activity_overrides"):
+                    cur.execute(f"DELETE FROM {table} WHERE garmin_id = ANY(%s)", (removed,))
+                cur.execute(
+                    """UPDATE training_plan_workout_state SET activity_id = NULL, updated_at = now()
+                       WHERE activity_id = ANY(%s)""",
+                    (removed,),
+                )
+            return removed
+
+
 def get_activity_ids_needing_detail(limit: int = 10) -> list[int]:
     """Activity ids with no detail row yet, or whose detail predates the
     parent activity's last sync, most recent activity first."""

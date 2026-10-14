@@ -118,9 +118,40 @@ def sync_activities(start_date: date | None = None, end_date: date | None = None
         )
         if inserted:
             new_ids.append(act["id"])
+    removed = prune_deleted_activities(activities, start_date, end_date)
     db.update_sync_state("activities", local_today().isoformat())
-    logger.info(f"Synced {len(activities)} activities ({len(new_ids)} new)")
+    logger.info(f"Synced {len(activities)} activities ({len(new_ids)} new, {len(removed)} removed)")
     sync_plan_matches(new_ids)
+
+
+def prune_deleted_activities(activities: list[dict], start_date: date | None = None,
+                             end_date: date | None = None) -> list[int]:
+    """Drop stored activities that were deleted from Garmin Connect (e.g. an
+    activity deleted and re-uploaded from a fixed FIT file comes back under a
+    new id, leaving the old one behind).
+
+    Only the window Garmin just answered for is pruned: the whole date range
+    when one was given, otherwise everything newer than the oldest of the
+    recent activities returned (it's newest-first, so nothing in between
+    can be missing). An empty answer prunes nothing — it's more likely a
+    hiccup than every activity being deleted.
+    """
+    import db
+
+    if not activities:
+        return []
+    keep = [act["id"] for act in activities]
+    if start_date:
+        end = (end_date or local_today()) + timedelta(days=1)
+        removed = db.delete_activities_not_in(keep, start=start_date.isoformat(), end=end.isoformat())
+    else:
+        dates = [act["date"] for act in activities if act.get("date")]
+        if not dates:
+            return []
+        removed = db.delete_activities_not_in(keep, after=min(dates))
+    if removed:
+        logger.info(f"Removed {len(removed)} activities deleted from Garmin Connect: {removed}")
+    return removed
 
 
 def sync_plan_matches(new_activity_ids: list[int]):
