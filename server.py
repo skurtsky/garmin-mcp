@@ -410,6 +410,9 @@ def get_training_plan(
     workout carries its id, date, completion state, the Garmin activity that
     completed it, and any Garmin Connect workout already scheduled for it
     (garminWorkoutId) — check that before scheduling to avoid duplicates.
+    When the active plan just took over from another and the two plans'
+    thresholds differ, thresholdCarryover lists them (the athlete picks which
+    to keep in the viewer).
 
     Args:
         plan_id: Plan id (meta.id). Omit for the active plan.
@@ -426,8 +429,8 @@ def list_training_plans() -> list:
     List every stored training plan (id, event, athlete, dates, status,
     version, last update): the active plan first, then future plans by start
     date, then archived ones. Only one plan is active; future plans are
-    planned ahead and can be amended (pass their plan_id); archived plans are
-    read-only.
+    planned ahead, can be amended (pass their plan_id), and become active by
+    themselves on their start date; archived plans are read-only.
     """
     return plan_tools.list_training_plans()
 

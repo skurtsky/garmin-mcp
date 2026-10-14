@@ -68,3 +68,11 @@ def test_future_plans_get_their_own_banner_and_stay_editable():
     assert "const FUTURE = SERVER.status === 'future';" in html
     assert "const READ_ONLY = !!SERVER.readOnly;" in html   # the server says archived only
     assert "/activate" in html.split("function readOnlyBanner()", 1)[1].split("\n}", 1)[0]
+
+
+def test_viewer_offers_the_threshold_carry_over_and_links_the_season():
+    html = _html()
+    assert "carryoverBanner() + '<div class=\"plan-head\">'" in html
+    assert "a === 'carry-apply' || a === 'carry-dismiss'" in html
+    assert "carryover: data.carryover || null" in html     # applyServer keeps it current
+    assert "appLink('/training-plan/season')" in html

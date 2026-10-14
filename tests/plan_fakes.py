@@ -241,8 +241,10 @@ PATCHED = [
 
 @pytest.fixture
 def fake_db(monkeypatch):
+    from tools import plan_service
     fake = FakePlanDB()
     monkeypatch.setattr(db, "is_configured", lambda: True)
+    monkeypatch.setattr(plan_service, "_checked_day", None)
     for name in PATCHED:
         monkeypatch.setattr(db, name, getattr(fake, name))
     return fake

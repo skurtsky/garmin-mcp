@@ -170,3 +170,94 @@ def test_list_orders_active_then_future_by_start_then_archived(plan):
         ("test-block-2026", "active"), ("sooner", "future"), ("later", "future"), ("old", "archived")]
     with pytest.raises(PlanError, match="Unknown plan status"):
         plan_service.set_status("old", "paused")
+
+
+def _shifted(plan_id, start):
+    """The sample plan moved to start on ``start`` (a Monday)."""
+    from datetime import timedelta
+    plan = sample_plan(id=plan_id, event=plan_id.title())
+    delta = date.fromisoformat(start) - date(2026, 9, 14)
+    plan["meta"]["planStartDate"] = start
+    plan["meta"]["planEndDate"] = (date.fromisoformat(start) + timedelta(days=13)).isoformat()
+    for week in plan["weeks"]:
+        for key in ("startDate", "endDate"):
+            week[key] = (date.fromisoformat(week[key]) + delta).isoformat()
+        for day in week["days"]:
+            day["date"] = (date.fromisoformat(day["date"]) + delta).isoformat()
+            for w in day["workouts"]:
+                w["id"] = plan_id + "-" + w["id"]
+    return plan
+
+
+def test_a_future_plan_takes_over_on_its_start_date(plan, fake_db):
+    plan_service.save_upload(_shifted("winter", "2026-10-05"), activate=False)
+
+    assert plan_service.advance_plans(date(2026, 10, 1)) is None     # the first check only notes the day
+    assert fake_db.settings[plan_service.AUTOSWITCH_KEY] == "2026-10-01"
+    plan_service._checked_day = None
+    assert plan_service.advance_plans(date(2026, 10, 4)) is None
+    plan_service._checked_day = None
+    assert plan_service.advance_plans(date(2026, 10, 5))["id"] == "winter"
+
+    assert fake_db.plans["winter"]["status"] == "active"
+    assert fake_db.plans["test-block-2026"]["status"] == "archived"
+    offer = plan_service.pending_carryover(fake_db.get_training_plan())
+    assert offer["auto"] is True and offer["on"] == "2026-10-05" and offer["items"] == []
+
+
+def test_auto_switch_skips_start_dates_already_past(plan, fake_db):
+    plan_service.advance_plans(date(2026, 10, 10))
+    plan_service.save_upload(_shifted("late", "2026-10-05"), activate=False)   # its start date has passed
+    plan_service.save_upload(_shifted("today", "2026-10-10"), activate=False)  # starts today, after today's check
+
+    plan_service._checked_day = None
+    assert plan_service.advance_plans(date(2026, 10, 11)) is None
+    assert fake_db.plans["late"]["status"] == fake_db.plans["today"]["status"] == "future"
+
+
+def test_auto_switch_takes_the_latest_due_plan(plan, fake_db, monkeypatch):
+    plan_service.advance_plans(date(2026, 10, 1))
+    plan_service.save_upload(_shifted("first", "2026-10-05"), activate=False)
+    plan_service.save_upload(_shifted("second", "2026-10-12"), activate=False)
+
+    plan_service._checked_day = None
+    plan_service.advance_plans(date(2026, 10, 20))   # the server was off for a while
+
+    assert fake_db.plans["second"]["status"] == "active"
+    assert fake_db.plans["first"]["status"] == "archived"
+    assert plan_service.advance_plans(date(2026, 10, 20)) is None   # once per day per process
+
+
+def test_auto_switch_never_breaks_the_read(plan, fake_db, monkeypatch):
+    def boom(*_):
+        raise RuntimeError("db down")
+    import db
+    monkeypatch.setattr(db, "set_setting", boom)
+
+    assert plan_service.advance_plans(date(2026, 10, 1)) is None
+    assert plan_tools.get_training_plan()["id"] == "test-block-2026"
+
+
+def test_overview_mentions_a_pending_carry_over(plan):
+    plan_service.apply_operations(None, [{"op": "set_zones", "ftp": 270}], "mcp", "test")
+    plan_service.save_upload(sample_plan(id="next-block"), activate=True)
+
+    carry = plan_tools.get_training_plan()["thresholdCarryover"]
+    assert carry["items"][0]["key"] == "ftp" and carry["items"][0]["from"] == 270
+    plan_service.dismiss_carryover()
+    assert "thresholdCarryover" not in plan_tools.get_training_plan()
+
+
+def test_season_data(plan, fake_db):
+    plan_service.set_completion(None, "w1-tue-run", True)
+    plan_service.save_upload(_shifted("winter", "2026-10-05"), activate=False)
+    plan_service.save_upload(_shifted("ancient", "2024-01-01"), activate=False)
+    plan_service.set_status("ancient", "archived")
+
+    data = plan_service.season(date(2026, 9, 20))
+
+    assert [p["id"] for p in data["plans"]] == ["test-block-2026", "winter"]   # old archived plans left out
+    first = data["plans"][0]
+    assert first["weeks"][0] == {"weekNumber": 1, "start": "2026-09-14", "end": "2026-09-20", "phase": "Base",
+                                 "recovery": False, "plannedMin": 230, "doneMin": 50}
+    assert first["phases"] == [{"name": "Base", "start": "2026-09-14", "end": "2026-09-27"}]

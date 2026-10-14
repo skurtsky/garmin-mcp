@@ -13,6 +13,7 @@ Routes (all behind the same ``?token=`` bearer auth as ``/mcp`` and
 a plan; without it the active plan is used.
 
     GET  /training-plan                  — the viewer, or a "No plan active" page
+    GET  /training-plan/season           — every plan on one timeline: weekly hours, phases, races
     GET  /training-plan/plans            — every plan: view / activate / future / archive / delete
     POST /training-plan/plans/{id}/{action}  — activate | future | archive | delete
     GET  /training-plan/upload           — the upload form
@@ -31,6 +32,8 @@ JSON API used by the viewer:
     POST /training-plan/api/completion   — {workout_id, completed} → same shape
     GET  /training-plan/api/revisions    — [{version, source, summary, created_at}]
     POST /training-plan/api/revisions/{version}/restore → same shape as /api/plan
+    POST /training-plan/api/carryover    — {keys: [...]}: copy the outgoing plan's thresholds → same shape
+    POST /training-plan/api/carryover/dismiss → same shape (carryover: null)
     GET  /training-plan/api/calendar     — {defaultTime, slots, published, feedPath, publishedAt}
     POST /training-plan/api/calendar/schedule — {defaultTime, slots} → same shape
     POST /training-plan/api/calendar/publish  — new feed token (replaces any old one)
@@ -46,6 +49,7 @@ import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
@@ -234,10 +238,12 @@ def render_upload_form_html(token: str | None = None, error: str | None = None) 
         current = (
             f'<div class="meta">Active plan: {_e(meta.get("event") or active["id"])} '
             f'(<code>{_e(active["id"])}</code>). A plan with a different id is stored as a '
-            "future plan unless you make it active (which archives this one); the same id "
-            "replaces its content after a confirmation.</div>"
+            "future plan — it becomes active by itself on its start date — unless you make it "
+            "active now (which archives this one); the same id replaces its content after a "
+            "confirmation.</div>"
         )
-        activate_hint = f"Archives {_e(meta.get('event') or active['id'])}. Leave unticked to plan ahead — make it active later from All plans."
+        activate_hint = (f"Archives {_e(meta.get('event') or active['id'])}. Leave unticked to plan ahead — "
+                         "it takes over on its start date, or make it active sooner from All plans.")
     else:
         current = '<div class="meta">No plan is active right now.</div>'
         activate_hint = "No plan is active, so this one can start straight away."
@@ -335,12 +341,18 @@ def render_upload_done_html(row: dict, warnings: list[str], token: str | None) -
     return _page("Plan uploaded", body, token)
 
 
-def render_plans_html(plans: list[dict], token: str | None, error: str | None = None) -> str:
-    """Every stored plan with its actions."""
+def render_plans_html(plans: list[dict], token: str | None, error: str | None = None,
+                      notes: list[dict] | None = None, today: str | None = None) -> str:
+    """Every stored plan with its actions, and any overlap or gap between one
+    plan and the next (shown on the later plan)."""
     cards = []
     for p in plans:
         status = p["status"]
         dates = " – ".join(d for d in (p.get("start_date"), p.get("end_date")) if d)
+        lines = [f'<div class="warn">{_e(plan_service.note_text(n))}</div>'
+                 for n in notes or [] if n["second"]["id"] == p["id"]]
+        if status == "future" and today and str(p.get("start_date") or "") > today:
+            lines.insert(0, f'<div class="sub ok">Becomes the active plan automatically on {_e(p["start_date"])}.</div>')
         actions = [
             f'<a class="btn btn-primary" href="{_e(_plan_href(p, token))}">'
             f'{"View (read-only)" if status == "archived" else "View"}</a>',
@@ -372,19 +384,236 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
             f'<div class="sub">{_e(p.get("athlete") or "")}{" · " if p.get("athlete") and dates else ""}{_e(dates)}</div>'
             f'<div class="sub"><code>{_e(p["id"])}</code> · version {p["version"]} · updated {_e(str(p["updated_at"])[:10])}</div>'
             f'</div><span class="tag{"" if status == "active" else " " + status}">{_e(status)}</span></div>'
-            f'<div class="actions">{"".join(actions)}</div></div>'
+            + "".join(lines)
+            + f'<div class="actions">{"".join(actions)}</div></div>'
         )
     error_html = f'<p class="error">{_e(error)}</p>' if error else ""
     body = (
         "<h1>Training plans</h1>"
         '<div class="meta">One plan is active at a time. Future plans are planned ahead and stay '
-        "editable (by you or the coach); archived plans stay viewable, read-only.</div>"
+        "editable (by you or the coach) and become active on their start date; archived plans stay "
+        "viewable, read-only.</div>"
         f"{error_html}"
         + ("".join(cards) or '<div class="card">No plans stored yet.</div>')
         + f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
+        f'<a href="{_e(_url("/training-plan/season", token))}">Season view</a>'
         f'<a href="{_e(_url("/training-plan", token))}">Active plan</a></div>'
     )
     return _page("Training plans", body, token, active="settings")
+
+
+# ── SEASON ────────────────────────────────────────────────────────────────────
+# Every plan on one horizontal timeline, a row per plan: weekly columns of
+# planned hours (with the completed part filled in), the phase band, race
+# markers, month gridlines and a today line. One week is a fixed width, so a
+# long season scrolls sideways inside its frame (it opens at today). A table
+# under the chart carries the same numbers.
+
+# The viewer's phase colours (tools/assets/plan-viewer.html PHASE_COLORS).
+PHASE_COLORS = {
+    "Prep": "#6c93b0", "Base 1": "#5ea0b8", "Base 2": "#5eb0a3", "Base 3": "#7fb87a", "Base": "#5eb0a3",
+    "Build 1": "#b8b05e", "Build 2": "#d9a05a", "Build": "#b8b05e", "Peak": "#d97a5e", "Taper": "#9184d9",
+    "Race": "#d9506a",
+}
+_PHASE_DEFAULT = "#7c8194"
+
+_SEASON_STYLE = """
+main { max-width:1180px; }
+.legend { display:flex; gap:1rem; flex-wrap:wrap; font-size:.8rem; color:var(--muted); margin:0 0 .6rem; }
+.legend span { display:inline-flex; align-items:center; gap:.4rem; }
+.legend i { display:inline-block; width:12px; height:12px; border-radius:3px; }
+.season { position:relative; overflow-x:auto; background:var(--surface); box-shadow:0 0 0 1px var(--line);
+  border-radius:10px; -webkit-overflow-scrolling:touch; }
+.season svg { display:block; }
+.season text { font-family:inherit; }
+.s-grid { stroke:var(--line); stroke-width:1; }
+.s-axis { fill:var(--muted); font-size:11px; }
+.s-name { fill:var(--fg); font-size:13px; font-weight:500; }
+.s-sub { fill:var(--muted); font-size:11px; }
+.s-phase { fill:var(--fg); font-size:10.5px; }
+.s-plan { fill:color-mix(in srgb, var(--accent) 34%, var(--surface)); }
+.s-done { fill:var(--accent); }
+.s-today { stroke:var(--accent); stroke-width:1.5; }
+.s-today-l { fill:var(--accent); font-size:11px; font-weight:600; }
+.s-race { stroke:var(--warn); stroke-width:1; }
+.s-race-m { fill:var(--warn); stroke:var(--surface); stroke-width:2; }
+.s-race-l { fill:var(--fg); font-size:11px; }
+.s-row.archived { opacity:.55; }
+.s-wk { cursor:pointer; }
+.s-wk rect.hit { fill:transparent; }
+.s-wk:hover rect.hit, .s-wk:focus rect.hit { fill:color-mix(in srgb, var(--fg) 7%, transparent); }
+.s-wk:focus { outline:none; }
+.tip { position:absolute; pointer-events:none; z-index:2; background:var(--bg); color:var(--fg);
+  box-shadow:0 0 0 1px var(--line), 0 6px 18px rgba(0,0,0,.25); border-radius:8px; padding:.45rem .6rem;
+  font-size:.78rem; line-height:1.45; white-space:nowrap; display:none; }
+.tip b { font-weight:600; }
+table { width:100%; border-collapse:collapse; font-size:.84rem; }
+th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; font-size:.76rem; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+.table-wrap { overflow-x:auto; }
+table a { color:var(--accent); }
+"""
+
+_SEASON_SCRIPT = """
+(function () {
+  var box = document.querySelector('.season'), tip = document.querySelector('.season .tip');
+  if (!box) return;
+  var today = box.querySelector('[data-today-x]');
+  if (today) box.scrollLeft = Math.max(0, +today.getAttribute('data-today-x') - box.clientWidth / 3);
+  function show(el) {
+    tip.innerHTML = el.getAttribute('data-tip');
+    tip.style.display = 'block';
+    var r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
+    var x = r.left - b.left + box.scrollLeft + r.width / 2 - tip.offsetWidth / 2;
+    x = Math.max(box.scrollLeft + 4, Math.min(x, box.scrollLeft + box.clientWidth - tip.offsetWidth - 4));
+    tip.style.left = x + 'px';
+    tip.style.top = Math.max(4, r.top - b.top - tip.offsetHeight - 6) + 'px';
+  }
+  function hide() { tip.style.display = 'none'; }
+  box.querySelectorAll('[data-tip]').forEach(function (el) {
+    el.addEventListener('mouseenter', function () { show(el); });
+    el.addEventListener('focus', function () { show(el); });
+    el.addEventListener('mouseleave', hide);
+    el.addEventListener('blur', hide);
+  });
+  box.addEventListener('scroll', hide, { passive: true });
+})();
+"""
+
+
+def _hours(minutes: float) -> str:
+    h, m = divmod(int(round(minutes)), 60)
+    return f"{h}h {m:02d}m" if h and m else f"{h}h" if h else f"{m}m"
+
+
+def _day(value: str) -> date:
+    return date.fromisoformat(str(value)[:10])
+
+
+def _md(d: date, year: bool = False) -> str:
+    return f"{d:%b} {d.day}" + (f", {d.year}" if year else "")
+
+
+def render_season_html(data: dict, token: str | None) -> str:
+    plans = data["plans"]
+    if not plans:
+        body = ("<h1>Season</h1>"
+                '<div class="card">No plans yet — upload one to see it on the season timeline.</div>'
+                f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a></div>')
+        return _page("Season", body, token)
+
+    today = _day(data["today"])
+    first = min(_day(p["start"]) for p in plans)
+    last = max(_day(p["end"]) for p in plans)
+    origin = first - timedelta(days=first.weekday())        # the Monday on or before
+    span_end = max(last, today) if today >= origin else last
+    weeks_n = (span_end - origin).days // 7 + 1
+    WEEK, BAR, PAD = 22, 14, 12                             # px per week, column width, side padding
+    width = PAD * 2 + weeks_n * WEEK
+    AXIS, ROW = 30, 146                                     # axis height, row height
+    RACE_Y, BARS_TOP, BARS_H = 44, 52, 56                   # within a row: race labels, then columns
+    BAND_Y, BAND_H = BARS_TOP + BARS_H + 8, 8
+    height = AXIS + ROW * len(plans) + 6
+    peak = max((w["plannedMin"] for p in plans for w in p["weeks"]), default=0) or 60
+
+    def x_of(d: date) -> float:
+        return PAD + (d - origin).days / 7 * WEEK
+
+    svg = [f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" '
+           f'aria-label="Season timeline of {len(plans)} plan(s); the table below has the same numbers">']
+    # month gridlines and labels
+    m = date(origin.year, origin.month, 1)
+    while m <= span_end:
+        if m >= origin:
+            x = x_of(m)
+            svg.append(f'<line class="s-grid" x1="{x:.1f}" x2="{x:.1f}" y1="{AXIS - 8}" y2="{height}"/>')
+        label_x = max(x_of(m), PAD) + 4
+        if label_x < width - 30:
+            svg.append(f'<text class="s-axis" x="{label_x:.1f}" y="16">{_e(m.strftime("%b" if m.month != 1 else "%b %Y"))}</text>')
+        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+
+    for i, p in enumerate(plans):
+        y = AXIS + i * ROW
+        status = p["status"]
+        px = x_of(_day(p["start"]))
+        svg.append(f'<g class="s-row {status}">')
+        sub = f'{status} · {_md(_day(p["start"]))} – {_md(_day(p["end"]), True)}'
+        svg.append(f'<text class="s-name" x="{px:.1f}" y="{y + 16}">{_e(p["event"])}</text>')
+        svg.append(f'<text class="s-sub" x="{px:.1f}" y="{y + 29}">{_e(sub)}</text>')
+        base = y + BARS_TOP + BARS_H
+        for w in p["weeks"]:
+            wx = x_of(_day(w["start"]))
+            ph = BARS_H * w["plannedMin"] / peak
+            dh = BARS_H * min(w["doneMin"], w["plannedMin"]) / peak
+            href = _url("/training-plan", token, plan=None if status == "active" else p["id"], week=w["weekNumber"])
+            tip = (f'<b>{_e(p["event"])} · Week {w["weekNumber"]}</b><br>'
+                   f'{_md(_day(w["start"]))} – {_md(_day(w["end"]))}'
+                   f'{" · " + _e(w["phase"]) if w["phase"] else ""}{" · recovery" if w["recovery"] else ""}<br>'
+                   f'{_hours(w["plannedMin"])} planned · {_hours(w["doneMin"])} done')
+            cx = wx + (WEEK - BAR) / 2
+            svg.append(f'<a class="s-wk" href="{_e(href)}" data-tip="{_e(tip)}" tabindex="0" '
+                       f'aria-label="Week {w["weekNumber"]}: {_hours(w["plannedMin"])} planned, {_hours(w["doneMin"])} done">')
+            svg.append(f'<rect class="hit" x="{wx:.1f}" y="{y + BARS_TOP - 4}" width="{WEEK}" height="{BARS_H + BAND_H + 16}" rx="4"/>')
+            for cls, h in (("s-plan", ph), ("s-done", dh)):
+                if h >= 1:
+                    r = min(4, h)   # rounded data end, square at the baseline
+                    svg.append(f'<path class="{cls}" d="M{cx:.1f},{base:.1f}V{base - h + r:.1f}'
+                               f'q0,-{r} {r},-{r}h{BAR - 2 * r}q{r},0 {r},{r}V{base:.1f}Z"/>')
+            svg.append("</a>")
+        # phase band: a 2px surface gap between segments, the name under it when it fits
+        for ph in p["phases"]:
+            sx, ex = x_of(_day(ph["start"])), x_of(_day(ph["end"]) + timedelta(days=1))
+            color = PHASE_COLORS.get(ph["name"], _PHASE_DEFAULT)
+            svg.append(f'<rect x="{sx + 1:.1f}" y="{y + BAND_Y}" width="{max(ex - sx - 2, 1):.1f}" height="{BAND_H}" rx="3" fill="{color}"/>')
+            if ph["name"] and len(ph["name"]) * 6.2 + 6 <= ex - sx:
+                svg.append(f'<text class="s-phase" x="{sx + 3:.1f}" y="{y + BAND_Y + BAND_H + 13}">{_e(ph["name"])}</text>')
+        for race in p["races"]:
+            rx = x_of(_day(race["date"])) + WEEK / 14
+            svg.append(f'<line class="s-race" x1="{rx:.1f}" x2="{rx:.1f}" y1="{y + RACE_Y}" y2="{y + BAND_Y + BAND_H}"/>')
+            svg.append(f'<path class="s-race-m" d="M{rx:.1f},{y + RACE_Y - 5}l5,5l-5,5l-5,-5Z"/>')
+            svg.append(f'<text class="s-race-l" x="{rx + 8:.1f}" y="{y + RACE_Y + 4}">{_e(race["name"])}</text>')
+        svg.append("</g>")
+
+    if origin <= today <= span_end:
+        tx = x_of(today) + WEEK / 14
+        svg.append(f'<line class="s-today" data-today-x="{tx:.0f}" x1="{tx:.1f}" x2="{tx:.1f}" y1="{AXIS - 8}" y2="{height}"/>')
+        svg.append(f'<text class="s-today-l" x="{tx + 4:.1f}" y="{AXIS - 1}">Today</text>')
+    svg.append("</svg>")
+
+    rows = []
+    for p in plans:
+        planned = sum(w["plannedMin"] for w in p["weeks"])
+        done = sum(w["doneMin"] for w in p["weeks"])
+        href = _url("/training-plan", token, plan=None if p["status"] == "active" else p["id"])
+        rows.append(
+            f'<tr><td><a href="{_e(href)}">{_e(p["event"])}</a></td><td>{_e(p["status"])}</td>'
+            f'<td>{_e(p["start"])} – {_e(p["end"])}</td><td class="num">{len(p["weeks"])}</td>'
+            f'<td class="num">{_hours(planned)}</td><td class="num">{_hours(done)}</td>'
+            f'<td>{_e(", ".join(ph["name"] for ph in p["phases"] if ph["name"]))}</td>'
+            f'<td>{_e("; ".join(r["date"] + " " + r["name"] for r in p["races"]))}</td></tr>'
+        )
+    body = (
+        f"<style>{_SEASON_STYLE}</style>"
+        "<h1>Season</h1>"
+        '<div class="meta">Every active and future plan, and archived ones from the last year. '
+        "Columns are each week's planned hours, filled in as workouts are done; a column opens that week.</div>"
+        '<div class="legend">'
+        '<span><i style="background:color-mix(in srgb, var(--accent) 34%, var(--surface))"></i>Planned</span>'
+        '<span><i style="background:var(--accent)"></i>Done</span>'
+        '<span><i style="background:var(--warn); transform:rotate(45deg) scale(.75)"></i>Race</span>'
+        '<span><i style="background:var(--accent); width:2px"></i>Today</span>'
+        "</div>"
+        f'<div class="season">{"".join(svg)}<div class="tip" role="tooltip"></div></div>'
+        "<h2>Plans</h2>"
+        '<div class="table-wrap"><table><thead><tr><th>Plan</th><th>Status</th><th>Dates</th>'
+        '<th class="num">Weeks</th><th class="num">Planned</th><th class="num">Done</th><th>Phases</th><th>Races</th>'
+        f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        f'<div class="links"><a href="{_e(_url("/training-plan", token))}">Active plan</a>'
+        f'<a href="{_e(_url("/training-plan/plans", token))}">All plans</a></div>'
+        f"<script>{_SEASON_SCRIPT}</script>"
+    )
+    return _page("Season", body, token)
 
 
 # ── ROUTES ────────────────────────────────────────────────────────────────────
@@ -431,12 +660,27 @@ async def serve_plan(request):
 
 async def serve_plans(request):
     """GET /training-plan/plans — every stored plan."""
-    try:
+    def build():
+        plan_service.advance_plans()
         plans = plan_service.list_plans()
+        return plans, plan_service.timeline_notes(plans)
+
+    try:
+        plans, notes = await run_in_threadpool(build)
     except PlanStorageUnavailable as e:
         return _unavailable(request, e)
-    return HTMLResponse(render_plans_html(plans, _token(request), request.query_params.get("error")),
+    return HTMLResponse(render_plans_html(plans, _token(request), request.query_params.get("error"),
+                                          notes, local_time.local_today().isoformat()),
                         headers=_NO_STORE)
+
+
+async def serve_season(request):
+    """GET /training-plan/season — every plan on one timeline."""
+    try:
+        data = await run_in_threadpool(plan_service.season)
+    except PlanStorageUnavailable as e:
+        return _unavailable(request, e)
+    return HTMLResponse(render_season_html(data, _token(request)), headers=_NO_STORE)
 
 
 async def handle_plan_action(request):
@@ -492,6 +736,7 @@ async def handle_upload(request):
             return HTMLResponse(render_confirm_replace_html(plan, preview, warnings, token, activate),
                                 headers=_NO_STORE)
         row = plan_service.save_upload(plan, activate)
+        warnings = warnings + plan_service.timeline_warnings(row["id"])
     except PlanError as e:
         return form_error(str(e))
     except PlanStorageUnavailable as e:
@@ -600,6 +845,28 @@ async def api_completion(request):
             # Ticked by hand: attach the Garmin activity that did it, if synced.
             plan_service.link_completed_workouts(_plan_param(request), [workout_id])
         row = plan_service.require_plan(_plan_param(request))
+    except (PlanStorageUnavailable, LookupError, PlanError) as e:
+        return _api_error(e)
+    return _plan_response(row)
+
+
+async def api_carryover(request):
+    """POST /training-plan/api/carryover — {keys}: the thresholds to copy over."""
+    try:
+        body = await _json_body(request)
+        keys = body.get("keys")
+        if not isinstance(keys, list):
+            raise PlanError("keys must be a list of thresholds.")
+        row = plan_service.apply_carryover(keys, "web")
+    except (PlanStorageUnavailable, LookupError, PlanError) as e:
+        return _api_error(e)
+    return _plan_response(row)
+
+
+async def api_carryover_dismiss(request):
+    try:
+        plan_service.dismiss_carryover()
+        row = plan_service.require_plan(None)
     except (PlanStorageUnavailable, LookupError, PlanError) as e:
         return _api_error(e)
     return _plan_response(row)
@@ -719,6 +986,7 @@ async def api_save_timezone(request):
 ROUTES = [
     Route("/training-plan", serve_plan, methods=["GET"]),
     Route("/training-plan/plans", serve_plans, methods=["GET"]),
+    Route("/training-plan/season", serve_season, methods=["GET"]),
     Route("/training-plan/plans/{plan_id}/{action}", handle_plan_action, methods=["POST"]),
     Route("/training-plan/upload", serve_upload_form, methods=["GET"]),
     Route("/training-plan/upload", handle_upload, methods=["POST"]),
@@ -728,6 +996,8 @@ ROUTES = [
     Route("/training-plan/api/plan", api_get_plan, methods=["GET"]),
     Route("/training-plan/api/operations", api_operations, methods=["POST"]),
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
+    Route("/training-plan/api/carryover", api_carryover, methods=["POST"]),
+    Route("/training-plan/api/carryover/dismiss", api_carryover_dismiss, methods=["POST"]),
     Route("/training-plan/api/revisions", api_revisions, methods=["GET"]),
     Route("/training-plan/api/revisions/{version}/restore", api_restore, methods=["POST"]),
     Route("/training-plan/api/calendar", api_calendar, methods=["GET"]),

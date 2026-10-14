@@ -278,7 +278,23 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
   Future plans stay editable in the viewer and through the MCP tools
   (`amend_training_plan` with their `plan_id`); archived plans are read-only.
   `/training-plan/plans` makes any plan active, moves it to future, archives
-  or deletes it.
+  or deletes it, and flags overlaps or gaps between one plan and the next.
+- **Future plans take over on their start date.** The first time anything
+  reads the active plan on that day (Today, the viewer, the calendar feed, the
+  coach, a sync), the future plan becomes active and the previous one is
+  archived. Only a start date that arrives later counts — a plan uploaded as
+  future with a start date already past, or moved back to future by hand,
+  stays where you put it.
+- **Threshold carry-over.** When a plan becomes active (by hand or on its
+  start date) and the outgoing plan's FTP / LTHRs / threshold pace / CSS
+  differ, the viewer offers to carry them over, pre-ticking the ones you set
+  or validated in the outgoing plan. Carried values (and their validated
+  flags) are saved as one revision. The coach sees the pending offer in
+  `get_training_plan` (`thresholdCarryover`).
+- **Season view.** `/training-plan/season` puts every active and future plan,
+  and archived ones from the last year, on one timeline: each week's planned
+  hours filled in as workouts are done, the phases, races and today. A week
+  opens it in the viewer; a table underneath has the same numbers.
 - **Paging into the next plan.** Stepping past the last week of a plan (or the
   first) carries on into the plan after (or before) it, and the month view
   shows the next plan's days faded, so the hand-over between blocks is visible.
@@ -302,6 +318,7 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 | Route | Method | Description |
 |---|---|---|
 | `/training-plan` | `GET` | The viewer for the active plan (`?plan=<id>` for a future one, or an archived one read-only; `&week=` / `&month=` to open at a week or month), or a "No plan active" page |
+| `/training-plan/season` | `GET` | Every plan on one timeline: weekly hours, phases, races, today |
 | `/training-plan/plans` | `GET` | Every stored plan, with view / download / activate / move to future / archive / delete |
 | `/training-plan/plans/{id}/{activate\|future\|archive\|delete}` | `POST` | Plan lifecycle (the active plan can't be deleted) |
 | `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; stored as a future plan unless made active; same-id uploads confirm first) |

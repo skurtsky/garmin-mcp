@@ -197,7 +197,8 @@ def build_plan_context(today: date, athlete: dict | None = None) -> dict | None:
     None without a database or an active plan."""
     if not db.is_configured():
         return None
-    row = db.get_training_plan(None)
+    from tools.plan_service import active_plan
+    row = active_plan()
     if row is None:
         return None
     plan = row["plan"]

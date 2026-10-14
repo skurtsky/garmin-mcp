@@ -229,7 +229,8 @@ same DDL if you ever want to create them by hand.
 1. Open `DEPLOYED_URL/training-plan/upload?token=YOUR_TOKEN`
 2. Pick the plan `.json` the coach skill produced, tick **Make this the active
    plan** if it should replace the current one (the previous plan is then
-   archived), and submit. Unticked, a new plan id is stored as a future plan;
+   archived), and submit. Unticked, a new plan id is stored as a future plan
+   that becomes active by itself on its start date;
    an id that's already stored shows what replacing it would change and asks
    you to confirm.
 

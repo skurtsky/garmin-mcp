@@ -151,3 +151,23 @@ def test_future_plans():
     plan_service.set_status("later", "active")
     assert plan_service.get_plan()["id"] == "later"
     assert {p["id"]: p["status"] for p in plan_service.list_plans()}["test-block-2026"] == "future"
+
+
+def test_auto_switch_and_carry_over(monkeypatch):
+    from datetime import date
+    plan_service.save_upload(sample_plan())
+    plan_service.apply_operations("test-block-2026", [{"op": "set_zones", "ftp": 270}], "web")
+    plan_service.save_upload(sample_plan(id="next", planStartDate="2026-10-05"), activate=False)
+    for key in (plan_service.AUTOSWITCH_KEY, plan_service.CARRYOVER_KEY):
+        db.set_setting(key, None)
+    monkeypatch.setattr(plan_service, "_checked_day", None)
+
+    plan_service.advance_plans(date(2026, 10, 1))
+    monkeypatch.setattr(plan_service, "_checked_day", None)
+    assert plan_service.advance_plans(date(2026, 10, 5))["id"] == "next"
+
+    row = plan_service.get_plan()
+    assert row["id"] == "next"
+    assert plan_service.pending_carryover(row)["items"][0]["from"] == 270
+    assert plan_service.apply_carryover(["ftp"], "web")["plan"]["overrides"]["ftp"] == 270
+    assert db.get_setting(plan_service.CARRYOVER_KEY) is None

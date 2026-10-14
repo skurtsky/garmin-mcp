@@ -80,7 +80,7 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     assert server.pop("startTimes")["w1-thu-bike"] == "06:00"   # the default start time
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
                       "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {},
-                      "neighbors": {}}
+                      "neighbors": {}, "carryover": None}
     assert 'data-nav="plan" aria-current="page"' in r.text   # the site nav, on Plan
 
 
@@ -645,3 +645,86 @@ def test_timezone_setting_without_a_database(monkeypatch):
     assert c.get("/training-plan/api/timezone", params=TOKEN).json()["timezone"] is None
     r = c.post("/training-plan/api/timezone", params=TOKEN, json={"timezone": "America/Toronto"})
     assert r.status_code == 503 and "LOCAL_TIMEZONE" in r.json()["error"]
+
+
+# ── CARRY-OVER, TIMELINE, SEASON ──────────────────────────────────────────────
+
+def test_activating_offers_the_outgoing_plans_thresholds(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/operations", params=TOKEN,
+                json={"operations": [{"op": "set_zones", "ftp": 262},
+                                     {"op": "set_zone_validation", "sport": "bike", "at": "2026-10-01"}]})
+    _upload(client, _next_block(), activate=False)
+
+    client.post("/training-plan/plans/next-block/activate", params=TOKEN)
+    carry = _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["carryover"]
+
+    assert carry["from"] == {"id": "test-block-2026", "event": "Test Block"} and carry["auto"] is False
+    assert carry["items"] == [{"key": "ftp", "label": "FTP", "sport": "bike", "from": 262, "to": 250, "suggested": True}]
+
+    r = client.post("/training-plan/api/carryover", params=TOKEN, json={"keys": ["ftp"]})
+    assert r.status_code == 200 and r.json()["carryover"] is None
+    stored = fake_db.plans["next-block"]["plan"]
+    assert stored["overrides"]["ftp"] == 262
+    assert stored["zonesValidated"]["bike"] == {"validated": True, "at": "2026-10-01"}
+    assert fake_db.revisions["next-block"][-1]["summary"].startswith("Carried thresholds from Test Block")
+    assert client.post("/training-plan/api/carryover", params=TOKEN, json={"keys": ["ftp"]}).status_code == 400
+
+
+def test_carry_over_can_be_dismissed_and_needs_a_difference(client, fake_db):
+    _upload(client, sample_plan())
+    _upload(client, _next_block())          # same thresholds: nothing to offer
+    assert _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["carryover"] is None
+
+    client.post("/training-plan/api/operations", params=TOKEN, json={"operations": [{"op": "set_zones", "runLthr": 175}]})
+    _upload(client, sample_plan())          # re-activate the first plan (confirm page) ...
+    client.post("/training-plan/upload", params=TOKEN, data={
+        training_plan.TEXT_FIELD: json.dumps(sample_plan()), training_plan.CONFIRM_FIELD: "1",
+        training_plan.ACTIVATE_FIELD: "1"})
+    assert [i["key"] for i in _embedded(client.get("/training-plan", params=TOKEN).text, "plan-server")["carryover"]["items"]] == ["runLthr"]
+
+    r = client.post("/training-plan/api/carryover/dismiss", params=TOKEN)
+    assert r.status_code == 200 and r.json()["carryover"] is None
+    assert "overrides" not in fake_db.plans["test-block-2026"]["plan"]
+
+
+def test_plans_list_and_upload_flag_overlaps_and_gaps(client, fake_db):
+    _upload(client, sample_plan())                                   # Sep 14 – 27
+    overlapping = _next_block()
+    overlapping["meta"].update(id="overlap", event="Overlap", planStartDate="2026-09-24")
+    for week in overlapping["weeks"]:
+        week["startDate"] = "2026-09-24" if week["weekNumber"] == 1 else week["startDate"]
+        for day in week["days"]:
+            for w in day["workouts"]:
+                w["id"] = "o-" + w["id"]
+
+    r = _upload(client, overlapping, activate=False, follow_redirects=False)
+    assert r.status_code == 200      # the done page, to show the warning
+    assert "Overlap overlaps Test Block by 4 days (2026-09-24 – 2026-09-27)" in r.text
+    assert "becomes the active plan on 2026-09-24" in r.text
+
+    client.post("/training-plan/plans/overlap/delete", params=TOKEN)
+    later = _next_block()
+    later["meta"]["planStartDate"] = "2026-10-05"
+    later["weeks"][0]["startDate"] = "2026-10-05"
+    _upload(client, later, activate=False)
+    page = client.get("/training-plan/plans", params=TOKEN).text
+    assert "7 days with no plan between Test Block and Next Block (2026-09-28 – 2026-10-04)" in page
+
+
+def test_season_page(client, fake_db):
+    assert "No plans yet" in client.get("/training-plan/season", params=TOKEN).text
+    race = sample_plan()
+    race["weeks"][1]["days"][0]["workouts"].append({"id": "w2-race", "sport": "race", "name": "Fall 10K", "durationMinutes": 45})
+    _upload(client, race)
+    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
+    _upload(client, _next_block(), activate=False)
+
+    r = client.get("/training-plan/season", params=TOKEN)
+
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    assert "<svg" in r.text and "Fall 10K" in r.text
+    assert "Next Block" in r.text and "Test Block" in r.text
+    assert "/training-plan?plan=next-block&amp;week=2&amp;token=t0k" in r.text   # a column opens its week
+    assert "/training-plan?week=1&amp;token=t0k" in r.text                        # the active plan's
+    assert "50m done" in r.text   # the ticked tempo run, in its week's tooltip
