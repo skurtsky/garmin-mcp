@@ -1049,6 +1049,22 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #range-30:checked ~ .range-body .rs-30,
 #range-42:checked ~ .range-body .rs-42,
 #range-90:checked ~ .range-body .rs-90 { display:grid; }
+.tr-pane { display:none; grid-column:1/-1; }
+#trtab-fitness:checked ~ .range-body .tr-pane-fitness { display:flex; flex-direction:column; }
+#trtab-metrics:checked ~ .range-body .tr-pane-metrics { display:flex; flex-direction:column; gap:12px; }
+.tr-cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; }
+@media (min-width: 900px) {
+  .tr-cards:not(.tr-cards-fallback) { display:none; }
+  /* desktop: the tabs become an underline row under the title / range line */
+  .rangebar .trrange { order:2; }
+  .rangebar .trtabs { order:3; flex:0 0 100%; gap:28px; padding:0; border:0; border-radius:0;
+                      border-bottom:1px solid var(--color-divider); }
+  .rangebar .trtabs label { font-size:13px; padding:10px 0 11px; border-radius:0; margin-bottom:-1px;
+                            border-bottom:2px solid transparent; }
+  #trtab-fitness:checked ~ .rangebar label[for=trtab-fitness],
+  #trtab-metrics:checked ~ .rangebar label[for=trtab-metrics] {
+    background:transparent !important; color:var(--color-text) !important; border-bottom-color:var(--color-accent); font-weight:500; }
+}
 #activity-filter-all:checked ~ .tabpanels .activity-filter-all,
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filter-triathlon,
 #activity-filter-bike:checked ~ .tabpanels .activity-filter-bike,
@@ -1064,6 +1080,8 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 #range-30:checked ~ .rangebar label[for=range-30],
 #range-42:checked ~ .rangebar label[for=range-42],
 #range-90:checked ~ .rangebar label[for=range-90],
+#trtab-fitness:checked ~ .rangebar label[for=trtab-fitness],
+#trtab-metrics:checked ~ .rangebar label[for=trtab-metrics],
 #activity-filter-all:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-all],
 #activity-filter-triathlon:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-triathlon],
 #activity-filter-bike:checked ~ .tabpanels .activity-filterbar label[for=activity-filter-bike],
@@ -2020,9 +2038,6 @@ _CHART_SPECS = [
 ]
 
 
-_OVERLAY_METRICS = {"hrv", "rhr", "sleep_score", "stress"}
-
-
 def _chart_card_html(c: dict) -> str:
     return f"""
     <div class="card" style="padding:13px;gap:7px">
@@ -2073,31 +2088,36 @@ def _panel_trends(data: dict) -> str:
     redesign = data.get("redesign") or {}
     range_sets = ""
     for r in ranges:
-        # HRV, resting HR, sleep and stress are the fitness & fatigue card's
-        # overlay cards (tools/dashboard_trends.py); the rest stay as charts.
+        # Fitness & Fatigue tab: the load card, nothing to overlay. Metrics tab:
+        # desktop gets the master chart (every metric is a line you can switch
+        # on, Acute load and Steps included); mobile gets one chart per metric.
         cards = "".join(
             _chart_card_html(chart) for chart in (
                 _chart(metrics.get(key), label, unit, lower_better, r, big=big, stroke=stroke, fill=fill,
                        chart_id=f"lc-{key}-{r}")
                 for key, label, unit, lower_better, big, stroke, fill in _CHART_SPECS
-                if key not in _OVERLAY_METRICS
             ) if chart is not None
         )
-        fitness = dashboard_trends.render(redesign.get("fitness"), redesign.get("goal"), trends, r, f"r{r}")
+        fitness = dashboard_trends.render(redesign.get("fitness"), redesign.get("goal"), r) \
+            or '<div class="err">Fitness &amp; fatigue unavailable — no training load yet</div>'
         compare = dashboard_trends.compare(redesign.get("fitness"), trends, r)
-        more = '<div class="tr-more-title section-title" style="grid-column:1/-1;margin:8px 0 -4px">Fitness, status and details</div>' if compare else ""
+        fallback = "" if compare else " tr-cards-fallback"
         range_sets += (
-            f'<div class="range-set rs-{r}" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">'
-            f'<div style="grid-column:1/-1;display:grid">{compare}</div>{more}'
-            f'{fitness}{cards}</div>'
+            f'<div class="range-set rs-{r}" style="gap:12px">'
+            f'<div class="tr-pane tr-pane-fitness">{fitness}</div>'
+            f'<div class="tr-pane tr-pane-metrics">{compare}<div class="tr-cards{fallback}">{cards}</div></div></div>'
         )
 
+    tab_labels = '<label for="trtab-fitness">Fitness &amp; Fatigue</label><label for="trtab-metrics">Metrics</label>'
     return f"""
     <section class="panel tabpanel tp-trends" style="flex-direction:column;gap:16px">
       {range_inputs}
+      <input class="hide" type="radio" name="trtab" id="trtab-fitness" checked>
+      <input class="hide" type="radio" name="trtab" id="trtab-metrics">
       <div class="rangebar" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
         <div style="font-family:var(--font-heading);font-size:20px">Trends</div>
-        <div class="pillbar">{range_pills}</div>
+        <div class="pillbar trtabs">{tab_labels}</div>
+        <div class="pillbar trrange">{range_pills}</div>
       </div>
       <div class="range-body">{range_sets}</div>
     </section>"""
@@ -3624,6 +3644,19 @@ _TODAY_JS = """
     var t = e.target;
     if (!t || t.name !== 'range' || !t.checked) return;
     try { localStorage.setItem(RANGE_KEY, t.id.replace('range-', '')); } catch (err) { /* not kept */ }
+  });
+
+  // ── Trends: remember the tab (Fitness & Fatigue / Metrics) last opened ──
+  var TAB_KEY = 'dash-trend-tab';
+  try {
+    var savedTab = localStorage.getItem(TAB_KEY);
+    var tabRadio = savedTab && document.getElementById('trtab-' + savedTab);
+    if (tabRadio) tabRadio.checked = true;
+  } catch (e) { /* storage unavailable — Fitness & Fatigue stands */ }
+  document.addEventListener('change', function (e) {
+    var t = e.target;
+    if (!t || t.name !== 'trtab' || !t.checked) return;
+    try { localStorage.setItem(TAB_KEY, t.id.replace('trtab-', '')); } catch (err) { /* not kept */ }
   });
 
   // ── FTP from a test: confirm, then write it back to the plan ──
