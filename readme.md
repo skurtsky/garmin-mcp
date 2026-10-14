@@ -323,7 +323,7 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 | `/training-plan/plans/{id}/{activate\|future\|archive\|delete}` | `POST` | Plan lifecycle (the active plan can't be deleted) |
 | `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; stored as a future plan unless made active; same-id uploads confirm first) |
 | `/training-plan/export.json` | `GET` | The plan JSON as currently edited |
-| `/training-plan/pdf` | `GET` | Printable wall-chart PDF of the stored plan |
+| `/training-plan/pdf` | `GET` | Printable PDF of the stored plan (overview, one page per week, race strategy) |
 | `/training-plan/calendar.ics` | `GET` | The active plan as a calendar feed — `?key=<feed token>`, not the bearer token (see below) |
 | `/training-plan/api/plan` | `GET` | Plan + version, status, completion (used by the viewer) |
 | `/training-plan/api/operations` | `POST` | `{"operations": [...]}` — the same edit operations as `amend_training_plan` |
@@ -598,6 +598,8 @@ garmin-mcp/
 │   ├── plan_tools.py      # training-plan MCP tools
 │   ├── training_plan.py   # /training-plan routes: viewer, upload, plans list, JSON API
 │   ├── assets/plan-viewer.html  # the plan viewer app the server fills with a stored plan
+│   ├── assets/fonts/      # Barlow + Barlow Condensed (OFL) for the plan PDF
+│   ├── build_pdf.py       # the printable plan PDF: overview, one page per week, race strategy (WeasyPrint)
 │   ├── trends.py          # get_performance_predictions, get_performance_trends, get_trends
 │   ├── weekly_summaries.py # storage + routes for the weekly reports (/weekly-summary)
 │   ├── workout.py         # get_scheduled_workouts, get_saved_workouts, schedule/unschedule, create_workout, delete_workout, update_workout_weights, patch_workout_step
@@ -607,6 +609,7 @@ garmin-mcp/
 ├── tests/
 │   ├── conftest.py        # Shared fixtures
 │   ├── test_activities.py
+│   ├── test_build_pdf.py
 │   ├── test_challenges.py
 │   ├── test_client.py
 │   ├── test_dashboard.py

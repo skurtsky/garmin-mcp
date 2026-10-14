@@ -7,22 +7,27 @@ Renders through WeasyPrint, the only engine available in the container, so
 what you get here is what production produces. On Windows that means running
 under WSL — WeasyPrint needs pango/harfbuzz.
 
-Letter landscape, 0.4in margins:
+Letter landscape. Every page carries a running footer (athlete · event and
+"page / pages") drawn in the @page margin, so it can never collide with the
+content.
 
-  page 1        cover — phases, zones, projected splits, legend
-  pages 2..n+1  one page per week, seven day columns, notes/actuals ruled
-                block at the foot of each column
-  last page     race strategy & plan notes (only when the plan has a race)
+  page 1        overview — phase band over a 16-week volume chart (hours by
+                sport), zone tables, projected splits
+  pages 2..n+1  one page per week: header with hours by sport, focus note,
+                seven day columns of session cards, a notes block per day
+  last page     race strategy (only when the plan has a race)
 
-This PDF is a wall chart, not the plan. Full session structures stay in the
-JSON and the HTML viewer; each card here carries only sport, duration,
-distance, zone, title and key targets — enough to know what today is without
-reading a paragraph of it from across the room.
+This PDF is a printable reference, not the plan. Full session structures stay
+in the JSON and the HTML viewer; each card carries only sport, start time,
+duration · distance · zone, title and key targets.
 
-A day column that overflows is clipped rather than spilling onto the next
-page. Fix it by shortening that workout's `keyTargets` in the JSON — the
-alternative, shrinking the type, makes the whole chart unreadable from the
-wall it is pinned to.
+Print rules the layout keeps to:
+  * One format per quantity: session durations h:mm, splits h:mm:ss, swim
+    distances in metres, bike/run in km, zones as Z2 / Z2–3.
+  * No large dark fills — tints and outlines only, so it is cheap on ink.
+  * Nothing is clipped. Session cards share a minimum height so a week's
+    rows line up, and grow when their text needs more; the notes block under
+    each day is what gives way.
 """
 
 import argparse
@@ -32,15 +37,169 @@ import pathlib
 import re
 import sys
 import tempfile
+from datetime import date
 
+# ─────────────────────────────── palette ───────────────────────────────
+
+INK = "#15171c"
+INK_2 = "#2a2f38"
+INK_3 = "#3d4350"
+MUTED = "#5b616e"
+RULE = "#c9ced8"
+RULE_LIGHT = "#e3e6eb"
+PANEL = "#f3f4f6"
+
+# Darkened from the viewer's sport colours so each reads at 4.5:1 on white
+# and stays distinct in grayscale.
 SPORT_COLORS = {
-    "swim": "#2e8fa3", "bike": "#4d8a46", "run": "#c0742f",
-    "strength": "#6c5fc0", "brick": "#a8577d", "race": "#b08a20", "rest": "#8a8f9c",
+    "swim": "#0b7285", "bike": "#2f7a3a", "run": "#b4530f",
+    "strength": "#6741b5", "brick": "#a3366a", "race": "#8a6508", "rest": "#8a8f9c",
 }
+SPORT_ORDER = ["swim", "bike", "run", "brick", "strength", "race"]
+# Bottom-to-top stacking in the volume chart: the big aerobic blocks sit low.
+STACK_ORDER = ["bike", "brick", "run", "swim", "strength", "race"]
+
+# Light-to-dark tints for phases, in plan order. Dark text on every one of
+# them, so no phase prints as a solid block of ink.
+PHASE_RAMP = ["#eef0f3", "#e1e4e9", "#d2d6de", "#bfc5cf", "#aab1bf", "#959dad"]
+
+FONT_DIR = pathlib.Path(__file__).resolve().parent / "assets" / "fonts"
+FONT_FILES = [
+    ("Barlow", 400, "Barlow-Regular.ttf"),
+    ("Barlow", 500, "Barlow-Medium.ttf"),
+    ("Barlow", 600, "Barlow-SemiBold.ttf"),
+    ("Barlow", 700, "Barlow-Bold.ttf"),
+    ("Barlow Condensed", 500, "BarlowCondensed-Medium.ttf"),
+    ("Barlow Condensed", 600, "BarlowCondensed-SemiBold.ttf"),
+    ("Barlow Condensed", 700, "BarlowCondensed-Bold.ttf"),
+]
+
+# Week-page geometry (CSS px at 96/in). The card area is what a week's
+# session slots share; the notes block takes whatever is left below it.
+PAGE_H = 715            # 7.45in: a hair under the 7.55in content box
+HEAD_H = 60             # week header band, fixed
+BLOCK_GAP = 9
+FOCUS_LINE = 17         # focus paragraph line height
+FOCUS_CHARS = 92        # conservative characters per focus line (main column)
+SIDE_CHARS = 22         # … and in the side-note box
+SLOT_AREA = 380
+SLOT_GAP = 6
+CHART_H = 230
+GRID_SLACK = 12
+
+
+R = ' class="r"'
+
+
+def strip_kmh(v):
+    return re.sub(r"\s*km/h", "", str(v or ""))
 
 
 def e(v):
     return html.escape("" if v is None else str(v))
+
+
+# ────────────────────────────── formatting ──────────────────────────────
+
+def parse_date(s):
+    y, m, d = (int(x) for x in str(s)[:10].split("-"))
+    return date(y, m, d)
+
+
+def short_date(s):
+    d = parse_date(s)
+    return f"{d.strftime('%b')} {d.day}"
+
+
+def day_date(s):
+    d = parse_date(s)
+    return f"{d.strftime('%a')} {d.strftime('%b')} {d.day}"
+
+
+def full_date(s):
+    d = parse_date(s)
+    return f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}, {d.year}"
+
+
+def week_range(a, b):
+    da, db = parse_date(a), parse_date(b)
+    return f"{day_date(a)} – {day_date(b)}, {db.year}" if da.year == db.year else \
+        f"{day_date(a)}, {da.year} – {day_date(b)}, {db.year}"
+
+
+def hm(minutes):
+    """Session and weekly durations: always h:mm (0:50, 1:30, 12:05)."""
+    if minutes is None:
+        return ""
+    m = int(round(minutes))
+    return f"{m // 60}:{m % 60:02d}"
+
+
+def fmt_split(leg, value):
+    """Race splits arrive as '46:00' (swim, mm:ss), '3:12' (bike, h:mm) or
+    '5:32' (total, h:mm). Two-part values are ambiguous on their own, so the
+    leg decides: swim and transitions are minutes, everything else hours.
+    Output is always h:mm:ss."""
+    s = str(value or "").strip()
+    nums = re.findall(r"\d+", s.split(" ")[0])
+    if not nums:
+        return s
+    parts = [int(n) for n in nums[:3]]
+    if len(parts) == 3:
+        h, m, sec = parts
+    elif len(parts) == 2:
+        if str(leg).strip().lower() in ("swim", "t1", "t2"):
+            h, (m, sec) = 0, parts
+        else:
+            (h, m), sec = parts, 0
+    else:
+        h, m, sec = 0, parts[0], 0
+    h, m = h + m // 60, m % 60
+    return f"{h}:{m:02d}:{sec:02d}"
+
+
+def zone_short(z):
+    """'Zone 2' → 'Z2', 'Zone 2-3' → 'Z2–3'. Anything else ('Race') drops."""
+    m = re.match(r"\s*(?:zone|z)\s*(\d[a-c]?)(?:\s*[-–]\s*(?:z(?:one)?\s*)?(\d[a-c]?))?\s*$",
+                 str(z or ""), re.IGNORECASE)
+    if not m:
+        return ""
+    return f"Z{m.group(1)}" + (f"–{m.group(2)}" if m.group(2) else "")
+
+
+def _num(v):
+    return f"{v:,.1f}".rstrip("0").rstrip(".") if v % 1 else f"{int(v):,}"
+
+
+def distance_label(w, prefs):
+    """Swim in metres (or yards), bike and run in km (or miles)."""
+    sport = w.get("sport")
+    meters = w.get("distanceMeters")
+    km = w.get("distanceKm")
+    if meters is None and km is None:
+        return ""
+    if sport == "swim":
+        m = meters if meters is not None else km * 1000
+        return f"{_num(m)} {'yd' if prefs.get('swim') == 'yards' else 'm'}"
+    k = km if km is not None else meters / 1000
+    if prefs.get(sport) == "miles":
+        return f"{_num(round(k / 1.609344, 1))} mi"
+    return f"{_num(round(k, 1))} km"
+
+
+_DATE_OR_RANGE = re.compile(r"\d{4}-\d{2}-\d{2}|(\d)\s*-\s*(Z?\d)")
+
+
+def tidy(text):
+    """Light typographic clean-up of free text from the plan: '2 x 400m' →
+    '2 × 400 m', '170-185' → '170–185'. ISO dates are left alone."""
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    t = re.sub(r"(\d)\s*[xX]\s*(\d)", r"\1 × \2", t)
+    t = re.sub(r"(?<=\d)K\b", " km", t)
+    t = re.sub(r"(?<=\d)(m|km|W|g|lb|kg|mi|yd)\b", r" \1", t)
+    t = _DATE_OR_RANGE.sub(lambda m: m.group(0) if m.group(1) is None
+                           else f"{m.group(1)}–{m.group(2)}", t)
+    return t
 
 
 def key_targets(w):
@@ -53,146 +212,13 @@ def key_targets(w):
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
 
 
-def fmt_hours(h):
-    if h is None:
-        return ""
-    return f"{h:g}h"
-
-
-def fmt_duration(minutes):
-    if not minutes:
-        return ""
-    h, m = divmod(int(minutes), 60)
-    return f"{h}h{m:02d}" if h and m else (f"{h}h" if h else f"{m}min")
-
-
-def distance_label(w, prefs):
-    if w.get("distanceKm") is not None:
-        unit = "mi" if prefs.get("bike") == "miles" else "km"
-        return f"{w['distanceKm']:g}{unit}"
-    if w.get("distanceMeters") is not None:
-        unit = "yd" if prefs.get("swim") == "yards" else "m"
-        return f"{w['distanceMeters']:g}{unit}"
-    return ""
-
-
-def date_range(a, b):
-    from datetime import date
-
-    def parse(s):
-        y, m, d = (int(x) for x in s.split("-"))
-        return date(y, m, d)
-
-    da, db = parse(a), parse(b)
-    if da.month == db.month:
-        return f"{da.strftime('%b')} {da.day}–{db.day}, {db.year}"
-    return f"{da.strftime('%b')} {da.day} – {db.strftime('%b')} {db.day}, {db.year}"
-
-
-def full_date(s):
-    from datetime import date
-    y, m, d = (int(x) for x in s.split("-"))
-    dt = date(y, m, d)
-    return f"{dt.strftime('%A')} {dt.strftime('%B')} {dt.day}, {dt.year}"
-
-
-def short_date(s):
-    from datetime import date
-    y, m, d = (int(x) for x in s.split("-"))
-    return date(y, m, d).strftime("%b %-d") if sys.platform != "win32" else date(y, m, d).strftime("%b %d")
-
-
-# ────────────────────────────── cover ──────────────────────────────
-
-def cover_page(plan):
-    meta = plan["meta"]
-    race = (plan.get("raceStrategy") or {}).get("event") if plan.get("raceStrategy") else None
-    pacing = ((plan.get("raceStrategy") or {}).get("pacing") or {})
-    goals = pacing.get("goals") or {}
-
-    dist = ""
-    if race and race.get("distances"):
-        d = race["distances"]
-        parts = []
-        if d.get("swim") is not None:
-            parts.append(f"{d['swim']:g}m swim")
-        if d.get("bike") is not None:
-            parts.append(f"{d['bike']:g}km bike")
-        if d.get("run") is not None:
-            parts.append(f"{d['run']:g}km run")
-        dist = " · ".join(parts)
-
-    badges = ""
-    if goals.get("a"):
-        badges += f'<span class="goal goal-a">A goal · {e(goals["a"])}</span>'
-    if goals.get("b"):
-        badges += f'<span class="goal goal-b">B goal · {e(goals["b"])}</span>'
-
-    line1 = " · ".join(x for x in [full_date(race["date"]) if race else "", dist] if x)
-    head = f"""
-    <div class="cover-head">
-      <div>
-        <div class="kicker">{e(meta.get('generatedBy', 'Claude Coach'))} · {e(meta.get('athlete', ''))}</div>
-        <h1>{e(meta.get('event'))}</h1>
-        {f'<div class="cover-sub">{e(line1)}</div>' if line1 else ''}
-        <div class="cover-sub">{e(meta.get('totalWeeks'))} weeks · {e(meta.get('planStartDate'))} → {e(meta.get('planEndDate'))}</div>
-      </div>
-      <div class="goals">{badges}</div>
-    </div>"""
-
-    rows = "".join(
-        f"<tr><td class='phase-cell'><span class='swatch' style='background:{phase_color(p['name'])}'></span>{e(p['name'])}</td>"
-        f"<td>{e(p['startWeek'])}–{e(p['endWeek'])}</td>"
-        f"<td>{e(p.get('startDate', ''))} → {e(p.get('endDate', ''))}</td>"
-        f"<td>{e(p.get('weeklyHoursRange', {}).get('low'))}–{e(p.get('weeklyHoursRange', {}).get('high'))}h</td>"
-        f"<td class='focus'>{e(first_sentence(p.get('focus', '')))}</td></tr>"
-        for p in plan.get("phases", [])
-    )
-    phases = f"""
-    <div class="block">
-      <h2>Phases</h2>
-      <table class="tbl">
-        <thead><tr><th>Phase</th><th>Weeks</th><th>Dates</th><th>Hours</th><th>Focus</th></tr></thead>
-        <tbody>{rows}</tbody>
-      </table>
-    </div>"""
-
-    zones = f'<div class="block"><h2>Zones</h2><div class="zone-cols">{zone_tables(plan)}</div></div>'
-
-    splits = splits_block(plan)
-    legend = "".join(
-        f'<span class="legend-item"><span class="swatch" style="background:{c}"></span>{s}</span>'
-        for s, c in SPORT_COLORS.items() if s != "rest"
-    )
-
-    return f"""<section class="page cover {cover_density(plan)}">
-      {head}{phases}{zones}
-      <div class="cover-foot">{splits}<div class="legend">{legend}</div></div>
-    </section>"""
-
-
-def cover_density(plan):
-    """The cover carries every phase and every zone row, so its height is
-    data-driven. Rather than let a nine-phase plan spill, tighten the
-    leading before anything is lost."""
-    z = plan.get("zones") or {}
-    ov = plan.get("overrides") or {}
-    zone_rows = 0
-    bike = z.get("bike") or {}
-    if bike.get("power") or ov.get("ftp"):
-        zone_rows = max(zone_rows, len(BIKE_POWER_PCT_TABLE))
-    run = z.get("run") or {}
-    if run.get("hr") or run.get("pace") or ov.get("runLthr") or ov.get("thresholdPace"):
-        zone_rows = max(zone_rows, len(HR_PCT_TABLE))
-    swim = z.get("swim") or {}
-    if swim.get("zones") or ov.get("cssSeconds"):
-        zone_rows = max(zone_rows, len(SWIM_PACE_OFFSET_TABLE))
-    load = len(plan.get("phases", [])) + zone_rows
-    if load > 15:
-        return "tighter"
-    if load > 11:
-        return "tight"
-    return ""
+def split_side_note(focus):
+    """Week focus text often ends with a bouldering/climbing note; give it its
+    own box rather than burying it in the paragraph."""
+    m = re.search(r"\s*\b(Bouldering|Climbing)\b[^:.]{0,24}:\s*", focus or "")
+    if not m:
+        return focus or "", "", ""
+    return focus[:m.start()].strip(), m.group(1), focus[m.end():].strip()
 
 
 def first_sentence(text):
@@ -201,15 +227,178 @@ def first_sentence(text):
     return m.group(1) if m else text
 
 
-def phase_color(name):
-    palette = {
-        "Prep": "#4a7a96", "Base": "#3f9a8c", "Base 1": "#3f8fa8", "Base 2": "#3f9a8c",
-        "Base 3": "#4d8a46", "Build": "#8a8320", "Build 1": "#8a8320", "Build 2": "#b07d2a",
-        "Peak": "#b0552f", "Taper": "#6c5fc0", "Race": "#b03050",
-    }
-    return palette.get(name, "#6a6f7c")
+# ───────────────────────────── plan helpers ─────────────────────────────
+
+def sessions(day):
+    ws = [w for w in day.get("workouts", []) if w.get("sport") != "rest"]
+    return sorted(ws, key=lambda w: w.get("startTime") or "99:99")
 
 
+def seven_days(week):
+    """The week's days as a full Monday-to-Sunday run from startDate: plans
+    may list only the days that have sessions, but the page always shows
+    seven columns, with the empty ones as rest days."""
+    listed = {str(d.get("date"))[:10]: d for d in week.get("days", [])}
+    try:
+        start = parse_date(week["startDate"])
+    except (KeyError, ValueError):
+        return week.get("days", [])
+    out = []
+    for i in range(7):
+        d = date.fromordinal(start.toordinal() + i)
+        iso = d.isoformat()
+        out.append(listed.get(iso) or {"date": iso, "dayOfWeek": d.strftime("%A"), "workouts": []})
+    return out
+
+
+def sport_minutes(week):
+    out = {}
+    for day in week.get("days", []):
+        for w in sessions(day):
+            s = w.get("sport", "other")
+            out[s] = out.get(s, 0) + (w.get("durationMinutes") or 0)
+    return out
+
+
+def phase_styles(plan):
+    """Tint per phase name, light → dark through the plan. A final 'Race'
+    phase is drawn as an outline instead of a fill."""
+    phases = plan.get("phases", [])
+    n = len(phases)
+    styles = {}
+    for i, p in enumerate(phases):
+        if str(p.get("name", "")).strip().lower() == "race":
+            styles[p["name"]] = f"background:#ffffff;border:1.5px solid {INK}"
+        else:
+            idx = 0 if n <= 1 else round(i * (len(PHASE_RAMP) - 1) / max(n - 1, 1))
+            styles[p["name"]] = f"background:{PHASE_RAMP[min(idx, len(PHASE_RAMP) - 1)]}"
+    return styles
+
+
+def phase_for(plan, week):
+    for p in plan.get("phases", []):
+        if p["startWeek"] <= week["weekNumber"] <= p["endWeek"]:
+            return p
+    return None
+
+
+# ──────────────────────────── overview page ────────────────────────────
+
+def cover_page(plan):
+    meta = plan["meta"]
+    rs = plan.get("raceStrategy") or {}
+    race = rs.get("event")
+    pacing = rs.get("pacing") or {}
+    goals = pacing.get("goals") or {}
+    total = pacing.get("projectedTotal") or {}
+
+    sub = []
+    if race:
+        sub.append(full_date(race["date"]))
+        d = race.get("distances") or {}
+        if d.get("swim") is not None:
+            sub.append(f"{_num(d['swim'] / 1000)} km swim")
+        if d.get("bike") is not None:
+            sub.append(f"{_num(d['bike'])} km bike")
+        if d.get("run") is not None:
+            sub.append(f"{_num(d['run'])} km run")
+
+    boxes = ""
+    if goals.get("a"):
+        boxes += goal_box("A goal", goals["a"], strong=True)
+    if goals.get("b"):
+        boxes += goal_box("B goal", goals["b"])
+    if total.get("central"):
+        boxes += goal_box("Projected", fmt_split("total", total["central"])[:-3], outline=True)
+
+    head = f"""
+    <header class="cover-head">
+      <div>
+        <div class="kicker">{e(meta.get('generatedBy', 'Claude Coach'))} · Training plan for {e(meta.get('athlete', ''))}</div>
+        <h1>{e(meta.get('event'))}</h1>
+        {f'<div class="cover-sub">{e(" · ".join(sub))}</div>' if sub else ''}
+      </div>
+      <div class="goal-boxes">{boxes}</div>
+    </header>"""
+
+    weeks = sorted(plan.get("weeks", []), key=lambda w: w["weekNumber"])
+    span = ""
+    if weeks:
+        span = f"{len(weeks)} weeks · {short_date(weeks[0]['startDate'])} → " \
+               f"{short_date(weeks[-1]['endDate'])}, {parse_date(weeks[-1]['endDate']).year}"
+    legend = "".join(
+        f'<span class="lg"><span class="sw" style="background:{SPORT_COLORS[s]}"></span>{s.capitalize()}</span>'
+        for s in SPORT_ORDER if any(sport_minutes(w).get(s) for w in weeks)
+    )
+    volume = f"""
+    <section class="volume">
+      <div class="sec-head"><div class="legend">{legend}</div><h2>{e(span)}</h2></div>
+      {volume_table(plan, weeks)}
+      <div class="caption">Bar label = planned hours, summed from the sessions. REC = recovery week.</div>
+    </section>"""
+
+    cols = zone_columns(plan) + splits_column(plan)
+    bottom = f'<section class="zones"><div class="zrow">{"".join(cols)}</div></section>' if cols else ""
+
+    return f'<section class="page cover">{head}{volume}{bottom}</section>'
+
+
+def goal_box(label, value, strong=False, outline=False):
+    cls = "goal strong" if strong else ("goal outline" if outline else "goal")
+    return f'<div class="{cls}"><span class="gl">{e(label)}</span><span class="gv">{e(value)}</span></div>'
+
+
+def volume_table(plan, weeks):
+    """Phase band and weekly volume bars share one table, so a phase cell
+    always sits exactly over its weeks."""
+    if not weeks:
+        return ""
+    styles = phase_styles(plan)
+    phases = plan.get("phases", [])
+
+    band = ""
+    covered = 0
+    for p in phases:
+        n = p["endWeek"] - p["startWeek"] + 1
+        if n <= 0:
+            continue
+        covered += n
+        hr = p.get("weeklyHoursRange") or {}
+        weeks_lbl = f"Wk {p['startWeek']}" if n == 1 else f"Wk {p['startWeek']}–{p['endWeek']}"
+        hours_lbl = ""
+        if hr.get("low") is not None and hr.get("high") is not None:
+            hours_lbl = f" · {hr['low']:g}–{hr['high']:g} h" if n > 1 else ""
+        band += (f'<td colspan="{n}" class="phase" style="{styles.get(p["name"], "")}">'
+                 f'<b>{e(p["name"])}</b><span>{e(weeks_lbl + hours_lbl)}</span></td>')
+    if covered < len(weeks):
+        band += f'<td colspan="{len(weeks) - covered}"></td>'
+
+    mins = [sport_minutes(w) for w in weeks]
+    peak = max((sum(m.values()) for m in mins), default=0) or 1
+    scale = (CHART_H - 18) / peak
+
+    bars = labels = ""
+    for w, m in zip(weeks, mins):
+        segs = "".join(
+            f'<div style="height:{m[s] * scale:.1f}px;background:{SPORT_COLORS.get(s, "#8a8f9c")}"></div>'
+            for s in reversed(STACK_ORDER) if m.get(s)
+        )
+        other = sum(v for k, v in m.items() if k not in STACK_ORDER)
+        if other:
+            segs += f'<div style="height:{other * scale:.1f}px;background:#8a8f9c"></div>'
+        tot = sum(m.values())
+        bars += (f'<td class="bar"><div class="bt">{tot / 60:.1f}</div>'
+                 f'<div class="stack">{segs}</div></td>')
+        rec = '<span class="rec">REC</span>' if w.get("isRecoveryWeek") else ""
+        labels += f'<td class="wl"><b>W{e(w["weekNumber"])}</b>{rec}</td>'
+
+    return (f'<table class="vol"><tr class="band">{band}</tr>'
+            f'<tr class="bars" style="height:{CHART_H}px">{bars}</tr><tr>{labels}</tr></table>')
+
+
+# Zones are computed live from FTP/LTHR/threshold-pace using the standard
+# tables below, not read from the arrays baked into the JSON: those are
+# sometimes partial and never reflect overrides made later in the viewer.
 HR_PCT_TABLE = [
     {"zone": "1",  "name": "Recovery",      "low": 0,   "high": 81},
     {"zone": "2",  "name": "Aerobic",       "low": 81,  "high": 89},
@@ -258,9 +447,8 @@ def _fmt_mmss(total_sec):
 
 
 def _resolve_single_pace(s):
-    """A threshold/CSS pace from the plan is sometimes a tested range
-    ('4:06-4:20/km') rather than one number. Average it to a single
-    working pace, same as the HTML viewer does."""
+    """A threshold/CSS pace is sometimes a tested range ('4:06-4:20/km');
+    average it to one working pace, same as the HTML viewer does."""
     secs = [int(m.group(1)) * 60 + int(m.group(2)) for m in re.finditer(r"(\d+):(\d+)", str(s or ""))]
     return _fmt_mmss(sum(secs) / len(secs)) if secs else ""
 
@@ -270,703 +458,632 @@ def _parse_mmss(s):
     return int(m.group(1)) * 60 + int(m.group(2)) if m else None
 
 
-def _range_str(lo, hi, fmt=str, suffix=""):
+def _range_str(lo, hi, fmt=str):
     vals = sorted([lo, hi])
     a, b = fmt(vals[0]), fmt(vals[1])
-    return (a if a == b else f"{a}-{b}") + suffix
+    return a if a == b else f"{a}–{b}"
 
 
-def zone_status(sport, zones_validated, css_status=None):
+def zone_status(sport, zones_validated, source=None, css_status=None):
+    """'Validated' from the viewer's own flag, else what the plan's source
+    note says (a 'TESTED: …' FTP is tested, not estimated)."""
     v = (zones_validated or {}).get(sport)
     if v and v.get("validated"):
-        return "Validated"
+        return "validated"
     if sport == "swim" and css_status:
-        return css_status
-    return "Estimated"
+        return str(css_status).lower()
+    src = str(source or "").strip().upper()
+    if src.startswith("TESTED"):
+        return "tested"
+    if src.startswith("VALIDATED"):
+        return "validated"
+    return "estimated"
 
 
-def zone_tables(plan):
-    """Zones are computed live from FTP/LTHR/threshold-pace (using the
-    standard formula tables above) instead of reading the zones arrays
-    baked into the plan JSON at generation time. Those arrays are
-    sometimes partial (a plan that calls run 'pace-anchored' can leave
-    hr.zones empty) and never reflect overrides made later in the HTML
-    viewer — this keeps the PDF in sync with whatever the browser is
-    currently showing. `overrides` (present when this is called from the
-    server's PDF endpoint, which sends the browser's live state) take
-    priority; the plan's original static values are the fallback for a
-    bare `python3 build_pdf.py plan.json` run with no overrides."""
+def zone_columns(plan):
     z = plan.get("zones") or {}
     ov = plan.get("overrides") or {}
     zv = plan.get("zonesValidated") or {}
     out = []
 
     bike = z.get("bike") or {}
-    ftp = ov.get("ftp", (bike.get("power") or {}).get("ftp"))
+    power = bike.get("power") or {}
+    ftp = ov.get("ftp", power.get("ftp"))
     bike_lthr = ov.get("bikeLthr", (bike.get("hr") or {}).get("lthr"))
-    if bike.get("power") or ftp:
-        rows = ""
+    if power or ftp:
+        rows = []
         for zz, hz in zip(BIKE_POWER_PCT_TABLE, HR_PCT_TABLE):
-            watts = _range_str(_pct(ftp, zz["low"]), _pct(ftp, zz["high"]), str, "W") if ftp else "—"
+            watts = _range_str(_pct(ftp, zz["low"]), _pct(ftp, zz["high"])) if ftp else "—"
             hr = _range_str(_pct(bike_lthr, hz["low"]), _pct(bike_lthr, hz["high"])) if bike_lthr else "—"
-            rows += (f"<tr><td>{e(zz['zone'])} {e(zz['name'])}</td>"
-                     f"<td>{e(watts)}</td><td>{e(hr)}</td></tr>")
-        header = f"FTP {ftp}W" if ftp else ""
-        header += (" · " if header else "") + (f"LTHR {bike_lthr}" if bike_lthr else "")
-        header += (" · " if header else "") + zone_status("bike", zv)
-        out.append(zone_col("Bike power", header, ["Zone", "Watts", "HR"], rows))
+            rows.append([f"{zz['zone']} {zz['name']}", watts, hr])
+        head = [f"FTP {ftp} W" if ftp else "", f"LTHR {bike_lthr}" if bike_lthr else "",
+                zone_status("bike", zv, None if "ftp" in ov else power.get("ftpSource"))]
+        out.append(zone_col("Bike", "bike", " · ".join(h for h in head if h), ["Zone", "W", "HR"], rows))
 
     run = z.get("run") or {}
     run_lthr = ov.get("runLthr", (run.get("hr") or {}).get("lthr"))
     threshold_pace = ov.get("thresholdPace") or _resolve_single_pace((run.get("pace") or {}).get("thresholdPace", ""))
     if run.get("hr") or run.get("pace") or run_lthr or threshold_pace:
         threshold_sec = _parse_mmss(threshold_pace)
-        rows = ""
+        rows = []
         for hz, pz in zip(HR_PCT_TABLE, RUN_PACE_OFFSET_TABLE):
             hr = _range_str(_pct(run_lthr, hz["low"]), _pct(run_lthr, hz["high"])) if run_lthr else "—"
-            pace = (_range_str(threshold_sec + pz["low"], threshold_sec + pz["high"], _fmt_mmss, "/km")
+            pace = (_range_str(threshold_sec + pz["low"], threshold_sec + pz["high"], _fmt_mmss)
                     if threshold_sec is not None else "—")
-            rows += (f"<tr><td>{e(hz['zone'])} {e(hz['name'])}</td>"
-                     f"<td>{e(hr)}</td><td>{e(pace)}</td></tr>")
-        head = []
-        if run_lthr:
-            head.append(f"LTHR {run_lthr}")
-        if threshold_pace:
-            head.append(f"T-pace {threshold_pace}/km")
-        head.append(zone_status("run", zv))
-        out.append(zone_col("Run", " · ".join(head), ["Zone", "HR", "Pace"], rows))
+            rows.append([f"{hz['zone']} {hz['name']}", hr, pace])
+        source = None if ("thresholdPace" in ov or "runLthr" in ov) else \
+            ((run.get("pace") or {}).get("paceSource") or (run.get("hr") or {}).get("lthrSource"))
+        head = [f"LTHR {run_lthr}" if run_lthr else "",
+                f"T {threshold_pace}/km" if threshold_pace else "",
+                zone_status("run", zv, source)]
+        out.append(zone_col("Run", "run", " · ".join(h for h in head if h), ["Zone", "HR", "/km"], rows))
 
     swim = z.get("swim") or {}
     css_seconds = ov.get("cssSeconds", swim.get("cssSeconds"))
     css_label = ov.get("cssLabel", swim.get("css", ""))
     if swim.get("zones") or css_seconds:
-        rows = ""
+        rows = []
         for zz in SWIM_PACE_OFFSET_TABLE:
-            pace = (_range_str(css_seconds + zz["low"], css_seconds + zz["high"], _fmt_mmss, "/100m")
+            pace = (_range_str(css_seconds + zz["low"], css_seconds + zz["high"], _fmt_mmss)
                     if css_seconds is not None else "—")
-            rows += f"<tr><td>{e(zz['zone'])} {e(zz['name'])}</td><td>{e(pace)}</td></tr>"
-        head = f"CSS {css_label}" if css_label else "CSS"
-        head += " · " + zone_status("swim", zv, swim.get("cssStatus"))
-        out.append(zone_col("Swim", head, ["Zone", "Pace /100m"], rows))
+            rows.append([f"{zz['zone']} {zz['name']}", pace])
+        css = re.sub(r"/100\s*m", "/100 m", str(css_label)) if css_label else ""
+        head = (f"CSS {css}" if css else "CSS") + " · " + zone_status(
+            "swim", zv, swim.get("cssSource"), None if "cssSeconds" in ov else swim.get("cssStatus"))
+        out.append(zone_col("Swim", "swim", head, ["Zone", "/100 m"], rows))
 
-    return "".join(out)
-
-
-def zone_col(title, header_value, heads, rows):
-    return (f"<div class='zone-col'><div class='zone-title'>{e(title)}"
-            f"<span class='zone-value'>{e(header_value)}</span></div>"
-            f"<table class='tbl tight'><thead><tr><th>" + "</th><th>".join(map(e, heads))
-            + f"</th></tr></thead><tbody>{rows}</tbody></table></div>")
+    return out
 
 
-def splits_block(plan):
-    """Projected splits table only — no narrative verdict, no C goal."""
+def zone_col(title, sport, head, heads, rows, color=None):
+    color = color or SPORT_COLORS.get(sport, INK)
+    th = "".join(f"<th{R if i else ''}>{e(h)}</th>" for i, h in enumerate(heads))
+    body = ""
+    for r in rows:
+        cls = ' class="total"' if r and str(r[0]).lower() in ("finish", "total") else ""
+        body += f"<tr{cls}>" + "".join(
+            f"<td{R if i else ''}>{e(c)}</td>" for i, c in enumerate(r)) + "</tr>"
+    return (f'<div class="zcol"><div class="zhead" style="border-bottom-color:{color}">'
+            f'<span class="zv">{e(head)}</span><span class="zt" style="color:{color}">{e(title)}</span></div>'
+            f'<table class="ztbl"><thead><tr>{th}</tr></thead><tbody>{body}</tbody></table></div>')
+
+
+def splits_column(plan):
     rs = plan.get("raceStrategy") or {}
     if not rs.get("event"):
-        return ""
+        return []
     pacing = rs.get("pacing") or {}
     rows = pacing.get("projectedSplits")
-
-    if rows:
-        body = ""
-        for r in rows:
-            cls = " class='total'" if str(r.get("leg", "")).lower() == "total" else ""
-            body += (f"<tr{cls}><td>{e(r.get('leg'))}</td><td>{e(r.get('conservative', '—'))}</td>"
-                     f"<td>{e(r.get('central', '—'))}</td><td>{e(r.get('strong', '—'))}</td></tr>")
-        return (f"<div class='block splits'><h2>Projected splits</h2>"
-                f"<table class='tbl tight'><thead><tr><th>Leg</th><th>Conservative</th><th>Central</th>"
-                f"<th>Strong</th></tr></thead><tbody>{body}</tbody></table></div>")
-
-    # No three-way matrix in the plan: show the single central estimate per leg
-    # and put the spread on the total row, rather than implying a conservative
-    # column the data does not contain.
     total = pacing.get("projectedTotal") or {}
+    if rows:
+        body = [[r.get("leg"), *(fmt_split(r.get("leg"), r.get(k)) if r.get(k) else "—"
+                                 for k in ("conservative", "central", "strong"))]
+                for r in rows if str(r.get("leg", "")).lower() != "total"]
+        tot_row = next((r for r in rows if str(r.get("leg", "")).lower() == "total"), None) or total
+        if tot_row:
+            body.append(["Finish", *(fmt_split("total", tot_row.get(k)) if tot_row.get(k) else "—"
+                                     for k in ("conservative", "central", "strong"))])
+        return [zone_col("Projected splits", "", "h:mm:ss", ["Leg", "Slow", "Central", "Strong"], body, INK)]
+
+    # No three-way matrix in the plan: the single central estimate per leg.
     trans = pacing.get("transitions") or {}
     legs = [("Swim", (pacing.get("swim") or {}).get("projectedSplit")),
             ("T1", (trans.get("t1") or "").split(" ")[0] or None),
             ("Bike", (pacing.get("bike") or {}).get("projectedSplit")),
             ("T2", (trans.get("t2") or "").split(" ")[0] or None),
             ("Run", (pacing.get("run") or {}).get("projectedSplit"))]
-    body = "".join(f"<tr><td>{e(n)}</td><td>{e(v)}</td></tr>" for n, v in legs if v)
-    spread = " / ".join(e(total[k]) for k in ("conservative", "central", "strong") if total.get(k))
-    if spread:
-        body += f"<tr class='total'><td>Total</td><td>{spread}</td></tr>"
-    caption = "<div class='sub'>Total shown conservative / central / strong</div>" if spread else ""
-    return (f"<div class='block splits'><h2>Projected splits</h2>{caption}"
-            f"<table class='tbl tight'><thead><tr><th>Leg</th><th>Projected</th></tr></thead>"
-            f"<tbody>{body}</tbody></table></div>")
+    body = [[n, fmt_split(n, v)] for n, v in legs if v]
+    if total.get("central"):
+        body.append(["Finish", fmt_split("total", total["central"])])
+    return [zone_col("Projected splits", "", "h:mm:ss", ["Leg", "Central"], body, INK)] if body else []
 
 
-# ──────────────────────────── week pages ────────────────────────────
+# ───────────────────────────── week pages ─────────────────────────────
 
-# Ruled writing lines are real elements rather than a repeating background
-# gradient: a gradient is rasterised into the PDF as a tiled image, which some
-# viewers render as a colour block. More lines are emitted than any column can
-# show; .ruled clips the remainder.
-RULES = "<i></i>" * 14
+def checkbox(done=False):
+    return f'<span class="cb{" done" if done else ""}"></span>'
 
 
-def density(week):
-    """Pick padding and notes height from how full the fullest day is.
-
-    Type size never changes — a wall chart that needs squinting at has
-    failed. Lighter weeks get roomier cards and taller notes blocks instead."""
-    worst = 0
-    for day in week.get("days", []):
-        chars = sum(len(w.get("name", "")) + len(key_targets(w)) + 40
-                    for w in day.get("workouts", []) if w.get("sport") != "rest")
-        worst = max(worst, chars)
-    if worst > 300:
-        return "dense"
-    if worst > 170:
-        return "normal"
-    return "roomy"
-
-
-def week_page(plan, week):
-    prefs = plan.get("preferences", {})
-    phase = next((p for p in plan.get("phases", [])
-                  if p["startWeek"] <= week["weekNumber"] <= p["endWeek"]), None)
-    phase_name = week.get("phase") or (phase or {}).get("name", "")
-
-    summary = week.get("summary", {}).get("bySport", {})
-    bar = "".join(
-        f"<span class='sport-chip'><span class='swatch' style='background:{SPORT_COLORS.get(s, '#8a8f9c')}'></span>"
-        f"<b>{s.upper()}</b> {v.get('sessions', 0)}× · {fmt_hours(v.get('hours'))}"
-        f"{' · ' + format(v['km'], 'g') + 'km' if v.get('km') else ''}</span>"
-        for s, v in summary.items()
+def session_card(w, prefs, min_h):
+    sport = w.get("sport", "")
+    color = SPORT_COLORS.get(sport, SPORT_COLORS["rest"])
+    meta = [hm(w.get("durationMinutes")), distance_label(w, prefs), zone_short(w.get("primaryZone"))]
+    if w.get("type") == "rouvy-tag" and not meta[1]:
+        meta[1] = "Rouvy"
+    kt = tidy(key_targets(w))
+    return (
+        f'<div class="card" style="border-top-color:{color};min-height:{min_h:.0f}px">'
+        f'<div class="ch"><span class="tm">{e(w.get("startTime") or "")}{checkbox(w.get("completed"))}</span>'
+        f'<span class="sp" style="color:{color}">{e(sport)}</span></div>'
+        f'<div class="ct">{e(w.get("name"))}</div>'
+        f'<div class="cm">{e(" · ".join(x for x in meta if x))}</div>'
+        + (f'<div class="cr"></div><div class="ck">{e(kt)}</div>' if kt else "")
+        + "</div>"
     )
-    total = week.get("summary", {}).get("totalHours", week.get("targetHours"))
+
+
+def race_card(plan, w):
+    rs = plan.get("raceStrategy") or {}
+    ev = rs.get("event") or {}
+    pacing = rs.get("pacing") or {}
+    goals = pacing.get("goals") or {}
+    total = (pacing.get("projectedTotal") or {}).get("central")
+    d = ev.get("distances") or {}
+    dist = " · ".join(x for x in [
+        f"{_num(d['swim'] / 1000)} km" if d.get("swim") is not None else "",
+        f"{_num(d['bike'])} km" if d.get("bike") is not None else "",
+        f"{_num(d['run'])} km" if d.get("run") is not None else ""] if x)
+
+    stats = ""
+    if total:
+        stats += f'<td class="rs"><span>Proj.</span><b>{e(fmt_split("total", total)[:-3])}</b></td>'
+    if goals.get("a"):
+        stats += f'<td class="rs"><span>A goal</span><b>{e(re.sub(r"^sub-", "", str(goals["a"])))}</b></td>'
+
+    lines = []
+    swim, bike, run = (pacing.get(k) or {} for k in ("swim", "bike", "run"))
+    if swim.get("target"):
+        lines.append(("Swim", tidy(str(swim["target"]).replace("/100m", "/100 m"))))
+    if bike.get("targetPower"):
+        lines.append(("Bike", tidy(bike["targetPower"])))
+    run_bits = [run.get("targetPace"), f"HR {run['targetHR']}" if run.get("targetHR") else None]
+    if any(run_bits):
+        lines.append(("Run", tidy(", ".join(b for b in run_bits if b))))
+    during = (rs.get("nutrition") or {}).get("during") or {}
+    if during.get("carbsPerHour"):
+        fuel = f"{during['carbsPerHour']} g carbs/h"
+        if during.get("fluidPerHour"):
+            fuel += f", {tidy(during['fluidPerHour'])}/h"
+        lines.append(("Fuel", fuel))
+    kt = tidy(key_targets(w))
+    if not lines and kt:
+        lines.append(("Plan", kt))
+
+    body = "".join(f'<div class="rl"><b>{e(k)}</b> {e(v)}</div>' for k, v in lines)
+    return (
+        f'<div class="card race" style="min-height:{SLOT_AREA}px">'
+        f'<div class="ch"><span class="tm">{e(w.get("startTime") or "")}{checkbox(w.get("completed"))}</span>'
+        f'<span class="sp" style="color:{SPORT_COLORS["race"]}">Race day</span></div>'
+        f'<div class="ct big">{e(w.get("name") or ev.get("name"))}</div>'
+        + (f'<div class="cm">{e(dist)}</div>' if dist else "")
+        + (f'<table class="rstats"><tr>{stats}</tr></table>' if stats else "")
+        + (f'<div class="cr gold"></div>{body}' if body else "")
+        + ('<div class="cm note">Full plan on the last page.</div>' if rs.get("event") else "")
+        + "</div>"
+    )
+
+
+def notes_block(label="Notes", right="RPE ___"):
+    lines = "<i></i>" * 14
+    return (f'<div class="notes"><div class="nh"><span class="nr">{e(right)}</span>{e(label)}</div>'
+            f'<div class="ruled">{lines}</div></div>')
+
+
+def week_page(plan, week, total_weeks):
+    prefs = plan.get("preferences", {})
+    phase = phase_for(plan, week)
+    phase_name = week.get("phase") or (phase or {}).get("name", "")
+    styles = phase_styles(plan)
+    chip_style = styles.get(phase_name) or styles.get((phase or {}).get("name"), f"background:{PHASE_RAMP[0]}")
+
+    mins = sport_minutes(week)
+    stats = ""
+    for s in SPORT_ORDER + sorted(k for k in mins if k not in SPORT_ORDER):
+        if not mins.get(s):
+            continue
+        ws = [w for d in week.get("days", []) for w in sessions(d) if w.get("sport") == s]
+        meters = sum(w.get("distanceMeters") or (w.get("distanceKm") or 0) * 1000 for w in ws)
+        if s == "race":
+            sub = "race day"
+        elif meters and s in ("swim", "run"):
+            sub = distance_label({"sport": s, "distanceMeters": meters}, prefs)
+        else:
+            sub = f"{len(ws)} session{'s' if len(ws) != 1 else ''}"
+        stats += (f'<div class="st"><span class="sl" style="color:{SPORT_COLORS.get(s, MUTED)}">{e(s)}</span>'
+                  f'<span class="sv">{hm(mins[s])}</span><span class="ss">{e(sub)}</span></div>')
+    stats += f'<div class="st total"><span class="sl">Total</span><span class="sv">{hm(sum(mins.values()))}</span></div>'
+
+    focus, side_label, side = split_side_note(week.get("focus", ""))
+    rec = '<span class="rec-tag">Recovery week</span>' if week.get("isRecoveryWeek") else ""
+
+    days = seven_days(week)
+    per_day = [sessions(d) for d in days]
+    slots = max([len([w for w in s if w.get("sport") != "race"]) for s in per_day] + [2])
+    slot_h = (SLOT_AREA - SLOT_GAP * (slots - 1)) / slots
+
+    focus_lines = max(-(-len(focus) // FOCUS_CHARS), -(-len(side) // SIDE_CHARS) if side else 0, 1)
+    focus_h = focus_lines * FOCUS_LINE
+    # GRID_SLACK absorbs rounding; a grid even 1px too tall moves to a new page.
+    grid_h = PAGE_H - HEAD_H - focus_h - 2 * BLOCK_GAP - GRID_SLACK
 
     cols = ""
-    for day in week.get("days", []):
-        workouts = [w for w in day.get("workouts", []) if w.get("sport") != "rest"]
+    for day, ws in zip(days, per_day):
         cards = ""
-        for w in workouts:
-            color = SPORT_COLORS.get(w.get("sport"), SPORT_COLORS["rest"])
-            meta = " · ".join(x for x in [fmt_duration(w.get("durationMinutes")),
-                                          distance_label(w, prefs), w.get("primaryZone")] if x)
-            kt = key_targets(w)
-            cards += (
-                f"<div class='wcard' style='border-left-color:{color}'>"
-                f"<div class='wtag' style='color:{color}'>{e(w.get('sport', '').upper())}"
-                f"<span class='wmeta'>{e(meta)}</span></div>"
-                f"<div class='wtitle'>{e(w.get('name'))}</div>"
-                + (f"<div class='wkt'><b>KEY TARGETS</b> {e(kt)}</div>" if kt else "")
-                + "</div>"
-            )
-        if not cards:
-            cards = "<div class='rest'>Rest</div>"
-        cols += (
-            f"<div class='day'>"
-            f"<div class='dayhead'><b>{e(day.get('dayOfWeek', '')[:3])}</b>"
-            f"<span>{e(short_date(day['date']))}</span></div>"
-            f"<div class='cards'>{cards}</div>"
-            f"""
-            <div class='notes'>
-                <span>NOTES / ACTUALS</span>
-                <div class='ruled'>{RULES}</div>
-            </div>
-            """
-            f"</div>"
-        )
+        is_race_day = any(w.get("sport") == "race" for w in ws)
+        for w in ws:
+            cards += race_card(plan, w) if w.get("sport") == "race" else session_card(w, prefs, slot_h)
+        if not ws:
+            cards = f'<div class="slot rest" style="min-height:{SLOT_AREA}px">Rest day</div>'
+        elif not is_race_day:
+            cards += "".join(f'<div class="slot" style="height:{slot_h:.0f}px"></div>'
+                             for _ in range(slots - len(ws)))
+        cols += (f'<td class="day"><div class="dayin" style="height:{grid_h}px">'
+                 f'<div class="dh"><span>{e(short_date(day["date"]))}</span>'
+                 f'<b>{e(day.get("dayOfWeek", "")[:3])}</b></div>'
+                 f'<div class="cards">{cards}</div>'
+                 + (notes_block("Result", "___:___") if is_race_day else notes_block())
+                 + '</div></td>')
 
-    recovery = "<span class='rec-tag'>Recovery week</span>" if week.get("isRecoveryWeek") else ""
-    return f"""<section class="page week {density(week)}">
-      <header class="wkhead">
-        <div class="wkleft">
-          <span class="phase-badge" style="background:{phase_color(phase_name)}">{e(phase_name)}</span>
-          <h2>Week {e(week['weekNumber'])}<span class="wkdates">{e(date_range(week['startDate'], week['endDate']))}</span></h2>
-        </div>
-        <div class="wkright"><span class="wkhours">{e(fmt_hours(total))}</span>{recovery}</div>
-      </header>
-      <p class="wkintro">{e(week.get('focus', ''))}</p>
-      <div class="sportbar">{bar}</div>
-      <div class="grid">{cols}</div>
+    side_html = (f'<td class="fl side">{e(side_label)}</td>'
+                 f'<td class="sidep"><p>{e(tidy(side))}</p></td>') if side else ""
+    return f"""<section class="page week">
+      <table class="wkhead" style="height:{HEAD_H}px"><tr>
+        <td class="wkleft">
+          <span class="chip" style="{chip_style}">{e(phase_name)}</span>
+          <h2>Week {e(week['weekNumber'])} <span class="of">of {e(total_weeks)}</span></h2>
+          <span class="dates">{e(week_range(week['startDate'], week['endDate']))}</span>
+          {rec}
+        </td>
+        <td class="stats">{stats}</td>
+      </tr></table>
+      <table class="focus" style="height:{focus_h}px"><tr>
+        <td class="fl">Focus</td><td class="fmain"><p>{e(tidy(focus))}</p></td>
+        {side_html}
+      </tr></table>
+      <table class="grid"><tr>{cols}</tr></table>
     </section>"""
 
 
-# ─────────────────────── race strategy page ───────────────────────
+# ───────────────────────── race strategy page ─────────────────────────
 
 def humanize(key):
     words = re.sub(r"(?<!^)(?=[A-Z])", " ", str(key)).strip()
     return words[0].upper() + words[1:]
 
 
+def _section_cell(text):
+    m = re.match(r"^\s*(km\s*[\d.]+\s*[-–]\s*[\d.+]+)\s*(.*)$", str(text or ""), re.IGNORECASE)
+    if not m:
+        return f"<b>{e(tidy(text))}</b>"
+    rest = m.group(2).strip()
+    return f"<b>{e(tidy(m.group(1)))}</b>" + (f"<br>{e(rest[:1].upper() + rest[1:])}" if rest else "")
+
+
+def _pace_table(title, sport, sub, heads, rows):
+    if not rows:
+        return ""
+    color = SPORT_COLORS[sport]
+    th = "".join(f"<th{R if h == 'km/h' else ''}>{e(h)}</th>" for h in heads)
+    return (f'<div class="rblock"><div class="rhead" style="border-bottom-color:{color}">'
+            f'<span>{e(sub)}</span><h3 style="color:{color}">{e(title)}</h3></div>'
+            f'<table class="ptbl"><thead><tr>{th}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+
+
 def race_page(plan):
     rs = plan.get("raceStrategy") or {}
-    if not rs.get("event"):
+    ev = rs.get("event")
+    if not ev:
         return ""
     pacing = rs.get("pacing") or {}
     nutrition = rs.get("nutrition") or {}
     summary = rs.get("assessmentSummary") or {}
+    swim, bike, run = (pacing.get(k) or {} for k in ("swim", "bike", "run"))
+    trans = pacing.get("transitions") or {}
+    total = (pacing.get("projectedTotal") or {}).get("central")
 
-    bike = pacing.get("bike") or {}
-    sections = "".join(
-        f"<tr><td>{e(s.get('section'))}</td><td>{e(s.get('power'))}</td>"
-        f"<td>{e(s.get('speed'))}</td><td class='note'>{e(s.get('note'))}</td></tr>"
+    stats = ""
+    for name, obj in (("swim", swim), ("bike", bike), ("run", run)):
+        if obj.get("projectedSplit"):
+            stats += (f'<div class="st"><span class="sl" style="color:{SPORT_COLORS[name]}">{name}</span>'
+                      f'<span class="sv">{e(fmt_split(name, obj["projectedSplit"]))}</span></div>')
+    if total:
+        stats += f'<div class="st total"><span class="sl">Central</span><span class="sv">{e(fmt_split("total", total)[:-3])}</span></div>'
+
+    sub = [full_date(ev["date"])] if ev.get("date") else []
+    gain = re.search(r"(\d[\d,]*)\s*m gain", str(ev.get("profile") or ""))
+    if gain:
+        sub.append(f"{gain.group(1)} m bike gain")
+
+    bike_rows = [
+        f"<tr><td>{_section_cell(s.get('section'))}</td><td><b>{e(tidy(s.get('power')))}</b></td>"
+        f"<td class='r'>{e(tidy(strip_kmh(s.get('speed'))))}</td>"
+        f"<td class='n'>{e(tidy(s.get('note')))}</td></tr>"
         for s in bike.get("bySection", [])
-    )
-    bike_block = ""
-    if sections:
-        bike_block = (f"<div class='block'><h2>Bike — pacing by section</h2>"
-                      f"<div class='sub'>{e(bike.get('targetPower', ''))}"
-                      f"{' · ' + e(bike.get('targetHR')) if bike.get('targetHR') else ''}"
-                      f"{' · split ' + e(bike.get('projectedSplit')) if bike.get('projectedSplit') else ''}</div>"
-                      f"<table class='tbl tight'><thead><tr><th>Section</th><th>Power</th><th>Speed</th>"
-                      f"<th>Note</th></tr></thead><tbody>{sections}</tbody></table></div>")
+    ]
+    bike_sub = " · ".join(tidy(x) for x in [bike.get("targetPower"),
+                                            f"HR {bike['targetHR']}" if bike.get("targetHR") else None] if x)
+    run_rows = [
+        f"<tr><td>{_section_cell(s.get('section'))}</td><td><b>{e(tidy(s.get('pace')))}</b></td>"
+        f"<td class='n'>{e(tidy(s.get('note')))}</td></tr>"
+        for s in run.get("bySection", [])
+    ]
+    run_sub = " · ".join(tidy(x) for x in [run.get("targetPace"),
+                                           f"HR {run['targetHR']}" if run.get("targetHR") else None] if x)
 
-    def leg(name, obj):
-        if not obj:
-            return ""
-        bits = [obj.get("target") or obj.get("targetPace"), obj.get("targetHR"),
-                ("split " + obj["projectedSplit"]) if obj.get("projectedSplit") else None]
-        return (f"<div class='mini'><h3>{name}</h3><div class='sub'>"
-                + e(" · ".join(b for b in bits if b)) + "</div>"
-                + f"<p>{e(obj.get('notes', ''))}</p></div>")
+    left = (_pace_table("Bike · pacing by section", "bike", bike_sub, ["Section", "Power", "km/h", "Note"], bike_rows)
+            + _pace_table("Run · pacing by section", "run", run_sub, ["Section", "Pace", "Note"], run_rows))
 
-    during = nutrition.get("during") or {}
-    nut = (f"<div class='block'><h2>Race-day nutrition</h2>"
-           f"<div class='sub'>{e(during.get('carbsPerHour', ''))}g carb/h · {e(during.get('fluidPerHour', ''))}/h"
-           f"{' · ' + e(', '.join(during.get('products', []))) if during.get('products') else ''}</div>"
-           f"<p><b>Pre-race.</b> {e(nutrition.get('preRace', ''))}</p>"
-           f"<p>{e(nutrition.get('notes', ''))}</p></div>")
+    def side(title, color, sub, body):
+        return (f'<div class="rblock"><div class="rhead" style="border-bottom-color:{color}">'
+                f'<span>{e(sub)}</span><h3 style="color:{color}">{e(title)}</h3></div>{body}</div>')
 
-    risks = "".join(f"<li>{e(r)}</li>" for r in rs.get("keyRisks", []))
-    risks_block = f"<div class='block'><h2>Key risks</h2><ul>{risks}</ul></div>" if risks else ""
+    right = ""
+    if swim:
+        right += side("Swim", SPORT_COLORS["swim"], tidy(str(swim.get("target") or "").replace("/100m", "/100 m")),
+                      f"<p>{e(tidy(swim.get('notes')))}</p>" if swim.get("notes") else "")
+    if trans:
+        t_sub, t_notes = [], []
+        for k in ("t1", "t2"):
+            if trans.get(k):
+                time, _, note = str(trans[k]).partition(" ")
+                t_sub.append(f"{k.upper()} {fmt_split(k, time)}")
+                note = note.strip(" -–")
+                if note:
+                    t_notes.append(f"<b>{k.upper()}</b> {e(note[:1].upper() + note[1:])}.")
+        right += side("Transitions", INK, " · ".join(t_sub),
+                      f"<p>{' '.join(t_notes)}</p>" if t_notes else "")
+    if nutrition:
+        during = nutrition.get("during") or {}
+        n_sub = " · ".join(x for x in [f"{during['carbsPerHour']} g carbs/h" if during.get("carbsPerHour") else "",
+                                       f"{tidy(during['fluidPerHour'])}/h" if during.get("fluidPerHour") else ""] if x)
+        body = ""
+        if nutrition.get("preRace"):
+            body += f"<p><b>Pre-race.</b> {e(tidy(nutrition['preRace']))}</p>"
+        if during.get("products"):
+            body += f"<p><b>During.</b> {e('; '.join(during['products']))}.</p>"
+        if nutrition.get("notes"):
+            body += f"<p><b>Notes.</b> {e(tidy(nutrition['notes']))}</p>"
+        right += side("Nutrition", SPORT_COLORS["race"], n_sub, body)
 
+    risks = "".join(f"<li>{e(tidy(r))}</li>" for r in rs.get("keyRisks", []))
+    risks_html = (f'<div class="rblock"><div class="rhead"><h3>Key risks</h3></div><ol>{risks}</ol></div>'
+                  if risks else "")
     assess = ""
     if summary:
-        assess = ("<div class='block'><h2>Assessment summary</h2>"
-                  + "".join(f"<p><b>{e(humanize(k))}.</b> {e(v)}</p>" for k, v in summary.items())
-                  + "</div>")
+        assess = ('<div class="rblock"><div class="rhead"><h3>Assessment</h3></div><dl>'
+                  + "".join(f"<dt>{e(humanize(k))}</dt><dd>{e(tidy(v))}</dd>" for k, v in summary.items())
+                  + "</dl></div>")
 
-    return f"""<section class="notes-page">
-      <header class="wkhead"><div class="wkleft"><h2>Race strategy &amp; plan notes</h2></div>
-        <div class="wkright"><span class="wkhours">{e(rs['event'].get('name', ''))}</span></div></header>
-      <div class="flow">
-        {bike_block}
-        <div class='block legs'>{leg('Swim', pacing.get('swim'))}{leg('Run', pacing.get('run'))}</div>
-        {nut}{assess}{risks_block}
-      </div>
+    left += risks_html
+    right += assess
+    # A table row that outgrows the page splits onto the next one (each block
+    # kept whole), so a long strategy flows rather than being clipped.
+    if left and right:
+        body = f'<table class="rgrid"><tr><td class="rleft">{left}</td><td class="rright">{right}</td></tr></table>'
+    else:
+        body = left or right
+
+    return f"""<section class="race-page">
+      <table class="wkhead" style="height:{HEAD_H}px"><tr>
+        <td class="wkleft">
+          <span class="chip" style="background:#ffffff;border:1.5px solid {INK}">Race</span>
+          <h2>Race strategy</h2>
+          <span class="dates">{e(" · ".join(sub))}</span>
+        </td>
+        <td class="stats">{stats}</td>
+      </tr></table>
+      {body}
     </section>"""
 
 
-# ────────────────────────────── css ──────────────────────────────
+# ──────────────────────────────── css ────────────────────────────────
 
-CSS = """
-@page {
-    size: Letter landscape;
-    margin: 0.4in;
-}
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
-body {
-  font-family: "Inter", "Helvetica Neue", Helvetica, Arial, sans-serif;
-  color: #14161f; font-size: 10pt; line-height: 1.3;
+def font_css():
+    out = ""
+    for family, weight, fname in FONT_FILES:
+        path = FONT_DIR / fname
+        if path.exists():
+            out += (f'@font-face {{ font-family: "{family}"; font-weight: {weight}; '
+                    f'font-style: normal; src: url("{path.as_uri()}"); }}\n')
+    return out
+
+
+def _css_string(s):
+    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def page_css(plan):
+    meta = plan.get("meta") or {}
+    left = " · ".join(x for x in [meta.get("athlete"), meta.get("event"), meta.get("generatedBy")] if x)
+    return f"""
+@page {{
+  size: Letter landscape;
+  margin: 0.4in 0.4in 0.55in;
+  @bottom-left {{ content: {_css_string(left)}; font: 500 9pt Barlow, sans-serif; color: {MUTED};
+                  vertical-align: top; padding-top: 6pt; }}
+  @bottom-right {{ content: counter(page) " / " counter(pages); font: 500 9pt Barlow, sans-serif;
+                   color: {MUTED}; vertical-align: top; padding-top: 6pt; }}
+}}
+"""
+
+
+CSS = f"""
+* {{ box-sizing: border-box; }}
+html, body {{ margin: 0; padding: 0; }}
+body {{
+  font-family: Barlow, "Liberation Sans", Arial, sans-serif;
+  color: {INK}; font-size: 9.5pt; line-height: 1.3;
+  font-variant-numeric: tabular-nums;
   -webkit-print-color-adjust: exact; print-color-adjust: exact;
-}
-.page { height: 7.66in; page-break-after: always; break-after: page; display: flex; flex-direction: column; overflow: hidden; }
-.page:last-child { page-break-after: auto; break-after: auto; }
-h1 { font-size: 25pt; margin: 2pt 0 4pt; letter-spacing: -0.02em; font-weight: 600; }
-h2 { font-size: 12pt; margin: 0 0 4pt; font-weight: 600; letter-spacing: 0.01em; }
-h3 { font-size: 10.5pt; margin: 0 0 2pt; font-weight: 600; }
-p { margin: 0 0 4pt; }
-.swatch { display: inline-block; width: 8pt; height: 8pt; border-radius: 2pt; margin-right: 4pt; vertical-align: -1pt; }
+}}
+h1, h2, h3 {{ font-family: "Barlow Condensed", Barlow, sans-serif; margin: 0; }}
+p {{ margin: 0; }}
+table {{ border-collapse: collapse; }}
+td {{ padding: 0; vertical-align: top; }}
+/* Block, table and float layout only: WeasyPrint's nested flexbox is an
+   order of magnitude slower and paginates unpredictably. */
+.page {{ height: {PAGE_H}px; overflow: hidden; position: relative;
+  break-after: page; page-break-after: always; }}
+.page:last-child {{ break-after: auto; page-break-after: auto; }}
 
-/* ── cover ── */
-.cover-head { display: flex; justify-content: space-between; align-items: flex-start;
-  border-bottom: 1.5pt solid #14161f; padding-bottom: 8pt; margin-bottom: 10pt; }
-.kicker { font-size: 9.5pt; letter-spacing: 0.12em; text-transform: uppercase; color: #6a6f7c; }
-.cover-sub { font-size: 10.5pt; color: #3c414f; }
-.goals { display: flex; flex-direction: column; gap: 5pt; align-items: flex-end; }
-.goal { font-size: 12pt; font-weight: 600; padding: 4pt 10pt; border-radius: 4pt; white-space: nowrap; }
-.goal-a { background: #14161f; color: #fff; }
-.goal-b { background: #e7e9ef; color: #14161f; }
-.block { margin-bottom: 8pt; }
-.cover .tbl td { padding: 1.6pt 4pt; }
-.cover .tbl th { padding: 1.6pt 4pt; }
-.cover h2 { margin-bottom: 2pt; }
-.cover { line-height: 1.25; }
-.cover.tight h1 { font-size: 22pt; }
-.cover.tight .block { margin-bottom: 5pt; }
-.cover.tight .cover-head { padding-bottom: 5pt; margin-bottom: 6pt; }
-.cover.tight .tbl td, .cover.tight .tbl th { padding: 1.2pt 4pt; }
-.cover.tighter h1 { font-size: 20pt; }
-.cover.tighter .block { margin-bottom: 4pt; }
-.cover.tighter .cover-head { padding-bottom: 4pt; margin-bottom: 5pt; }
-.cover.tighter .tbl td, .cover.tighter .tbl th { padding: 0.9pt 4pt; line-height: 1.2; }
-.cover.tighter .cover-sub { font-size: 10pt; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 10pt; }
-.tbl th { text-align: left; font-size: 8.5pt; letter-spacing: 0.08em; text-transform: uppercase;
-  color: #6a6f7c; border-bottom: 0.75pt solid #c9ccd6; padding: 2pt 4pt; font-weight: 600; }
-.tbl td { padding: 2.5pt 4pt; border-bottom: 0.5pt solid #e7e9ef; vertical-align: top; }
-.tbl.tight td, .tbl.tight th { padding: 1.8pt 3pt; }
-.tbl .total td { font-weight: 700; border-top: 0.75pt solid #c9ccd6; }
-.phase-cell { font-weight: 600; white-space: nowrap; }
-.focus { color: #3c414f; }
-.zone-cols { display: flex; gap: 14pt; }
-.zone-col { flex: 1; }
-.zone-title { font-size: 9pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
-  display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2pt; }
-.zone-value { font-weight: 500; text-transform: none; letter-spacing: 0; color: #3c414f; font-size: 9.5pt; }
-.cover-foot { margin-top: auto; display: flex; gap: 18pt; align-items: flex-end; justify-content: space-between; }
-.splits { flex: 1; margin-bottom: 0; max-width: 5.4in; }
-.splits .sub { font-size: 9pt; color: #6a6f7c; margin-bottom: 2pt; }
-.legend { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8pt; font-size: 9.5pt; color: #3c414f; }
-.legend-item { text-transform: capitalize; white-space: nowrap; }
+/* ── overview ── */
+.cover-head {{ display: table; width: 100%; border-bottom: 2px solid {INK}; margin-bottom: 14px; }}
+.cover-head > div {{ display: table-cell; vertical-align: bottom; padding-bottom: 12px; }}
+.cover-head > .goal-boxes {{ text-align: right; white-space: nowrap; }}
+.kicker {{ font: 600 9pt "Barlow Condensed", sans-serif; letter-spacing: 0.14em;
+  text-transform: uppercase; color: {MUTED}; }}
+h1 {{ font-size: 32pt; line-height: 1.05; font-weight: 700; margin: 3px 0 4px; }}
+.cover-sub {{ font-size: 10.5pt; font-weight: 500; color: {INK_3}; }}
+.goal {{ display: inline-block; text-align: left; padding: 5px 11px; background: #e9ebef;
+  border-radius: 4px; min-width: 70px; margin-left: 6px; vertical-align: bottom; }}
+.goal.strong {{ background: #ffffff; border: 2px solid {INK}; }}
+.goal.outline {{ background: #ffffff; border: 1px solid {RULE}; }}
+.goal .gl {{ display: block; font: 600 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.1em;
+  text-transform: uppercase; color: {MUTED}; }}
+.goal .gv {{ display: block; font: 700 17pt/1.1 "Barlow Condensed", sans-serif; }}
+
+.sec-head {{ margin-bottom: 6px; }}
+.sec-head h2 {{ font-size: 14pt; font-weight: 700; }}
+.legend {{ float: right; font-size: 9pt; font-weight: 500; color: {INK_3}; padding-top: 4px; }}
+.lg {{ white-space: nowrap; margin-left: 10px; }}
+.sw {{ display: inline-block; width: 8pt; height: 8pt; border-radius: 2px; margin-right: 4px;
+  vertical-align: -1pt; }}
+.vol {{ width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 4px 0; }}
+.vol .phase {{ padding: 4px 6px; border-radius: 3px; }}
+.vol .phase b {{ display: block; font: 700 10.5pt/1.15 "Barlow Condensed", sans-serif; }}
+.vol .phase span {{ display: block; font-size: 8.5pt; font-weight: 500; color: {INK_2}; }}
+.vol .bars td {{ vertical-align: bottom; border-bottom: 1.5px solid {INK}; padding-top: 10px; }}
+.vol .bt {{ font-size: 8.5pt; font-weight: 600; text-align: center; padding-bottom: 2px; }}
+.vol .stack {{ margin: 0 16%; }}
+.vol .stack div {{ border-top: 1px solid #ffffff; }}
+.vol .wl {{ text-align: center; padding-top: 4px; }}
+.vol .wl b {{ display: block; font: 600 9.5pt "Barlow Condensed", sans-serif; }}
+.vol .rec {{ display: block; font: 700 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.06em;
+  color: {SPORT_COLORS['strength']}; }}
+.caption {{ font-size: 8.5pt; color: {MUTED}; margin-top: 4px; }}
+
+.zones {{ position: absolute; left: 0; right: 0; bottom: 0; }}
+.zrow {{ display: table; width: 100%; table-layout: fixed; }}
+.zcol {{ display: table-cell; padding-right: 20px; }}
+.zcol:last-child {{ padding-right: 0; }}
+.zhead {{ border-bottom: 2px solid {INK}; padding-bottom: 3px; margin-bottom: 2px; }}
+.zt {{ font: 700 12pt "Barlow Condensed", sans-serif; white-space: nowrap; }}
+.zv {{ float: right; font-size: 8.5pt; font-weight: 500; color: {INK_3}; padding-top: 4px; }}
+.ztbl {{ width: 100%; font-size: 9pt; font-weight: 500; }}
+.ztbl th {{ text-align: left; font-weight: 600; color: {MUTED}; padding: 2px 0; }}
+.ztbl td {{ padding: 1.5px 0; white-space: nowrap; }}
+.ztbl .r {{ text-align: right; padding-left: 6px; }}
+.ztbl .total td {{ font-weight: 700; border-top: 1px solid {INK}; }}
 
 /* ── week pages ── */
-.wkhead { display: flex; justify-content: space-between; align-items: flex-start;
-  border-bottom: 1pt solid #14161f; padding-bottom: 4pt; }
-.wkleft { display: flex; align-items: center; gap: 8pt; }
-.phase-badge { color: #fff; font-size: 9pt; font-weight: 600; letter-spacing: 0.06em;
-  text-transform: uppercase; padding: 3pt 8pt; border-radius: 3pt; }
-.wkhead h2 { font-size: 18pt; margin: 0; display: flex; align-items: baseline; gap: 10pt; }
-.wkdates { font-size: 11pt; font-weight: 400; color: #6a6f7c; }
-.wkright { display: flex; align-items: center; gap: 8pt; }
-.wkhours { font-size: 15pt; font-weight: 600; }
-.rec-tag { font-size: 9pt; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
-  background: #6c5fc0; color: #fff; padding: 3pt 8pt; border-radius: 3pt; }
-.wkintro { font-size: 10.5pt; color: #3c414f; margin: 5pt 0 5pt; max-width: 9in; }
-.sportbar { display: flex; flex-wrap: wrap; gap: 6pt; padding-bottom: 6pt; border-bottom: 0.5pt solid #e7e9ef; }
-.sport-chip { font-size: 10pt; background: #f2f3f7; border-radius: 3pt; padding: 3pt 7pt; white-space: nowrap; }
-.sport-chip b { letter-spacing: 0.06em; }
+.wkhead {{ width: 100%; border-bottom: 2px solid {INK}; margin-bottom: {BLOCK_GAP}px; }}
+.wkhead td {{ vertical-align: bottom; padding-bottom: 7px; }}
+.wkleft {{ white-space: nowrap; }}
+.chip {{ display: inline-block; padding: 3px 7px; border-radius: 3px; vertical-align: 4px; margin-right: 6px;
+  font: 700 9.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }}
+.wkhead h2 {{ display: inline; font-size: 24pt; line-height: 1; font-weight: 700; }}
+.wkhead h2 .of {{ font-weight: 500; color: {MUTED}; }}
+.dates {{ font-size: 10.5pt; font-weight: 500; color: {INK_3}; margin-left: 8px; }}
+.rec-tag {{ display: inline-block; padding: 2px 7px; border: 1.5px solid {SPORT_COLORS['strength']};
+  border-radius: 3px; color: {SPORT_COLORS['strength']}; margin-left: 8px; vertical-align: 2px;
+  font: 700 9pt "Barlow Condensed", sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }}
+.stats {{ text-align: right; white-space: nowrap; }}
+.st {{ display: inline-block; text-align: right; margin-left: 13px; vertical-align: bottom; }}
+.st span {{ display: block; }}
+.st .sl {{ font: 600 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }}
+.st .sv {{ font: 600 13.5pt/1.1 "Barlow Condensed", sans-serif; }}
+.st .ss {{ font-size: 8.5pt; font-weight: 500; color: {MUTED}; }}
+.st.total {{ padding-left: 13px; border-left: 1px solid {RULE}; }}
+.st.total .sl {{ color: {MUTED}; }}
+.st.total .sv {{ font-size: 22pt; font-weight: 700; }}
 
-/* One row that fills the page, so every day column runs floor to ceiling and
-   the notes block absorbs whatever space the cards leave. */
-.grid { flex: 1; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
-  grid-template-rows: minmax(0, 1fr); gap: 5pt; margin-top: 6pt; min-height: 0; }
-.day { display: flex; flex-direction: column; min-width: 0; }
-.dayhead { display: flex; justify-content: space-between; align-items: baseline;
-  border-bottom: 0.75pt solid #14161f; padding-bottom: 2pt; margin-bottom: 4pt; }
-.dayhead b { font-size: 11pt; }
-.dayhead span { font-size: 9.5pt; color: #6a6f7c; }
-.cards { display: flex; flex-direction: column; gap: 4pt; }
-.wcard { border-left: 2.5pt solid #8a8f9c; background: #f7f8fa; border-radius: 0 3pt 3pt 0;
-  padding: 5pt 5pt 5pt 5pt; overflow-wrap: anywhere; }
-.wtag { font-size: 8.5pt; font-weight: 700; letter-spacing: 0.07em; }
-.wmeta { display: block; color: #4a4f5c; font-weight: 500; letter-spacing: 0; font-size: 9.5pt; }
-.wtitle { font-size: 11pt; font-weight: 700; line-height: 1.15; margin-top: 2pt; }
-.wkt { font-size: 10pt; margin-top: 4pt; border-top: 0.5pt solid #dcdfe8; padding-top: 2pt; }
-.wkt b { font-size: 8.5pt; letter-spacing: 0.07em; color: #6a6f7c; display: block; }
-.rest { background: #f2f3f7; border-radius: 3pt; color: #8a8f9c; font-size: 10pt;
-  text-align: center; padding: 6pt 0; min-height: 54pt; display: flex;
-  align-items: center; justify-content: center; }
-/* The notes block takes whatever the cards leave — so a light week gets a tall
-   writing area and a heavy one gets a short one, with no change to type size.
-   It clips rather than grows, so surplus rules never push the page over. */
-.notes { margin-top: auto; padding-top: 5pt; display: flex; flex-direction: column;
-  flex: 1 1 0; min-height: 0; overflow: hidden; }
-.notes span { font-size: 8.5pt; letter-spacing: 0.07em; color: #8a8f9c; font-weight: 600; }
-.ruled { margin-top: 3pt; border-top: 0.5pt solid #c9ccd6; overflow: hidden; }
-.ruled i { display: block; height: 15pt; border-bottom: 0.5pt solid #c9ccd6; }
+.focus {{ width: 100%; margin-bottom: {BLOCK_GAP}px; }}
+.focus {{ table-layout: fixed; text-align: left; }}
+.focus .fl {{ width: 44px; white-space: nowrap; font: 700 8.5pt/{FOCUS_LINE}px "Barlow Condensed", sans-serif;
+  letter-spacing: 0.1em; text-transform: uppercase; color: {MUTED}; }}
+.focus .fl.side {{ width: 82px; padding-left: 12px; border-left: 1px solid #d5d8de; }}
+.focus td {{ text-align: left; }}
+.focus p {{ text-align: left; font-size: 9.5pt; line-height: {FOCUS_LINE}px; color: {INK_2}; }}
+.fmain {{ padding-right: 20px; }}
+.sidep {{ width: 1.75in; }}
 
-/* Density tiers: the type never shrinks — only padding and the notes block move. */
-.roomy .wcard { padding: 7pt; }
-.roomy .cards { gap: 6pt; }
-.roomy .notes { padding-top: 9pt; }
-.normal .notes { padding-top: 6pt; }
-.dense .wcard { padding: 4pt; }
-.dense .cards { gap: 3pt; }
-.dense .notes { padding-top: 4pt; }
-.ruled { flex: 1 1 0; min-height: 0; }
+.grid {{ width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 6px 0;
+  margin: 0 -6px; width: calc(100% + 12px); }}
+.dayin {{ overflow: hidden; }}
+.dh {{ border-bottom: 2px solid {INK}; padding-bottom: 2px; margin-bottom: 5px; }}
+.dh b {{ font: 700 12pt "Barlow Condensed", sans-serif; }}
+.dh span {{ float: right; font-size: 9pt; font-weight: 500; color: {MUTED}; padding-top: 3px; }}
+.card, .slot {{ margin-bottom: {SLOT_GAP}px; }}
+.card {{ background: {PANEL}; border-top: 3px solid {INK}; border-radius: 2px; padding: 5px 7px 7px;
+  overflow-wrap: break-word; }}
+.sp {{ font: 700 9pt "Barlow Condensed", sans-serif; letter-spacing: 0.1em; text-transform: uppercase; }}
+.tm {{ float: right; font-size: 9pt; font-weight: 500; color: {MUTED}; white-space: nowrap; }}
+.cb {{ display: inline-block; width: 8pt; height: 8pt; border: 1.2pt solid {MUTED}; border-radius: 2px;
+  margin-left: 4px; vertical-align: -1pt; }}
+.cb.done {{ background: {MUTED}; }}
+.ct {{ font: 700 11pt/1.15 "Barlow Condensed", sans-serif; margin-top: 3px; }}
+.ct.big {{ font-size: 13.5pt; }}
+.cm {{ font-size: 9pt; font-weight: 600; color: {INK_3}; margin-top: 2px; }}
+.cm.note {{ font-weight: 500; color: {MUTED}; margin-top: 6px; }}
+.cr {{ height: 1px; background: #d5d8de; margin: 4px 0; }}
+.cr.gold {{ background: #e0cf9e; margin: 6px 0; }}
+.ck {{ font-size: 9pt; line-height: 12pt; color: {INK_2}; }}
+.slot {{ border: 1px dashed #d5d8de; border-radius: 2px; }}
+.slot.rest {{ padding-top: 40%; text-align: center;
+  font: 600 10pt "Barlow Condensed", sans-serif; letter-spacing: 0.08em; text-transform: uppercase;
+  color: {MUTED}; }}
+.card.race {{ background: #fbf4e0; border: 1.2pt solid {SPORT_COLORS['race']};
+  border-top: 3pt solid {SPORT_COLORS['race']}; padding: 7px 8px 9px; }}
+.rstats {{ width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 6px; }}
+.rs {{ width: 50%; background: #ffffff; border: 1px solid #e0cf9e; border-radius: 2px; padding: 3px 5px; }}
+.rs + .rs {{ border-left-width: 4px; border-left-color: #fbf4e0; }}
+.rs span {{ display: block; font: 600 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.06em;
+  text-transform: uppercase; color: {MUTED}; }}
+.rs b {{ font: 700 12.5pt/1.1 "Barlow Condensed", sans-serif; }}
+.rl {{ font-size: 9pt; line-height: 12pt; color: {INK_2}; margin-bottom: 4px; }}
+.rl b {{ color: {INK}; }}
+/* Fourteen rules, more than any column shows: the day wrapper clips the
+   spare ones, so long cards shorten the notes instead of the page. */
+.notes {{ margin-top: 2px; }}
+.nh {{ font: 700 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.1em;
+  text-transform: uppercase; color: {MUTED}; }}
+.nr {{ float: right; }}
+.ruled i {{ display: block; height: 17px; border-bottom: 0.75pt solid {RULE}; }}
 
-/* ── race strategy pages ── */
-/* Not a fixed-height .page: this section flows over as many pages as the plan
-   needs. Two columns via multicol so it paginates column-by-column, with each
-   block kept whole. */
-.notes-page { page-break-before: always; break-before: page; }
-.notes-page .flow { column-count: 2; column-gap: 20pt; margin-top: 6pt; }
-.notes-page .block { break-inside: auto; }
-.notes-page tr, .notes-page li, .notes-page p, .notes-page .mini { break-inside: avoid; }
-.notes-page h2, .notes-page h3, .notes-page .sub { break-after: avoid; }
-.notes-page .wkhead { column-span: all; }
-.notes-page .sub { font-size: 9.5pt; color: #6a6f7c; margin-bottom: 3pt; }
-.notes-page p, .notes-page li { font-size: 10pt; margin-bottom: 2.5pt; }
-.notes-page .block { margin-bottom: 7pt; }
-.notes-page h2 { margin-bottom: 2pt; }
-.notes-page ul { margin: 0; padding-left: 14pt; }
-.notes-page .note { color: #3c414f; }
-.legs .mini + .mini { margin-top: 6pt; }
+/* ── race strategy ── */
+.race-page {{ break-before: page; page-break-before: always; }}
+.race-page .wkhead {{ margin-bottom: 10px; }}
+.rgrid {{ width: 100%; table-layout: fixed; }}
+.rright {{ width: 3.3in; padding-left: 26px; }}
+.rblock {{ margin-bottom: 9px; break-inside: avoid; page-break-inside: avoid; }}
+.rhead {{ border-bottom: 2px solid {INK}; padding-bottom: 3px; margin-bottom: 4px; }}
+.rhead h3 {{ font-size: 13pt; font-weight: 700; white-space: nowrap; }}
+.rhead span {{ float: right; font-size: 8.5pt; font-weight: 500; color: {INK_3}; padding-top: 5px; }}
+.ptbl {{ width: 100%; font-size: 9pt; line-height: 11.5pt; }}
+.ptbl th {{ text-align: left; font-weight: 600; color: {MUTED}; padding: 3px 8px 3px 0;
+  border-bottom: 1px solid {RULE}; }}
+.ptbl td {{ padding: 2px 8px 2px 0; border-bottom: 1px solid {RULE_LIGHT}; }}
+.ptbl td:first-child {{ width: 1.3in; }}
+.ptbl .r {{ text-align: right; white-space: nowrap; }}
+.ptbl .n {{ color: {INK_3}; }}
+.ptbl tr {{ break-inside: avoid; }}
+.rblock p {{ font-size: 9pt; line-height: 11.5pt; color: {INK_2}; margin-bottom: 4px; }}
+.rblock ol {{ margin: 0; padding-left: 16px; font-size: 9pt; line-height: 11.5pt; color: {INK_2}; }}
+.rblock li {{ margin-bottom: 2px; }}
+.rblock dl {{ margin: 0; font-size: 9pt; line-height: 11.5pt; color: {INK_2}; }}
+.rblock dt {{ font: 700 8.5pt "Barlow Condensed", sans-serif; letter-spacing: 0.08em;
+  text-transform: uppercase; color: {MUTED}; }}
+.rblock dd {{ margin: 0 0 4px; }}
+
+* {{ hyphens: none; }}
 """
 
-WEASYPRINT_CSS = r"""
-/* ------------------------------------------------------------------
-   WeasyPrint overrides.
-
-   The chart above is laid out for Chrome: flexbox, grid, gap and
-   `margin-top:auto`. WeasyPrint implements little of that, so every
-   affected box is restated here with tables, floats and inline-blocks.
-   Injected as a second <style> at the end of <head>, so it is author
-   origin and wins ties without !important on every line.
-   ------------------------------------------------------------------ */
-
-/* Fixed page height is what makes `position:absolute; bottom:0` land on the
-   page floor and keeps one week to one sheet. */
-.page {
-    display: block;
-    height: 7.66in;
-    overflow: hidden;
-}
-
-/* ------------------------------------------------------------------
-   Cover page
-   ------------------------------------------------------------------ */
-
-.cover { position: relative; }
-
-.cover-head { display: block; }
-
-.cover-head > div:first-child {
-    display: inline-block;
-    width: 66%;
-    vertical-align: top;
-}
-
-.goals {
-    display: inline-block;
-    width: 32%;
-    vertical-align: top;
-    text-align: right;
-}
-
-.goal {
-    display: inline-block;
-    margin-bottom: 5pt;
-}
-
-.zone-cols {
-    display: table;
-    width: 100%;
-    table-layout: fixed;
-}
-
-.zone-col {
-    display: table-cell;
-    width: 33%;
-    padding-right: 10pt;
-    vertical-align: top;
-}
-
-.zone-title { display: block; }
-
-.zone-value { float: right; }
-
-.cover-foot {
-    display: block;
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    margin-top: 0;
-}
-
-.splits {
-    display: inline-block;
-    width: 56%;
-    max-width: none;
-    vertical-align: bottom;
-}
-
-.legend {
-    display: inline-block;
-    width: 42%;
-    vertical-align: bottom;
-    text-align: right;
-}
-
-.legend-item {
-    display: inline-block;
-    margin-left: 7pt;
-}
-
-/* ------------------------------------------------------------------
-   Week pages
-   ------------------------------------------------------------------ */
-
-.wkhead { display: block; }
-
-.wkleft {
-    display: inline-block;
-    width: 70%;
-    vertical-align: bottom;
-}
-
-.wkright {
-    display: inline-block;
-    width: 29%;
-    vertical-align: bottom;
-    text-align: right;
-}
-
-.phase-badge {
-    display: inline-block;
-    margin-right: 8pt;
-    white-space: nowrap;
-}
-
-.wkhead h2 {
-    display: inline-block;
-    white-space: nowrap;
-}
-
-.wkdates {
-    margin-left: 10pt;
-    white-space: nowrap;
-}
-
-.wkhours, .rec-tag {
-    display: inline-block;
-    margin-left: 8pt;
-}
-
-.sportbar {
-    display: block;
-    white-space: nowrap;
-    overflow: hidden;
-}
-
-.sport-chip {
-    display: inline-block;
-    margin-right: 6pt;
-}
-
-/* Seven equal day columns, floor to ceiling: a fixed-height table stretches
-   its cells the way the grid's `1fr` row did. Cell widths stay auto — a
-   percentage would be resolved before border-spacing is added, so the row
-   ran 8 gaps wider than the table and Sunday fell off the page. */
-.grid {
-    display: table;
-    width: 100%;
-    height: 4.85in;
-    table-layout: fixed;
-    border-spacing: 5pt 0;
-}
-
-.day {
-    display: table-cell;
-    width: auto;
-    vertical-align: top;
-    overflow: hidden;
-}
-
-.dayhead { display: block; }
-
-.dayhead b { display: inline-block; }
-
-.dayhead span { float: right; }
-
-.cards { display: block; }
-
-.wcard {
-    margin-bottom: 4pt;
-    overflow-wrap: break-word;
-    break-inside: avoid;
-}
-
-.rest {
-    display: block;
-    min-height: 0;
-    padding: 16pt 0;
-}
-
-/* No `margin-top:auto` without flex, so the writing block is sized per
-   density tier instead of absorbing whatever the cards leave. */
-.notes {
-    display: block;
-    margin-top: 6pt;
-    overflow: hidden;
-}
-
-.ruled {
-    display: block;
-    overflow: hidden;
-}
-
-.ruled i { height: 13pt; }
-
-.roomy .ruled { height: 195pt; }
-.normal .ruled { height: 143pt; }
-.dense .ruled { height: 91pt; }
-
-/* ------------------------------------------------------------------
-   Week-page type scale
-
-   Scoped to .week so the cover, which already matches Chrome, is left
-   alone. Roughly 8% off every size on the week pages.
-   ------------------------------------------------------------------ */
-
-.week .wkhead h2 { font-size: 16pt; }
-.week .wkdates { font-size: 10pt; }
-.week .wkhours { font-size: 13pt; }
-.week .rec-tag { font-size: 8pt; }
-.week .phase-badge { font-size: 8pt; }
-.week .wkintro { font-size: 9.5pt; }
-.week .sport-chip { font-size: 9pt; }
-.week .dayhead b { font-size: 10pt; }
-.week .dayhead span { font-size: 8.5pt; }
-.week .wtag { font-size: 8pt; }
-.week .wmeta { font-size: 8.5pt; }
-.week .wtitle { font-size: 10pt; }
-.week .wkt { font-size: 9pt; }
-.week .wkt b { font-size: 8pt; }
-.week .rest { font-size: 9pt; }
-.week .notes span { font-size: 8pt; }
-
-/* ------------------------------------------------------------------
-   Race strategy page
-   ------------------------------------------------------------------ */
-
-/* Multicol plus forced breaks is where WeasyPrint is least predictable, and
-   this section is prose — one column costs a page and always paginates. */
-.notes-page .flow {
-    display: block;
-    column-count: 1;
-}
-
-.notes-page .block {
-    break-inside: avoid;
-    page-break-inside: avoid;
-}
-
-.notes-page h2, .notes-page h3 {
-    break-after: avoid;
-}
-
-/* ------------------------------------------------------------------
-   Tables
-   ------------------------------------------------------------------ */
-
-table { break-inside: avoid; }
-
-tr, td, th { break-inside: avoid; }
-
-/* ------------------------------------------------------------------
-   Rendering quality
-   ------------------------------------------------------------------ */
-
-/* Liberation Sans is metric-compatible with Arial, so column widths and line
-   counts land where the Chrome layout expects them. */
-body {
-    font-family: Inter, "Liberation Sans", Arial, "Helvetica Neue", Helvetica,
-                 "Noto Sans", "DejaVu Sans", sans-serif;
-}
-
-* { hyphens: none; }
-"""
+# Kept for callers that append engine-specific overrides; the stylesheet
+# above is written for WeasyPrint directly, so there is nothing to add.
+WEASYPRINT_CSS = ""
 
 
 def build_html(plan):
+    weeks = sorted(plan.get("weeks", []), key=lambda w: w["weekNumber"])
+    total_weeks = (plan.get("meta") or {}).get("totalWeeks") or len(weeks)
     pages = [cover_page(plan)]
-    for week in sorted(plan.get("weeks", []), key=lambda w: w["weekNumber"]):
-        pages.append(week_page(plan, week))
+    pages += [week_page(plan, w, total_weeks) for w in weeks]
     race = race_page(plan)
     if race:
         pages.append(race)
     title = f"{plan['meta'].get('event', 'Training plan')} — printable"
-    return (f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{e(title)}</title>"
-            f"<style>{CSS}</style></head><body>{''.join(pages)}</body></html>")
+    return (f"<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>{e(title)}</title>"
+            f"<style>{font_css()}{page_css(plan)}{CSS}</style></head><body>{''.join(pages)}</body></html>")
 
 
 # ───────────────────────── pdf conversion ─────────────────────────
@@ -988,10 +1105,9 @@ def via_weasyprint(html_path, pdf_path):
 
 
 def weasyprint_html(html_text):
-    """Append the WeasyPrint override sheet as the last author stylesheet.
-
-    Not passed via ``write_pdf(stylesheets=...)``: those are user origin and
-    would lose the cascade to the document's own <style>."""
+    """Append any WeasyPrint override sheet as the last author stylesheet."""
+    if not WEASYPRINT_CSS:
+        return html_text
     style = f"<style>{WEASYPRINT_CSS}</style>"
     if "</head>" in html_text:
         return html_text.replace("</head>", style + "</head>", 1)
