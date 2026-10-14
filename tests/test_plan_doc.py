@@ -126,6 +126,20 @@ def test_add_workout_creates_a_missing_day_entry_in_order():
     ({"op": "set_zones", "thresholdPace": "quick"}, "m:ss"),
     ({"op": "set_zones"}, "at least one"),
     ({"op": "set_unit", "unit": "furlongs"}, "unit must be"),
+    ({"op": "update_week", "week_number": 1, "fields": {"startDate": "2026-09-15"}}, "can't be edited"),
+    ({"op": "set_field", "path": "meta.id", "value": "other"}, "plan id is its storage key"),
+    ({"op": "set_field", "path": "meta", "value": {}}, "meta.id can't be changed"),
+    ({"op": "set_field", "path": "weeks[0].focus", "value": "x"}, "use update_week"),
+    ({"op": "set_field", "path": "overrides.ftp", "value": 300}, "use set_zones"),
+    ({"op": "set_field", "path": "phases.5.focus", "value": "x"}, "no such list item"),
+    ({"op": "set_field", "path": "phases.0.name.x", "value": "x"}, "isn't an object or a list"),
+    ({"op": "set_field", "path": "meta.eventDate", "value": "next spring"}, "YYYY-MM-DD"),
+    ({"op": "set_field", "path": "phases", "value": ["Base"]}, "list of objects"),
+    ({"op": "set_field", "path": "raceStrategy.x"}, "needs a value"),
+    ({"op": "set_field", "path": "raceStrategy.keyRisks.0", "value": "x"}, "doesn't exist"),
+    ({"op": "set_field", "path": " ", "value": 1}, "dotted path"),
+    ({"op": "append_to_list", "path": "meta.event", "value": "x"}, "isn't a list"),
+    ({"op": "append_to_list", "path": "phases", "value": "Peak"}, "list of objects"),
     ({"op": "explode"}, "unknown op"),
 ])
 def test_bad_operations_raise_with_the_operation_named(op, message):
@@ -183,6 +197,49 @@ def test_remove_and_update_week():
     assert plan_doc.find_workout(new, "w1-mon-swim") is None
     assert new["weeks"][0]["focus"] == "Travel" and new["weeks"][0]["isRecoveryWeek"] is True
     assert messages[1] == "Updated week 1 (focus, isRecoveryWeek)"
+
+
+def test_update_week_takes_any_other_field_and_null_removes():
+    new, _, _ = plan_doc.apply_operations(sample_plan(), [
+        {"op": "update_week", "week_number": 2, "fields": {"notes": "Taper starts", "focus": None}},
+    ])
+    assert new["weeks"][1]["notes"] == "Taper starts" and "focus" not in new["weeks"][1]
+
+
+def test_set_field_edits_any_part_of_the_document():
+    new, messages, touched = plan_doc.apply_operations(sample_plan(), [
+        {"op": "set_field", "path": "meta.eventDate", "value": "2026-09-27"},
+        {"op": "set_field", "path": "preferences.run", "value": "miles"},
+        {"op": "set_field", "path": "phases[0].focus", "value": "Aerobic durability"},
+        {"op": "set_field", "path": "zones.run.pace.paceSource", "value": "TESTED — 30min TT"},
+        {"op": "set_field", "path": "raceStrategy.pacing.bike.targetPower", "value": "NP 205W"},
+        {"op": "set_field", "path": "raceStrategy.taper", "value": {"startDate": "2026-09-20", "notes": "x"}},
+        {"op": "set_field", "path": "zones.swim.cssSeconds", "value": None},
+    ])
+    assert new["meta"]["eventDate"] == "2026-09-27" and new["meta"]["id"] == "test-block-2026"
+    assert new["preferences"]["run"] == "miles"
+    assert new["phases"][0]["focus"] == "Aerobic durability"
+    assert new["zones"]["run"]["pace"]["paceSource"] == "TESTED — 30min TT"
+    assert new["raceStrategy"] == {"pacing": {"bike": {"targetPower": "NP 205W"}},
+                                   "taper": {"startDate": "2026-09-20", "notes": "x"}}
+    assert "cssSeconds" not in new["zones"]["swim"]
+    assert messages[0] == "Set meta.eventDate" and messages[-1] == "Removed zones.swim.cssSeconds"
+    assert touched == []
+
+
+def test_lists_can_be_appended_inserted_and_trimmed():
+    new, messages, _ = plan_doc.apply_operations(sample_plan(), [
+        {"op": "append_to_list", "path": "raceStrategy.keyRisks", "value": "Heat"},
+        {"op": "append_to_list", "path": "raceStrategy.keyRisks", "value": "Run durability", "index": 0},
+        {"op": "append_to_list", "path": "phases", "value": {"name": "Peak", "startWeek": 3, "endWeek": 4}},
+        {"op": "set_field", "path": "phases.0", "value": None},
+        {"op": "set_field", "path": "phases.-1.endWeek", "value": 5},
+        {"op": "set_field", "path": "raceStrategy.missing", "value": None},   # already absent: no-op
+    ])
+    assert new["raceStrategy"]["keyRisks"] == ["Run durability", "Heat"]
+    assert new["phases"] == [{"name": "Peak", "startWeek": 3, "endWeek": 5}]
+    assert messages == ["Added to raceStrategy.keyRisks", "Added to raceStrategy.keyRisks", "Added to phases",
+                        "Removed phases.0", "Set phases.-1.endWeek"]
 
 
 def test_zone_overrides_validation_and_units():

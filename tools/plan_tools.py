@@ -30,8 +30,9 @@ def _tool_errors(fn):
 
 @_tool_errors
 def get_training_plan(plan_id=None, week_number=None, start_date=None, end_date=None,
-                      include_details=True) -> dict:
-    return plan_service.plan_overview(plan_id, week_number, start_date, end_date, include_details)
+                      include_details=True, sections=None) -> dict:
+    return plan_service.plan_overview(plan_id, week_number, start_date, end_date, include_details,
+                                      sections=sections)
 
 
 @_tool_errors
