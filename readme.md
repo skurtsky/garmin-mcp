@@ -237,6 +237,14 @@ minute-plus a fully serial fetch would take. Five tabs:
   battery, steps vs. goal, resting HR with a 14-day sparkline, HRV status,
   last night's sleep (stages + stats), this week's load by day, and today's
   activities.
+  Tapping the **Recovery** card in *In focus* opens the Recovery page
+  (`/recovery`, `?date=YYYY-MM-DD` for an earlier day): readiness and what's
+  driving it, sleep with a stage timeline, HRV against its baseline over the
+  week, body battery and stress hour by hour, and resting HR / respiration.
+  A date picker goes back up to a year and filter pills narrow the page to the
+  sections you pick. The hourly charts and the stage timeline aren't synced,
+  so they come live from Garmin (cached per day); everything else is the
+  synced daily data.
 - **Trends** — acute:chronic training-load ratio, and HRV / resting HR /
   sleep score / acute load / stress / steps sparkline cards over a 7d/14d/30d
   toggle, plus a 14-day daily-steps chart.
@@ -604,6 +612,7 @@ garmin-mcp/
 │   ├── plan_service.py    # training-plan storage (PostgreSQL) + completion / Garmin links + auto-matching
 │   ├── plan_today.py      # the active plan as the dashboard's Today / Fitness screens show it
 │   ├── plan_tools.py      # training-plan MCP tools
+│   ├── recovery.py        # the Recovery page (/recovery), opened from Today's In focus card
 │   ├── training_plan.py   # /training-plan routes: viewer, upload, plans list, JSON API
 │   ├── assets/plan-viewer.html  # the plan viewer app the server fills with a stored plan
 │   ├── assets/fonts/      # Barlow + Barlow Condensed (OFL) for the plan PDF
