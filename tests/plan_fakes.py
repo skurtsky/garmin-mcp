@@ -185,7 +185,7 @@ class FakePlanDB:
         state = self.states.setdefault((plan_id, workout_id), {
             "workout_id": workout_id, "completed": False, "completed_at": None, "activity_id": None,
             "notes": None, "garmin_workout_id": None, "garmin_scheduled_date": None,
-            "skipped": None, "skipped_at": None, "skipped_auto": False,
+            "skipped": None, "skipped_at": None, "skipped_auto": False, "skip_reason": None,
         })
         state.update(fields, updated_at=self._now())
         return dict(state)

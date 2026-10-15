@@ -327,7 +327,7 @@ def test_skip_by_workout_id_clears_the_completion(plan):
 
     result = plan_tools.skip_plan_workout("w1-mon-swim", reason="Sick")
 
-    assert result["skipped"] is True and result["notes"] == "Sick"
+    assert result["skipped"] is True and result["skipReason"] == "Sick" and "notes" not in result
     assert "completed" not in result and "activityId" not in result and "skippedAuto" not in result
     assert plan_service.completed_map("test-block-2026") == {}
     assert _skipped(plan) == {"w1-mon-swim": "manual"}
@@ -418,3 +418,26 @@ def test_editing_a_skipped_workout_without_moving_it_keeps_the_skip(plan, monkey
                                           "fields": {"name": "Hills"}}], "test")
 
     assert _skipped(plan) == {"w2-tue-run": "manual"}
+
+
+def test_a_reason_on_a_missed_workout_keeps_it_marked_missed(plan):
+    plan_service.plan_overview(today=date(2026, 9, 16))
+
+    result = plan_tools.skip_plan_workout("w1-mon-swim", reason="  Pool closed  ")
+
+    assert result["skipReason"] == "Pool closed" and result["skippedAuto"] is True
+    assert _skipped(plan)["w1-mon-swim"] == "auto"
+    assert "skipReason" not in plan_tools.skip_plan_workout("w1-mon-swim", reason="")   # "" clears it
+    with pytest.raises(ToolError, match="under 200 characters"):
+        plan_tools.skip_plan_workout("w1-mon-swim", reason="x" * 201)
+
+
+def test_the_skip_reason_goes_when_the_skip_does(plan):
+    plan_tools.complete_plan_workout(workout_id="w1-thu-bike", notes="Felt strong")
+    plan_tools.skip_plan_workout("w1-thu-bike", reason="Travel")
+    assert plan.get_workout_states("test-block-2026")["w1-thu-bike"]["notes"] == "Felt strong"
+
+    result = plan_tools.complete_plan_workout(workout_id="w1-thu-bike")
+
+    assert "skipReason" not in result and result["notes"] == "Felt strong"
+    assert plan.get_workout_states("test-block-2026")["w1-thu-bike"]["skip_reason"] is None

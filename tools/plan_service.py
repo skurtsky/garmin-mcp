@@ -165,6 +165,7 @@ def view_payload(row: dict) -> dict:
         carryover = pool.submit(pending_carryover, row)
         (states, briefs) = completions()
         start_times, neighbors, carryover = start_times.result(), neighbors.result(), carryover.result()
+    skipped = skipped_map(states)
     activities = {}
     for wid, s in states.items():
         act = briefs.get(s.get("activity_id"))
@@ -179,7 +180,8 @@ def view_payload(row: dict) -> dict:
         "version": row["version"],
         "readOnly": row["status"] == "archived",
         "completed": {wid: True for wid, s in states.items() if s.get("completed")},
-        "skipped": skipped_map(states),
+        "skipped": skipped,
+        "skipReasons": {wid: states[wid]["skip_reason"] for wid in skipped if states[wid].get("skip_reason")},
         "activities": activities,
         "startTimes": start_times,
         "neighbors": neighbors,
@@ -648,12 +650,13 @@ def _state_dict(state: dict | None) -> dict:
     if out["skipped"]:
         out["skippedAt"] = _iso(state.get("skipped_at"))
         out["skippedAuto"] = bool(state.get("skipped_auto"))
+        out["skipReason"] = state.get("skip_reason")
     return {k: v for k, v in out.items() if v not in (None, False)}
 
 
 # Clears a skip, leaving it to the automatic rule again (a workout whose day
 # has passed without being done is skipped on the next read).
-_NOT_SKIPPED = {"skipped": None, "skipped_at": None, "skipped_auto": False}
+_NOT_SKIPPED = {"skipped": None, "skipped_at": None, "skipped_auto": False, "skip_reason": None}
 
 
 def set_completion(plan_id: str | None, workout_id: str, completed: bool = True,
@@ -684,11 +687,18 @@ def set_completion(plan_id: str | None, workout_id: str, completed: bool = True,
     }
 
 
+MAX_SKIP_REASON = 200
+
+
 def set_skip(plan_id: str | None, workout_id: str, skipped: bool = True,
-             notes: str | None = None, today: date | None = None) -> dict:
+             reason: str | None = None, today: date | None = None) -> dict:
     """Mark a planned workout skipped (clearing any completion), or un-skip
     it. Un-skipping a workout whose day has passed keeps it un-skipped — the
-    automatic skip leaves it alone; a later one goes back to the schedule."""
+    automatic skip leaves it alone; a later one goes back to the schedule.
+
+    ``reason`` says why (None leaves it as is, "" clears it). Skipping a
+    workout that's already skipped only changes the reason, so a missed
+    workout explained afterwards still reads as missed."""
     row = require_editable(plan_id)
     hit = plan_doc.find_workout(row["plan"], workout_id)
     if hit is None:
@@ -696,15 +706,21 @@ def set_skip(plan_id: str | None, workout_id: str, skipped: bool = True,
     week, day, workout = hit
     if workout.get("sport") == "rest":
         raise PlanError("Rest days can't be skipped.")
-    if skipped:
+    reason = reason.strip() if isinstance(reason, str) else reason
+    if reason and len(reason) > MAX_SKIP_REASON:
+        raise PlanError(f"Keep the reason under {MAX_SKIP_REASON} characters.")
+    current = db.get_workout_states(row["id"]).get(workout_id) or {}
+    if skipped and current.get("skipped") and not current.get("completed"):
+        fields = {}
+    elif skipped:
         fields = {"skipped": True, "skipped_at": datetime.now(timezone.utc), "skipped_auto": False,
                   "completed": False, "completed_at": None, "activity_id": None}
     else:
         past = str(day.get("date"))[:10] < (today or local_today()).isoformat()
         fields = {**_NOT_SKIPPED, "skipped": False if past else None}
-    if notes is not None:
-        fields["notes"] = notes or None
-    state = db.upsert_workout_state(row["id"], workout_id, **fields)
+    if skipped and reason is not None:
+        fields["skip_reason"] = reason or None
+    state = db.upsert_workout_state(row["id"], workout_id, **fields) if fields else current
     return {
         "plan_id": row["id"],
         "workout_id": workout_id,

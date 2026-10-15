@@ -203,7 +203,15 @@ def test_auto_skip_leaves_decided_and_completed_workouts_alone():
 def test_skip_columns_are_added_to_an_existing_state_table():
     with db.get_conn() as conn, conn.cursor() as cur:
         cur.execute("ALTER TABLE training_plan_workout_state DROP COLUMN skipped, DROP COLUMN skipped_at, "
-                    "DROP COLUMN skipped_auto")
+                    "DROP COLUMN skipped_auto, DROP COLUMN skip_reason")
     db.ensure_schema()
     row = plan_service.save_upload(sample_plan())
     assert db.upsert_workout_state(row["id"], "w1-mon-swim", skipped=True)["skipped"] is True
+
+
+def test_skip_reason_round_trips():
+    row = plan_service.save_upload(sample_plan())
+    plan_service.set_skip(row["id"], "w1-tue-run", True, "Sick")
+    assert db.get_workout_states(row["id"])["w1-tue-run"]["skip_reason"] == "Sick"
+    plan_service.set_completion(row["id"], "w1-tue-run", True)
+    assert db.get_workout_states(row["id"])["w1-tue-run"]["skip_reason"] is None

@@ -169,6 +169,19 @@ def test_build_ics_events():
     assert run["SUMMARY"] == "Tempo run"
 
 
+def test_build_ics_marks_skipped_workouts():
+    ics = plan_calendar.build_ics(_row(sample_plan()), {"w1-mon-swim"}, "06:00", [], NOW,
+                                  skipped={"w1-tue-run": "Sick", "w1-thu-bike": None, "w1-mon-swim": None})
+    events = {e["UID"].split("@")[0]: e for e in _events(ics)}
+
+    assert events["w1-tue-run"]["SUMMARY"] == "✗ Tempo run"
+    assert events["w1-tue-run"]["DESCRIPTION"].endswith("✗ Skipped — Sick")
+    assert events["w1-thu-bike"]["SUMMARY"] == "✗ Endurance ride"
+    assert events["w1-thu-bike"]["DESCRIPTION"].endswith("✗ Skipped")
+    assert events["w1-mon-swim"]["SUMMARY"] == "✓ Easy swim"     # completed wins
+    assert events["w1-tue-strength"]["SUMMARY"] == "Strength A"
+
+
 def test_build_ics_without_a_plan_is_an_empty_calendar():
     ics = plan_calendar.build_ics(None, set(), "06:00", [], NOW)
 
@@ -342,3 +355,18 @@ def test_activity_week_sessions_carry_start_times(fake_db):
 
     times = {s["workout_id"]: s["start_time"] for s in extras["planned"]}
     assert times["w1-tue-strength"] == "05:30" and times["w1-tue-run"] == "17:30"
+
+
+def test_feed_marks_done_and_skipped_workouts(client, fake_db):
+    plan_service.save_upload(sample_plan())
+    plan_service.set_completion(None, "w1-mon-swim", True)
+    plan_service.set_skip(None, "w1-tue-run", True, "Sick")
+    key = client.post("/training-plan/api/calendar/publish", params=TOKEN).json()["feedPath"].split("key=")[1]
+
+    events = {e["UID"].split("@")[0]: e for e in _events(client.get(plan_calendar.FEED_PATH, params={"key": key}).text)}
+
+    assert events["w1-mon-swim"]["SUMMARY"] == "✓ Easy swim"
+    assert events["w1-tue-run"]["SUMMARY"] == "✗ Tempo run"
+    assert events["w1-tue-run"]["DESCRIPTION"].endswith("✗ Skipped — Sick")
+    # The sample plan is in the past: the rest were missed.
+    assert events["w2-tue-run"]["SUMMARY"] == "✗ Intervals"

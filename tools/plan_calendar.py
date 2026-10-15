@@ -228,7 +228,7 @@ def _fmt_distance(w: dict, imperial: bool) -> str:
     return ""
 
 
-def _details(w: dict, done: bool, imperial: bool) -> str:
+def _details(w: dict, done: bool, imperial: bool, skipped: bool = False, skip_reason: str | None = None) -> str:
     minutes = _minutes(w)
     facts = [str(w.get("sport") or "").capitalize(), w.get("type"),
              _fmt_duration(minutes) if minutes else "", _fmt_distance(w, imperial), w.get("primaryZone")]
@@ -243,6 +243,8 @@ def _details(w: dict, done: bool, imperial: bool) -> str:
                                    w["humanReadable"]).strip())
     if done:
         parts.append("✓ Completed")
+    elif skipped:
+        parts.append("✗ Skipped" + (f" — {skip_reason}" if skip_reason else ""))
     return "\n\n".join(p for p in parts if p)
 
 
@@ -251,8 +253,10 @@ def _stamp(value: datetime) -> str:
 
 
 def build_ics(row: dict | None, completed: set[str], default_time: str, slots: list[dict],
-              now: datetime | None = None) -> str:
-    """The iCalendar text for a plan row (None → an empty calendar)."""
+              now: datetime | None = None, skipped: dict[str, str | None] | None = None) -> str:
+    """The iCalendar text for a plan row (None → an empty calendar).
+    ``skipped`` maps skipped workout ids to their reason (or None)."""
+    skipped = skipped or {}
     now = now or datetime.now(timezone.utc)
     plan = (row or {}).get("plan") or {}
     lines = [
@@ -281,6 +285,7 @@ def build_ics(row: dict | None, completed: set[str], default_time: str, slots: l
                     if not w.get("id"):
                         continue
                     done = w["id"] in completed
+                    missed = not done and w["id"] in skipped
                     # Plan-scoped: workout ids like w1-mon-swim repeat across plans.
                     event = [
                         "BEGIN:VEVENT",
@@ -297,8 +302,8 @@ def build_ics(row: dict | None, completed: set[str], default_time: str, slots: l
                     else:
                         event += [f"DTSTART:{start:%Y%m%dT%H%M%S}", f"DTEND:{end:%Y%m%dT%H%M%S}"]
                     event += [
-                        f"SUMMARY:{_escape(('✓ ' if done else '') + str(w.get('name') or w.get('sport') or 'Workout'))}",
-                        f"DESCRIPTION:{_escape(_details(w, done, imperial))}",
+                        f"SUMMARY:{_escape(('✓ ' if done else '✗ ' if missed else '') + str(w.get('name') or w.get('sport') or 'Workout'))}",
+                        f"DESCRIPTION:{_escape(_details(w, done, imperial, missed, skipped.get(w['id'])))}",
                         f"CATEGORIES:{_escape(w.get('sport') or 'other')}",
                         "END:VEVENT",
                     ]
@@ -312,5 +317,7 @@ def feed() -> str:
     plan_service._require_db()
     default_time, slots = _schedule()
     row = plan_service.active_plan()
-    completed = set(plan_service.completed_map(row["id"])) if row else set()
-    return build_ics(row, completed, default_time, slots)
+    states = plan_service.workout_states(row) if row else {}
+    completed = {wid for wid, s in states.items() if s.get("completed")}
+    skipped = {wid: states[wid].get("skip_reason") for wid in plan_service.skipped_map(states)}
+    return build_ics(row, completed, default_time, slots, skipped=skipped)

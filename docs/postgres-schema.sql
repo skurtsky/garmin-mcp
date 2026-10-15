@@ -208,6 +208,7 @@ CREATE TABLE IF NOT EXISTS training_plan_workout_state (
     skipped                BOOLEAN,
     skipped_at             TIMESTAMPTZ,
     skipped_auto           BOOLEAN NOT NULL DEFAULT FALSE,
+    skip_reason            TEXT,
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (plan_id, workout_id)
 );

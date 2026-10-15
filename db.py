@@ -148,6 +148,7 @@ TRAINING_PLAN_SCHEMA = """
         skipped                BOOLEAN,
         skipped_at             TIMESTAMPTZ,
         skipped_auto           BOOLEAN NOT NULL DEFAULT FALSE,
+        skip_reason            TEXT,
         updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (plan_id, workout_id)
     );
@@ -157,6 +158,7 @@ TRAINING_PLAN_SCHEMA = """
     ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped BOOLEAN;
     ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped_at TIMESTAMPTZ;
     ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped_auto BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skip_reason TEXT;
 """
 
 # The published calendar feed (tools/plan_calendar.py): one row holding the
@@ -1419,7 +1421,7 @@ def get_workout_states(plan_id: str) -> dict[str, dict]:
             cur.execute(
                 """SELECT workout_id, completed, completed_at, activity_id, notes,
                           garmin_workout_id, garmin_scheduled_date, skipped, skipped_at,
-                          skipped_auto, updated_at
+                          skipped_auto, skip_reason, updated_at
                    FROM training_plan_workout_state WHERE plan_id = %s""",
                 (plan_id,),
             )
@@ -1450,7 +1452,7 @@ def get_season_plans(archived_since: str) -> tuple[list[dict], dict[str, set[str
 
 
 _STATE_FIELDS = ("completed", "completed_at", "activity_id", "notes",
-                 "garmin_workout_id", "garmin_scheduled_date", "skipped", "skipped_at", "skipped_auto")
+                 "garmin_workout_id", "garmin_scheduled_date", "skipped", "skipped_at", "skipped_auto", "skip_reason")
 
 
 def upsert_workout_state(plan_id: str, workout_id: str, **fields) -> dict:
@@ -1471,7 +1473,7 @@ def upsert_workout_state(plan_id: str, workout_id: str, **fields) -> dict:
                     ON CONFLICT (plan_id, workout_id) DO UPDATE SET {updates}
                     RETURNING workout_id, completed, completed_at, activity_id, notes,
                               garmin_workout_id, garmin_scheduled_date, skipped, skipped_at,
-                              skipped_auto, updated_at""",
+                              skipped_auto, skip_reason, updated_at""",
                 (plan_id, workout_id, *values),
             )
             return cur.fetchone()

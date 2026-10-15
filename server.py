@@ -554,8 +554,10 @@ def skip_plan_workout(
     Args:
         workout_id: Planned workout id (from get_training_plan).
         skipped: False un-skips it.
-        reason: Optional short why (e.g. "Sick — head cold"), stored as the
-            workout's note.
+        reason: Optional short why (e.g. "Sick — head cold"), shown in the
+            plan and calendar (skipReason). On an already-skipped workout
+            (including one skipped automatically) it just records the why;
+            "" clears it.
         plan_id: Omit for the active plan.
     """
     return plan_tools.skip_plan_workout(workout_id, skipped, reason, plan_id)
