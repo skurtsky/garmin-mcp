@@ -80,6 +80,9 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     assert server.pop("startTimes")["w1-thu-bike"] == "06:00"   # the default start time
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
                       "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {},
+                      # The sample plan is in the past, so the rest were missed.
+                      "skipped": {"w1-mon-swim": "auto", "w1-tue-strength": "auto",
+                                  "w1-thu-bike": "auto", "w2-tue-run": "auto"},
                       "neighbors": {}, "carryover": None}
     assert 'data-nav="plan" aria-current="page"' in r.text   # the site nav, on Plan
 
@@ -440,6 +443,19 @@ def test_api_completion_round_trip(client, fake_db):
     assert r.json()["completed"] == {}
     assert client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "nope"}).status_code == 400
     assert client.post("/training-plan/api/completion", params=TOKEN, json={}).status_code == 400
+
+
+def test_api_skip_round_trip(client, fake_db):
+    _upload(client, sample_plan())
+    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
+
+    r = client.post("/training-plan/api/skip", params=TOKEN, json={"workout_id": "w1-tue-run"})
+    assert r.json()["skipped"]["w1-tue-run"] == "manual" and r.json()["completed"] == {}
+    # Un-skipped by hand, a past workout stays that way.
+    r = client.post("/training-plan/api/skip", params=TOKEN, json={"workout_id": "w1-tue-run", "skipped": False})
+    assert "w1-tue-run" not in r.json()["skipped"]
+    assert client.post("/training-plan/api/skip", params=TOKEN, json={"workout_id": "nope"}).status_code == 400
+    assert client.post("/training-plan/api/skip", params=TOKEN, json={}).status_code == 400
 
 
 def test_api_revisions_and_restore(client, fake_db):

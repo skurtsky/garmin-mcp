@@ -183,3 +183,27 @@ def test_season_reads_plans_and_completions_together():
 
     assert [r["id"] for r in rows] == ["test-block-2026"]
     assert done == {"test-block-2026": {"w1-tue-run"}}
+
+
+def test_auto_skip_leaves_decided_and_completed_workouts_alone():
+    row = plan_service.save_upload(sample_plan())
+    db.upsert_workout_state(row["id"], "w1-mon-swim", completed=True)
+    db.upsert_workout_state(row["id"], "w1-tue-run", skipped=False)
+
+    skipped = db.auto_skip_workouts(row["id"], ["w1-mon-swim", "w1-tue-run", "w1-tue-strength", "w1-thu-bike"])
+
+    assert sorted(skipped) == ["w1-thu-bike", "w1-tue-strength"]
+    states = db.get_workout_states(row["id"])
+    assert states["w1-tue-strength"]["skipped"] is True and states["w1-tue-strength"]["skipped_auto"] is True
+    assert states["w1-tue-strength"]["skipped_at"] is not None
+    assert states["w1-mon-swim"]["skipped"] is None and states["w1-tue-run"]["skipped"] is False
+    assert db.auto_skip_workouts(row["id"], ["w1-thu-bike"]) == []   # already decided
+
+
+def test_skip_columns_are_added_to_an_existing_state_table():
+    with db.get_conn() as conn, conn.cursor() as cur:
+        cur.execute("ALTER TABLE training_plan_workout_state DROP COLUMN skipped, DROP COLUMN skipped_at, "
+                    "DROP COLUMN skipped_auto")
+    db.ensure_schema()
+    row = plan_service.save_upload(sample_plan())
+    assert db.upsert_workout_state(row["id"], "w1-mon-swim", skipped=True)["skipped"] is True

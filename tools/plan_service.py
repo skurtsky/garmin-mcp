@@ -5,8 +5,8 @@
 
 Plan documents are validated and edited by tools/plan_doc.py; this module
 stores them (db.py) and joins in the per-workout state kept beside them —
-completion, the Garmin activity that completed a workout, and the Garmin
-Connect workout the coach scheduled for it.
+completion (or a skip), the Garmin activity that completed a workout, and the
+Garmin Connect workout the coach scheduled for it.
 
 Every function raises ``PlanStorageUnavailable`` when DATABASE_URL isn't set,
 ``LookupError`` for an unknown plan, and ``plan_doc.PlanError`` for an invalid
@@ -109,6 +109,44 @@ def completed_map(plan_id: str) -> dict[str, bool]:
     return {wid: True for wid, s in db.get_workout_states(plan_id).items() if s.get("completed")}
 
 
+def workout_states(row: dict, today: date | None = None) -> dict[str, dict]:
+    """{workout_id: state} for a plan, after skipping the active plan's
+    workouts whose day has passed without them being done."""
+    states = db.get_workout_states(row["id"])
+    if skip_missed(row, states, today):
+        states = db.get_workout_states(row["id"])
+    return states
+
+
+def skip_missed(row: dict, states: dict, today: date | None = None) -> list[str]:
+    """Mark the active plan's workouts skipped once their day has gone by
+    without being completed — unless a skip was already decided (un-skipping
+    by hand sticks). A late sync still completes them. Returns the ids
+    skipped. Never raises: a failure here must not break the read."""
+    if row.get("status") != "active":
+        return []
+    today_iso = (today or local_today()).isoformat()
+    due = [
+        w["id"] for _, d, w in plan_doc.iter_workouts(row["plan"])
+        if w.get("id") and w.get("sport") != "rest" and str(d.get("date"))[:10] < today_iso
+        and not (states.get(w["id"]) or {}).get("completed")
+        and (states.get(w["id"]) or {}).get("skipped") is None
+    ]
+    if not due:
+        return []
+    try:
+        return db.auto_skip_workouts(row["id"], due)
+    except Exception:
+        logger.exception("Skipping missed workouts failed")
+        return []
+
+
+def skipped_map(states: dict) -> dict[str, str]:
+    """{workout_id: "auto" | "manual"} for the skipped workouts."""
+    return {wid: "auto" if s.get("skipped_auto") else "manual"
+            for wid, s in states.items() if s.get("skipped") and not s.get("completed")}
+
+
 def view_payload(row: dict) -> dict:
     """What the viewer needs besides the plan itself: which workouts are
     complete, the Garmin activity each one was matched to, and each
@@ -118,7 +156,7 @@ def view_payload(row: dict) -> dict:
     from tools import plan_calendar   # it imports this module
 
     def completions():
-        states = db.get_workout_states(row["id"])
+        states = workout_states(row)
         return states, db.get_activities_by_ids([s["activity_id"] for s in states.values() if s.get("activity_id")])
 
     with ThreadPoolExecutor(max_workers=3) as pool:      # independent round trips
@@ -141,6 +179,7 @@ def view_payload(row: dict) -> dict:
         "version": row["version"],
         "readOnly": row["status"] == "archived",
         "completed": {wid: True for wid, s in states.items() if s.get("completed")},
+        "skipped": skipped_map(states),
         "activities": activities,
         "startTimes": start_times,
         "neighbors": neighbors,
@@ -544,6 +583,7 @@ def apply_operations(plan_id: str | None, operations: list, source: str,
     """
     row = require_editable(plan_id)
     result = {}
+    old_dates = {w.get("id"): str(d.get("date"))[:10] for _, d, w in plan_doc.iter_workouts(row["plan"])}
 
     def mutate(plan):
         new_plan, messages, touched = plan_doc.apply_operations(plan, operations)
@@ -554,7 +594,22 @@ def apply_operations(plan_id: str | None, operations: list, source: str,
         return new_plan, summary
 
     new_row = db.update_training_plan(row["id"], mutate, source)
+    _unskip_rescheduled(new_row, old_dates, result.get("touched") or [])
     return {"row": new_row, **result}
+
+
+def _unskip_rescheduled(row: dict, old_dates: dict, touched: list) -> None:
+    """A skipped workout moved to today or later is back on the schedule."""
+    today = local_today().isoformat()
+    moved = [w["id"] for _, d, w in plan_doc.iter_workouts(row["plan"])
+             if w.get("id") in touched and str(d.get("date"))[:10] >= today
+             and str(d.get("date"))[:10] != old_dates.get(w["id"])]
+    if not moved:
+        return
+    states = db.get_workout_states(row["id"])
+    for wid in moved:
+        if (states.get(wid) or {}).get("skipped") is not None:
+            db.upsert_workout_state(row["id"], wid, **_NOT_SKIPPED)
 
 
 def restore_revision(plan_id: str | None, version: int, source: str) -> dict:
@@ -588,8 +643,17 @@ def _state_dict(state: dict | None) -> dict:
         "notes": state.get("notes"),
         "garminWorkoutId": state.get("garmin_workout_id"),
         "garminScheduledDate": _iso(state.get("garmin_scheduled_date")),
+        "skipped": bool(state.get("skipped")) and not state.get("completed"),
     }
+    if out["skipped"]:
+        out["skippedAt"] = _iso(state.get("skipped_at"))
+        out["skippedAuto"] = bool(state.get("skipped_auto"))
     return {k: v for k, v in out.items() if v not in (None, False)}
+
+
+# Clears a skip, leaving it to the automatic rule again (a workout whose day
+# has passed without being done is skipped on the next read).
+_NOT_SKIPPED = {"skipped": None, "skipped_at": None, "skipped_auto": False}
 
 
 def set_completion(plan_id: str | None, workout_id: str, completed: bool = True,
@@ -601,6 +665,7 @@ def set_completion(plan_id: str | None, workout_id: str, completed: bool = True,
     fields = {
         "completed": bool(completed),
         "completed_at": datetime.now(timezone.utc) if completed else None,
+        **_NOT_SKIPPED,
     }
     if activity_id is not None or not completed:
         fields["activity_id"] = activity_id if completed else None
@@ -616,6 +681,38 @@ def set_completion(plan_id: str | None, workout_id: str, completed: bool = True,
         "week": week.get("weekNumber"),
         **_state_dict(state),
         "completed": bool(completed),
+    }
+
+
+def set_skip(plan_id: str | None, workout_id: str, skipped: bool = True,
+             notes: str | None = None, today: date | None = None) -> dict:
+    """Mark a planned workout skipped (clearing any completion), or un-skip
+    it. Un-skipping a workout whose day has passed keeps it un-skipped — the
+    automatic skip leaves it alone; a later one goes back to the schedule."""
+    row = require_editable(plan_id)
+    hit = plan_doc.find_workout(row["plan"], workout_id)
+    if hit is None:
+        raise PlanError(f"No workout with id {workout_id!r} in this plan.")
+    week, day, workout = hit
+    if workout.get("sport") == "rest":
+        raise PlanError("Rest days can't be skipped.")
+    if skipped:
+        fields = {"skipped": True, "skipped_at": datetime.now(timezone.utc), "skipped_auto": False,
+                  "completed": False, "completed_at": None, "activity_id": None}
+    else:
+        past = str(day.get("date"))[:10] < (today or local_today()).isoformat()
+        fields = {**_NOT_SKIPPED, "skipped": False if past else None}
+    if notes is not None:
+        fields["notes"] = notes or None
+    state = db.upsert_workout_state(row["id"], workout_id, **fields)
+    return {
+        "plan_id": row["id"],
+        "workout_id": workout_id,
+        "name": workout.get("name"),
+        "date": day.get("date"),
+        "week": week.get("weekNumber"),
+        **_state_dict(state),
+        "skipped": bool(skipped),
     }
 
 
@@ -698,8 +795,9 @@ def match_new_activities(activity_ids: list[int], plan_id: str | None = None) ->
     """Tick off the planned workouts that newly synced activities completed.
 
     Each activity completes the unticked workout on its date with the same
-    sport (the closest in duration when there are several). Only activities
-    synced for the first time are passed in, so un-ticking a workout in the
+    sport (the closest in duration when there are several) — a skipped one
+    too, so a sync that lands after the day passed still ticks it. Only
+    activities synced for the first time are passed in, so un-ticking a workout in the
     plan is never undone by the next sync. Returns one entry per tick.
     """
     if not activity_ids or not db.is_configured():
@@ -726,7 +824,7 @@ def match_new_activities(activity_ids: list[int], plan_id: str | None = None) ->
         workout = _closest(hits, act)[2]
         states[workout["id"]] = db.upsert_workout_state(
             row["id"], workout["id"], completed=True,
-            completed_at=datetime.now(timezone.utc), activity_id=act["garmin_id"],
+            completed_at=datetime.now(timezone.utc), activity_id=act["garmin_id"], **_NOT_SKIPPED,
         )
         linked.add(act["garmin_id"])
         matched.append({"workout_id": workout["id"], "activity_id": act["garmin_id"]})
@@ -829,8 +927,8 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
     """
     row = require_plan(plan_id)
     plan = row["plan"]
-    states = db.get_workout_states(row["id"])
     today = today or local_today()
+    states = workout_states(row, today)
 
     weeks = plan.get("weeks") or []
     if week_number is not None:
@@ -846,6 +944,8 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
         current = plan_doc.current_week_number(plan, today)
         selected = [w for w in weeks if current is not None and w.get("weekNumber") in (current, current + 1)]
 
+    skipped = skipped_map(states)
+
     def week_line(w):
         ids = [x.get("id") for d in w.get("days") or [] for x in d.get("workouts") or [] if x.get("sport") != "rest"]
         return {
@@ -853,6 +953,7 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
             "phase": w.get("phase"), "isRecoveryWeek": w.get("isRecoveryWeek", False),
             "targetHours": w.get("targetHours"), "plannedHours": (w.get("summary") or {}).get("totalHours"),
             "workouts": len(ids), "completed": sum(1 for i in ids if (states.get(i) or {}).get("completed")),
+            "skipped": sum(1 for i in ids if i in skipped),
         }
 
     if sections is not None and (not isinstance(sections, list)

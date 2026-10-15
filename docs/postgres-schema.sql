@@ -193,7 +193,9 @@ CREATE TABLE IF NOT EXISTS training_plan_revisions (
 
 -- Per-workout state kept outside the plan JSON so replacing or restoring the
 -- plan content never loses it: completion, the matching Garmin activity, and
--- the Garmin Connect workout the coach scheduled for it.
+-- the Garmin Connect workout the coach scheduled for it, and whether it was
+-- skipped (NULL until decided; FALSE when un-skipped by hand, so the automatic
+-- skip of a missed workout never overrides the athlete).
 CREATE TABLE IF NOT EXISTS training_plan_workout_state (
     plan_id                TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
     workout_id             TEXT NOT NULL,
@@ -203,6 +205,9 @@ CREATE TABLE IF NOT EXISTS training_plan_workout_state (
     notes                  TEXT,
     garmin_workout_id      BIGINT,
     garmin_scheduled_date  DATE,
+    skipped                BOOLEAN,
+    skipped_at             TIMESTAMPTZ,
+    skipped_auto           BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (plan_id, workout_id)
 );

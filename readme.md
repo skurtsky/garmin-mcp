@@ -106,7 +106,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 ### Training Plan
 
 `get_training_plan`, `list_training_plans`, `set_training_plan_status`,
-`amend_training_plan`, `complete_plan_workout`, `link_plan_workout_to_garmin`,
+`amend_training_plan`, `complete_plan_workout`, `skip_plan_workout`, `link_plan_workout_to_garmin`,
 `get_training_plan_revisions` and `restore_training_plan_revision` read and
 edit the Claude Coach plan stored in PostgreSQL — see
 [Training Plan](#training-plan).
@@ -367,6 +367,7 @@ to, so plan edits show up in the calendar without re-importing anything.
 | `set_training_plan_status` | Queue a plan as future (it takes over on its start date) or archive one. It can't activate a plan or touch the active one — that stays with the athlete in the web app |
 | `amend_training_plan` | Atomic edits with a reason: add / update / move / remove workouts, edit a week, set zones or units |
 | `complete_plan_workout` | Mark a planned workout complete by id, or from a Garmin activity (matched by date and sport) |
+| `skip_plan_workout` | Mark a planned workout skipped (or un-skip it), with an optional reason. Workouts whose day passes undone are skipped automatically |
 | `link_plan_workout_to_garmin` | Record the Garmin Connect workout scheduled for a planned workout, so it isn't scheduled twice |
 | `get_training_plan_revisions` / `restore_training_plan_revision` | History and undo |
 

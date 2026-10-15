@@ -75,6 +75,13 @@ def complete_plan_workout(workout_id=None, activity_id=None, activity_date=None,
 
 
 @_tool_errors
+def skip_plan_workout(workout_id: str, skipped=True, reason=None, plan_id=None) -> dict:
+    if not workout_id:
+        raise PlanError("Give the workout_id (from get_training_plan).")
+    return plan_service.set_skip(plan_id, workout_id, skipped, reason)
+
+
+@_tool_errors
 def link_plan_workout_to_garmin(workout_id: str, garmin_workout_id=None, scheduled_date=None,
                                 plan_id=None) -> dict:
     return plan_service.link_garmin_workout(plan_id, workout_id, garmin_workout_id, scheduled_date)

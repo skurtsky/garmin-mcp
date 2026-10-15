@@ -405,11 +405,12 @@ def get_training_plan(
 
     Always returns the plan meta, version, current thresholds (FTP, LTHRs,
     threshold pace, CSS — including any updated in the viewer), phases, and a
-    one-line summary per week (planned vs target hours, completed count).
-    Workout detail is returned for week_number, or for the weeks overlapping
-    start_date..end_date, or by default for the current and next week. Each
-    workout carries its id, date, completion state, the Garmin activity that
-    completed it, and any Garmin Connect workout already scheduled for it
+    one-line summary per week (planned vs target hours, completed and
+    skipped counts). Workout detail is returned for week_number, or for the
+    weeks overlapping start_date..end_date, or by default for the current and
+    next week. Each workout carries its id, date, completion state, whether
+    it was skipped (skippedAuto: missed, its day passed undone), the Garmin
+    activity that completed it, and any Garmin Connect workout already scheduled for it
     (garminWorkoutId) — check that before scheduling to avoid duplicates.
     When the active plan just took over from another and the two plans'
     thresholds differ, thresholdCarryover lists them (the athlete picks which
@@ -532,6 +533,32 @@ def complete_plan_workout(
     """
     return plan_tools.complete_plan_workout(workout_id, activity_id, activity_date, sport,
                                            notes, completed, plan_id)
+
+
+@mcp.tool()
+def skip_plan_workout(
+    workout_id: str,
+    skipped: bool = True,
+    reason: Optional[str] = None,
+    plan_id: Optional[str] = None,
+) -> dict:
+    """
+    Mark a planned workout skipped — the athlete isn't doing it (sick,
+    travelling, swapped for rest) — or un-skip it. Skipping clears any
+    completion. Workouts whose day passes without being completed are
+    skipped automatically (skippedAuto in get_training_plan); a late-synced
+    activity still completes them. Un-skipping a past workout keeps it
+    un-skipped; moving a skipped workout to today or later (amend_training_plan)
+    puts it back on the schedule.
+
+    Args:
+        workout_id: Planned workout id (from get_training_plan).
+        skipped: False un-skips it.
+        reason: Optional short why (e.g. "Sick — head cold"), stored as the
+            workout's note.
+        plan_id: Omit for the active plan.
+    """
+    return plan_tools.skip_plan_workout(workout_id, skipped, reason, plan_id)
 
 
 @mcp.tool()
