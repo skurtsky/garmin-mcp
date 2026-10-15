@@ -30,6 +30,7 @@ JSON API used by the viewer:
     GET  /training-plan/api/plan         — {plan, id, status, version, readOnly, completed}
     POST /training-plan/api/operations   — {operations: [...]} → same shape
     POST /training-plan/api/completion   — {workout_id, completed} → same shape
+    POST /training-plan/api/skip         — {workout_id, skipped, reason} → same shape
     GET  /training-plan/api/revisions    — [{version, source, summary, created_at}]
     POST /training-plan/api/revisions/{version}/restore → same shape as /api/plan
     POST /training-plan/api/carryover    — {keys: [...]}: copy the outgoing plan's thresholds → same shape
@@ -875,6 +876,22 @@ async def api_completion(request):
     return _plan_response(row)
 
 
+async def api_skip(request):
+    try:
+        body = await _json_body(request)
+        workout_id = body.get("workout_id")
+        if not isinstance(workout_id, str) or not workout_id:
+            raise PlanError("workout_id is required.")
+        reason = body.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise PlanError("reason must be text.")
+        plan_service.set_skip(_plan_param(request), workout_id, bool(body.get("skipped", True)), reason)
+        row = plan_service.require_plan(_plan_param(request))
+    except (PlanStorageUnavailable, LookupError, PlanError) as e:
+        return _api_error(e)
+    return _plan_response(row)
+
+
 async def api_carryover(request):
     """POST /training-plan/api/carryover — {keys}: the thresholds to copy over."""
     try:
@@ -1071,6 +1088,7 @@ ROUTES = [
     Route("/training-plan/api/plan", api_get_plan, methods=["GET"]),
     Route("/training-plan/api/operations", api_operations, methods=["POST"]),
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
+    Route("/training-plan/api/skip", api_skip, methods=["POST"]),
     Route("/training-plan/api/carryover", api_carryover, methods=["POST"]),
     Route("/training-plan/api/carryover/dismiss", api_carryover_dismiss, methods=["POST"]),
     Route("/training-plan/api/revisions", api_revisions, methods=["GET"]),

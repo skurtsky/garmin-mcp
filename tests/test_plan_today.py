@@ -125,7 +125,8 @@ def test_context_for_a_session_day(plan):
     assert ctx["tomorrow"] == []
     week = ctx["week"]
     assert week["done_hours"] == 1.5 and week["plan_hours"] == round((45 + 50 + 45 + 90) / 60, 1)
-    assert [d["state"] for d in week["days"]] == ["planned", "planned", "rest", "done", "rest", "rest", "rest"]
+    # Monday and Tuesday went by undone, so they were skipped.
+    assert [d["state"] for d in week["days"]] == ["skipped", "skipped", "rest", "done", "rest", "rest", "rest"]
     assert week["days"][3]["is_today"]
 
 

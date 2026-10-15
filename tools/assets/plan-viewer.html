@@ -29,6 +29,7 @@
   --shadow-sm: 0 0 0 1px #3f424d;
   --shadow-md: 0 0 0 1px #595d6c, 0 6px 18px rgba(0,0,0,0.55);
   --color-danger:#e0736f; --color-knob:#e9e9ed;
+  --color-skip:#d9a441;   /* a skipped workout's dash */
   --shadow-lg: 0 0 0 1px #9397ab, 0 16px 40px rgba(0,0,0,0.65);
 }
 html[data-theme=light] {
@@ -41,6 +42,7 @@ html[data-theme=light] {
   --shadow-sm:0 0 0 1px #e2e5f0; --shadow-md:0 0 0 1px #cfd3e5,0 6px 18px rgba(28,30,42,.10);
   --shadow-lg:0 0 0 1px #cfd3e5,0 16px 40px rgba(28,30,42,.18);
   --color-danger:#c4524d; --color-knob:#ffffff;
+  --color-skip:#8f650c;
   color-scheme: light;
 }
 *, *::before, *::after { box-sizing: border-box; }
@@ -169,6 +171,21 @@ a:hover { color: var(--color-accent); }
 .wcard.today { box-shadow: 0 0 0 1px var(--color-neutral-700); }
 .wcard-garmin { display:flex; align-items:center; gap:4px; font-size:11px; margin-top:5px; text-decoration:none; width:fit-content; }
 .wcard-garmin:hover { text-decoration:underline; }
+.wcard-skipped { font-size:11px; font-weight:500; color:var(--color-skip); margin-top:4px; letter-spacing:.02em;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  width:0; min-width:100%; }   /* truncate to the card, never widen the day column */
+.wcard-skip-reason { font-weight:400; color:var(--color-neutral-400); }
+.skip-reason { margin-top:4px; color:var(--color-neutral-300); font-style:italic; overflow-wrap:anywhere; }
+.skip-note-actions { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:6px; font-size:12px; color:var(--color-neutral-400); }
+.link-btn { background:none; border:none; padding:0; font:inherit; font-weight:500; color:var(--color-skip); cursor:pointer; text-decoration:underline; text-underline-offset:3px; }
+.skip-form { margin-bottom:12px; padding:12px; border-radius:var(--radius-md);
+  background: color-mix(in srgb, var(--color-skip) 10%, transparent); border:1px solid color-mix(in srgb, var(--color-skip) 40%, transparent); }
+.skip-form label { display:block; font-size:13px; font-weight:500; margin-bottom:6px; }
+.skip-optional { font-weight:400; font-size:11px; color:var(--color-neutral-400); margin-left:4px; }
+.skip-hint { font-size:11.5px; color:var(--color-neutral-400); margin-top:6px; }
+.skip-note { display:flex; align-items:flex-start; gap:8px; font-size:13px; margin-bottom:12px; padding:10px 12px; color:var(--color-text);
+  border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-skip) 10%, transparent); border:1px solid color-mix(in srgb, var(--color-skip) 40%, transparent); }
+.skip-note svg { flex:0 0 auto; color:var(--color-skip); margin-top:2px; }
 .garmin-link { display:flex; align-items:center; gap:8px; font-size:13px; margin-bottom:12px; padding:10px 12px; text-decoration:none;
   border-radius: var(--radius-md); background: var(--color-neutral-900); border:1px solid var(--color-neutral-800); }
 .garmin-link:hover { border-color: currentColor; }
@@ -243,7 +260,7 @@ function api(path, body) {
 }
 function applyServer(data) {
   PLAN = data.plan;
-  SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {},
+  SERVER = Object.assign({}, SERVER, { version: data.version, status: data.status, completed: data.completed || {}, skipped: data.skipped || {}, skipReasons: data.skipReasons || {},
     activities: data.activities || {}, startTimes: data.startTimes || {}, carryover: data.carryover || null });
   syncStateFromPlan();
   state.revisions = null;
@@ -290,6 +307,7 @@ const ICONS = {
   x:'<path d="M205.7 194.3a8 8 0 0 1-11.4 11.4L128 139.3l-66.3 66.4a8 8 0 0 1-11.4-11.4l66.4-66.3-66.4-66.3a8 8 0 0 1 11.4-11.4l66.3 66.4 66.3-66.4a8 8 0 0 1 11.4 11.4L139.3 128Z"/>',
   circle:'<path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24Zm0 192a88 88 0 1 1 88-88 88.1 88.1 0 0 1-88 88Z"/>',
   check:'<path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24Zm45.7 85.7-56 56a8 8 0 0 1-11.4 0l-24-24a8 8 0 0 1 11.4-11.4L112 148.7l50.3-50.4a8 8 0 0 1 11.4 11.4Z"/>',
+  minus:'<path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24Zm40 112H88a8 8 0 0 1 0-16h80a8 8 0 0 1 0 16Z"/>',
   hourglass:'<path d="M200 75.3V40h8a8 8 0 0 0 0-16H48a8 8 0 0 0 0 16h8v35.3a44 44 0 0 0 17.6 35.2L102.7 128l-29.1 21.5A44 44 0 0 0 56 184.7V216h-8a8 8 0 0 0 0 16h160a8 8 0 0 0 0-16h-8v-31.3a44 44 0 0 0-17.6-35.2L153.3 128l29.1-21.5A44 44 0 0 0 200 75.3Z"/>',
   down:'<path d="M74.3 85.7a8 8 0 0 1 11.4-11.4L120 108.7V32a8 8 0 0 1 16 0v76.7l34.3-34.4a8 8 0 0 1 11.4 11.4l-48 48a8 8 0 0 1-11.4 0ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
   up:'<path d="M74.3 101.7 122.3 53.7a8 8 0 0 1 11.4 0l48 48a8 8 0 0 1-11.4 11.4L136 78.6V152a8 8 0 0 1-16 0V78.6l-34.3 34.5a8 8 0 0 1-11.4-11.4ZM216 136a8 8 0 0 0-8 8v56H48v-56a8 8 0 0 0-16 0v56a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16v-56a8 8 0 0 0-8-8Z"/>',
@@ -438,6 +456,9 @@ const state = {
   planView: initialView(),                   // 'week' | 'month'; month only applies on desktop
   monthKey: initialMonth(),                  // 'YYYY-MM'
   completed: {},
+  skipped: {},                     // {workout id: 'auto' | 'manual'}
+  skipReasons: {},                 // {workout id: why it was skipped}
+  skipDraft: null,                 // {id, text}: the workout dialog's "why skip?" form, while open
   activities: {},
   unit: 'metric',
   zoneSport: PLAN.zones?.bike ? 'bike' : (PLAN.zones?.run ? 'run' : 'swim'),
@@ -467,6 +488,8 @@ function defaultUnit() {
 function syncStateFromPlan() {
   ZONE_DEFAULTS = zoneDefaults();
   state.completed = Object.assign({}, SERVER.completed || {});
+  state.skipped = Object.assign({}, SERVER.skipped || {});
+  state.skipReasons = Object.assign({}, SERVER.skipReasons || {});
   state.activities = Object.assign({}, SERVER.activities || {});
   state.unit = PLAN.unit || defaultUnit();
   state.overrides = Object.assign({}, ZONE_DEFAULTS, PLAN.overrides || {});
@@ -607,9 +630,10 @@ function stepMonth(delta) {
 function monthChip(w) {
   const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
   const done = !!state.completed[w.id];
+  const skipped = !done && !!state.skipped[w.id];
   const race = w.sport === 'race';
-  return '<div class="month-chip' + (done ? ' done' : '') + (race ? ' race' : '') + '" data-open="' + esc(w.id) + '" style="--c:' + color + ';">'
-    + (done ? icon('check', 11) : race ? icon('flag', 11) : '')
+  return '<div class="month-chip' + (done ? ' done' : '') + (skipped ? ' skipped' : '') + (race ? ' race' : '') + '" data-open="' + esc(w.id) + '" style="--c:' + color + ';"' + (skipped ? ' title="Skipped' + (state.skipReasons[w.id] ? ' — ' + esc(state.skipReasons[w.id]) : '') + '"' : '') + '>'
+    + (done ? icon('check', 11) : skipped ? '<span class="skip-mark">' + icon('minus', 11) + '</span>' : race ? icon('flag', 11) : '')
     + '<span class="month-chip-txt"><span class="month-chip-name">' + esc(w.name || w.title || w.sport) + '</span>'
     + (w.durationMinutes ? '<span class="month-chip-dur">' + esc(fmtDuration(w.durationMinutes)) + '</span>' : '') + '</span></div>';
 }
@@ -701,9 +725,11 @@ function neighborCardHtml(nk) {
 }
 function monthStats(key) {
   const ws = allWorkouts().filter(x => x.date.slice(0, 7) === key && x.wo.sport !== 'rest');
-  return { min: ws.reduce((sum, x) => sum + (Number(x.wo.durationMinutes) || 0), 0), n: ws.length, done: ws.filter(x => state.completed[x.wo.id]).length };
+  return { min: ws.reduce((sum, x) => sum + (Number(x.wo.durationMinutes) || 0), 0), n: ws.length, done: ws.filter(x => state.completed[x.wo.id]).length,
+    skipped: ws.filter(x => isSkipped(x.wo.id)).length };
 }
 
+function isSkipped(id) { return !state.completed[id] && !!state.skipped[id]; }
 function workoutById(id) { const hit = allWorkouts().find(x => x.wo.id === id); return hit || null; }
 
 function fmtKm(km) { if (km == null) return ''; return state.unit === 'imperial' ? (km*0.621371).toFixed(1)+'mi' : km+'km'; }
@@ -738,19 +764,26 @@ function garminLine(w, color) {
 function workoutCard(w, dateStr) {
   const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
   const done = !!state.completed[w.id];
+  const skipped = isSkipped(w.id);
   const isToday = dateStr === todayStr();
-  const faded = done && !isToday;
+  const faded = (done || skipped) && !isToday;
   const dist = distanceLabel(w);
   const meta = [startTimeOf(w), fmtDuration(w.durationMinutes), dist, w.primaryZone].filter(Boolean).map(esc).join(' · ');
-  return '<div class="card elev-sm wcard' + (isToday ? ' today' : '') + '"' + (READ_ONLY ? '' : ' draggable="true" data-drag-id="' + esc(w.id) + '"') + ' data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (faded ? 0.55 : 1) + ';">'
+  /* Done: a tick in the sport colour; skipped: a dash in --color-skip; else an open circle. */
+  const markColor = done ? color : skipped ? 'var(--color-skip)' : 'var(--color-neutral-600)';
+  const mark = icon(done ? 'check' : skipped ? 'minus' : 'circle');
+  const markTitle = done ? 'Mark incomplete' : skipped ? 'Skipped — mark complete' : 'Mark complete';
+  return '<div class="card elev-sm wcard' + (isToday ? ' today' : '') + '"' + (READ_ONLY ? '' : ' draggable="true" data-drag-id="' + esc(w.id) + '"') + ' data-open="' + esc(w.id) + '" style="border-left:3px solid ' + color + '; opacity:' + (!faded ? 1 : skipped ? 0.7 : 0.55) + ';">'
     + '<div style="display:flex; justify-content:space-between; gap:8px; align-items:flex-start;">'
       + '<span class="tag" style="background:' + tint(color) + '; color:' + color + '; font-size:10px;">' + esc(w.sport) + '</span>'
       + (READ_ONLY
-        ? '<span style="line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</span>'
-        : '<button type="button" data-toggle="' + esc(w.id) + '" title="' + (done ? 'Mark incomplete' : 'Mark complete') + '" style="background:none; border:none; cursor:pointer; padding:0; line-height:1; color:' + (done ? color : 'var(--color-neutral-600)') + ';">' + icon(done ? 'check' : 'circle') + '</button>')
+        ? '<span style="line-height:1; color:' + markColor + ';"' + (skipped ? ' title="Skipped"' : '') + '>' + mark + '</span>'
+        : '<button type="button" data-toggle="' + esc(w.id) + '" title="' + markTitle + '" aria-label="' + markTitle + '" style="background:none; border:none; cursor:pointer; padding:0; line-height:1; color:' + markColor + ';">' + mark + '</button>')
     + '</div>'
-    + '<div style="font-size:13.5px; font-weight:500; margin-top:6px; text-decoration:' + (faded ? 'line-through' : 'none') + ';">' + esc(w.name) + '</div>'
+    + '<div style="font-size:13.5px; font-weight:500; margin-top:6px; text-decoration:' + (faded && done ? 'line-through' : 'none') + ';">' + esc(w.name) + '</div>'
     + '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:3px;">' + meta + '</div>'
+    + (skipped ? '<div class="wcard-skipped"' + (state.skipReasons[w.id] ? ' title="' + esc(state.skipReasons[w.id]) + '"' : '') + '>Skipped'
+        + (state.skipReasons[w.id] ? '<span class="wcard-skip-reason"> · ' + esc(state.skipReasons[w.id]) + '</span>' : '') + '</div>' : '')
     + garminLine(w, color)
   + '</div>';
 }
@@ -861,6 +894,7 @@ function planTab() {
 
   const nonRest = allWorkouts().filter(x => x.wo.sport !== 'rest');
   const doneCount = nonRest.filter(x => state.completed[x.wo.id]).length;
+  const skipCount = nonRest.filter(x => isSkipped(x.wo.id)).length;
   const pctDone = nonRest.length ? Math.round(doneCount / nonRest.length * 100) : 0;
   const range = wk ? dayMonth(wk.startDate) + ' – ' + (d(wk.startDate).getMonth() === d(wk.endDate).getMonth() ? d(wk.endDate).getDate() : dayMonth(wk.endDate)) : '';
   const race = RACE ? ' · Race day ' + longDate(RACE.date) : '';
@@ -873,7 +907,8 @@ function planTab() {
     const nums = [...new Set(monthGrid(state.monthKey).flat().map(dt => (dayIndex()[dt] || {}).weekNumber).filter(Boolean))];
     return '<div class="plan-head-week">' + esc(monthTitle(state.monthKey))
       + (nums.length ? ' <span class="plan-head-sub">· Weeks ' + nums[0] + (nums.length > 1 ? '–' + nums[nums.length - 1] : '') + '</span>' : '') + '</div>'
-      + '<div class="plan-head-planned"><b>' + esc(st.min ? fmtDuration(st.min) : '0min') + '</b> planned · ' + st.n + ' session' + (st.n === 1 ? '' : 's') + ' · ' + st.done + ' done</div>';
+      + '<div class="plan-head-planned"><b>' + esc(st.min ? fmtDuration(st.min) : '0min') + '</b> planned · ' + st.n + ' session' + (st.n === 1 ? '' : 's') + ' · ' + st.done + ' done'
+      + (st.skipped ? ' · <span style="color:var(--color-skip);">' + st.skipped + ' skipped</span>' : '') + '</div>';
   };
   let h = readOnlyBanner() + carryoverBanner() + '<div class="plan-head">'
     + '<div class="plan-head-main">'
@@ -888,7 +923,7 @@ function planTab() {
           + '<select id="phase-select" aria-label="Jump to phase">'
           + (PLAN.phases || []).map(p => '<option value="' + esc(p.name) + '"' + (p.name === phase.name ? ' selected' : '') + '>' + esc(p.name) + ' (wk ' + p.startWeek + '–' + p.endWeek + ')</option>').join('')
           + '</select></label>'
-        + '<span title="' + pctDone + '% of workouts complete">' + doneCount + '/' + nonRest.length + '</span></div>'
+        + '<span title="' + pctDone + '% of workouts complete' + (skipCount ? ' · ' + skipCount + ' skipped' : '') + '">' + doneCount + '/' + nonRest.length + '</span></div>'
       + '<div class="plan-bar"><div style="width:' + Math.max(pctDone, doneCount ? 2 : 0) + '%;"></div></div>'
     + '</div>'
     + '<div class="plan-head-nav">'
@@ -1490,6 +1525,8 @@ function modal() {
   const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
   const zc = zoneColorFromLabel(w.primaryZone);
   const done = !!state.completed[w.id];
+  const skipped = isSkipped(w.id);
+  const skipForm = !READ_ONLY && state.skipDraft && state.skipDraft.id === w.id;
   const dist = distanceLabel(w);
   return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
     + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
@@ -1511,16 +1548,45 @@ function modal() {
           + '<span style="flex:1; min-width:0;">Done with <b style="font-weight:500;">' + esc(state.activities[w.id].name || 'Garmin activity') + '</b>'
           + [state.activities[w.id].distanceKm ? fmtKm(state.activities[w.id].distanceKm) : '', state.activities[w.id].durationMin ? fmtDuration(state.activities[w.id].durationMin) : ''].filter(Boolean).map(x => ' · ' + esc(x)).join('')
           + '</span>' + icon('right', 14) + '</a>' : '')
+      + (skipForm ? skipFormHtml(w, skipped) : skipped ? skipNoteHtml(w) : '')
       + '<div style="font-size:13px; color:var(--color-neutral-300); margin-bottom:12px;">' + esc(w.description) + '</div>'
       + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
     + '</div>'
     + '<div class="dialog-actions" style="justify-content:space-between; align-items:center;">'
       + (READ_ONLY ? '<span></span>' : workoutMenu(w.id))
-      + '<div style="display:flex; gap:var(--space-2);">'
+      + (skipForm
+        ? '<div style="display:flex; gap:var(--space-2);">'
+          + '<button type="button" class="btn btn-secondary" data-skip-act="cancel">Cancel</button>'
+          + '<button type="button" class="btn btn-primary btn-skip-confirm" data-skip-act="confirm">' + (skipped ? 'Save reason' : 'Skip workout') + '</button></div>'
+        : '<div style="display:flex; gap:var(--space-2);">'
         + '<button type="button" class="btn btn-secondary" data-act="close">Close</button>'
+        + (READ_ONLY || done || w.sport === 'rest' ? '' : '<button type="button" class="btn btn-secondary btn-skip" data-skip="' + esc(w.id) + '">' + (skipped ? 'Unskip' : 'Skip') + '</button>')
         + (READ_ONLY ? '' : '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button>')
-      + '</div></div>'
+      + '</div>')
+    + '</div>'
   + '</div></div>';
+}
+
+/* A skipped workout's note in its dialog: how it was skipped, and why. */
+function skipNoteHtml(w) {
+  const reason = state.skipReasons[w.id];
+  const how = state.skipped[w.id] === 'auto' ? 'Missed — its day went by without it being done.' : 'Skipped.';
+  return '<div class="skip-note">' + icon('minus', 16) + '<div style="flex:1; min-width:0;">'
+    + '<div>' + how + '</div>'
+    + (reason ? '<div class="skip-reason">“' + esc(reason) + '”</div>' : '')
+    + (READ_ONLY ? '' : '<div class="skip-note-actions">'
+      + '<button type="button" class="link-btn" data-skip-act="reason" data-id="' + esc(w.id) + '">' + (reason ? 'Edit reason' : 'Add a reason') + '</button>'
+      + '<span>Done it after all? Mark it complete.</span></div>')
+  + '</div></div>';
+}
+/* "Why are you skipping it?" — optional, but asked every time. */
+function skipFormHtml(w, skipped) {
+  return '<div class="skip-form">'
+    + '<label for="skip-reason">' + (skipped ? 'Why was it skipped?' : 'Why are you skipping it?') + ' <span class="skip-optional">Optional</span></label>'
+    + '<input id="skip-reason" class="input" type="text" maxlength="200" autocomplete="off" data-skip-reason'
+      + ' placeholder="e.g. sick, travelling, legs too sore" value="' + esc(state.skipDraft.text) + '">'
+    + '<div class="skip-hint">Kept with the workout and shown in your calendar.</div>'
+  + '</div>';
 }
 
 /* The pencil in the workout dialog's bottom-left corner opens the
@@ -1626,14 +1692,53 @@ function stepWeek(delta) {
   if (wrap) wrap.classList.add(delta > 0 ? 'slide-from-right' : 'slide-from-left');
 }
 
+function takeWorkoutStates(data) {
+  SERVER.completed = data.completed || {}; SERVER.skipped = data.skipped || {}; SERVER.skipReasons = data.skipReasons || {};
+  state.completed = Object.assign({}, SERVER.completed); state.skipped = Object.assign({}, SERVER.skipped);
+  state.skipReasons = Object.assign({}, SERVER.skipReasons);
+}
 function toggleCompleted(id) {
   const next = !state.completed[id];
+  const wasSkipped = state.skipped[id];
   state.completed[id] = next;                       // optimistic
+  if (next) delete state.skipped[id];
   render();
   api('completion', { workout_id: id, completed: next })
-    .then(data => { SERVER.completed = data.completed || {}; state.completed = Object.assign({}, SERVER.completed); })
-    .catch(err => { state.completed[id] = !next; alert('Could not save: ' + err.message); })
+    .then(takeWorkoutStates)
+    .catch(err => { state.completed[id] = !next; if (wasSkipped) state.skipped[id] = wasSkipped; alert('Could not save: ' + err.message); })
     .finally(render);
+}
+/* Skip a workout with an optional reason (on one already skipped, only the
+   reason changes), or un-skip it (reason undefined). Skipping clears a
+   completion; un-skipping a past workout keeps it un-skipped. */
+function setSkipped(id, next, reason) {
+  const before = { done: state.completed[id], skipped: state.skipped[id], reason: state.skipReasons[id] };
+  if (next) {                                       // optimistic
+    state.skipped[id] = state.skipped[id] || 'manual'; delete state.completed[id];
+    if (reason) state.skipReasons[id] = reason; else delete state.skipReasons[id];
+  } else { delete state.skipped[id]; delete state.skipReasons[id]; }
+  render();
+  api('skip', next ? { workout_id: id, skipped: true, reason: reason || '' } : { workout_id: id, skipped: false })
+    .then(takeWorkoutStates)
+    .catch(err => {
+      if (before.done) state.completed[id] = before.done;
+      if (before.skipped) state.skipped[id] = before.skipped; else delete state.skipped[id];
+      if (before.reason) state.skipReasons[id] = before.reason; else delete state.skipReasons[id];
+      alert('Could not save: ' + err.message);
+    })
+    .finally(render);
+}
+function openSkipForm(id) {
+  state.skipDraft = { id, text: state.skipReasons[id] || '' };
+  render();
+  const input = document.querySelector('[data-skip-reason]');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+}
+function submitSkipForm() {
+  const draft = state.skipDraft;
+  if (!draft) return;
+  state.skipDraft = null; state.modalId = null; state.modalMenu = false;
+  setSkipped(draft.id, true, draft.text.trim());
 }
 
 document.getElementById('app').addEventListener('click', e => {
@@ -1645,8 +1750,26 @@ document.getElementById('app').addEventListener('click', e => {
     if (toggle.closest('.dialog')) { state.modalId = null; state.modalMenu = false; }
     return toggleCompleted(toggle.getAttribute('data-toggle'));
   }
+  /* Skip asks why first (optional); Unskip acts straight away. */
+  const skip = e.target.closest('[data-skip]');
+  if (skip) {
+    e.stopPropagation();
+    if (READ_ONLY) return;
+    const id = skip.getAttribute('data-skip');
+    if (!isSkipped(id)) return openSkipForm(id);
+    state.modalId = null; state.modalMenu = false;
+    return setSkipped(id, false);
+  }
+  const skipAct = e.target.closest('[data-skip-act]');
+  if (skipAct) {
+    e.stopPropagation();
+    const act = skipAct.getAttribute('data-skip-act');
+    if (act === 'reason') return openSkipForm(skipAct.getAttribute('data-id'));
+    if (act === 'cancel') { state.skipDraft = null; return render(); }
+    if (act === 'confirm') return submitSkipForm();
+  }
   const open = e.target.closest('[data-open]');
-  if (open) { state.modalId = open.getAttribute('data-open'); state.modalMenu = false; return render(); }
+  if (open) { state.modalId = open.getAttribute('data-open'); state.modalMenu = false; state.skipDraft = null; return render(); }
 
 
   const zone = e.target.closest('[data-zone]');
@@ -1832,6 +1955,7 @@ document.getElementById('app').addEventListener('scroll', e => {
 }, true);
 
 document.getElementById('app').addEventListener('input', e => {
+  if (state.skipDraft && e.target.hasAttribute && e.target.hasAttribute('data-skip-reason')) state.skipDraft.text = e.target.value;
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
   const syncField = e.target.getAttribute && e.target.getAttribute('data-sync-field');
@@ -1968,6 +2092,10 @@ document.addEventListener('touchend', e => {
 }, { passive: true });
 
 document.addEventListener('keydown', e => {
+  if (state.skipDraft && e.target.hasAttribute && e.target.hasAttribute('data-skip-reason')) {
+    if (e.key === 'Enter') { e.preventDefault(); return submitSkipForm(); }
+    if (e.key === 'Escape') { state.skipDraft = null; return render(); }
+  }
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
   else if (e.key === 'Escape' && state.modalMenu) { state.modalMenu = false; render(); }
   else if (e.key === 'Escape' && state.modalId) { state.modalId = null; render(); }
@@ -2188,6 +2316,8 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .month-chip-txt { display:flex; flex-direction:column; flex:1; min-width:0; }
 .month-chip-name { color:var(--color-text); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
 .month-chip.done { opacity:.55; } .month-chip.done .month-chip-name { text-decoration:line-through; }
+.month-chip.skipped { opacity:.7; } .month-chip.skipped .month-chip-name { color:var(--color-neutral-400); }
+.skip-mark { display:inline-flex; color:var(--color-skip); }
 .month-chip.race { background:color-mix(in srgb, var(--c) 26%, transparent); } .month-chip.race .month-chip-name { font-weight:600; }
 .month-chip-dur { font-size:10.5px; color:var(--color-neutral-400); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .month-more { font-size:11px; color:var(--color-neutral-500); padding-left:4px; width:fit-content; }

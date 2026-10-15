@@ -37,6 +37,7 @@ def test_overview_defaults_to_current_and_next_week(plan, monkeypatch):
     assert overview["weekSummaries"][0] == {
         "weekNumber": 1, "startDate": "2026-09-14", "endDate": "2026-09-20", "phase": "Base",
         "isRecoveryWeek": False, "targetHours": 3, "plannedHours": 3.83, "workouts": 4, "completed": 1,
+        "skipped": 2,   # Monday's swim and Tuesday's strength went by undone
     }
     run = next(x for d in overview["weeks"][0]["days"] for x in d["workouts"] if x["id"] == "w1-tue-run")
     assert run["completed"] is True and run["date"] == "2026-09-15"
@@ -313,3 +314,130 @@ def test_queueing_a_plan_reports_overlaps_and_a_past_start(plan, fake_db, monkey
     plan_service.set_status("clash", "archived")
     plan_service.save_upload(_shifted("old", "2026-08-03"), activate=False)
     assert "won't take over by itself" in plan_tools.set_training_plan_status("old", "future")["note"]
+
+
+# ── skipping ──────────────────────────────────────────────────────────────────
+
+def _skipped(plan_db):
+    return plan_service.skipped_map(plan_db.get_workout_states("test-block-2026"))
+
+
+def test_skip_by_workout_id_clears_the_completion(plan):
+    plan_tools.complete_plan_workout(workout_id="w1-mon-swim", activity_id=7)
+
+    result = plan_tools.skip_plan_workout("w1-mon-swim", reason="Sick")
+
+    assert result["skipped"] is True and result["skipReason"] == "Sick" and "notes" not in result
+    assert "completed" not in result and "activityId" not in result and "skippedAuto" not in result
+    assert plan_service.completed_map("test-block-2026") == {}
+    assert _skipped(plan) == {"w1-mon-swim": "manual"}
+
+
+def test_rest_days_and_unknown_workouts_cant_be_skipped(plan):
+    with pytest.raises(ToolError, match="No workout with id"):
+        plan_tools.skip_plan_workout("nope")
+    plan_service.apply_operations(None, [{"op": "add_workout", "date": "2026-09-16",
+                                          "workout": {"sport": "rest", "name": "Rest"}}], "test")
+    with pytest.raises(ToolError, match="Rest days can't be skipped"):
+        plan_tools.skip_plan_workout("w1-wed-rest")
+
+
+def test_missed_workouts_are_skipped_once_their_day_passes(plan):
+    plan_service.set_completion(None, "w1-mon-swim", True)
+
+    overview = plan_service.plan_overview(today=date(2026, 9, 17))
+
+    # Monday's swim was done; Tuesday's two weren't. Today's ride, the rest
+    # day and next week are still to come.
+    assert _skipped(plan) == {"w1-tue-run": "auto", "w1-tue-strength": "auto"}
+    run = next(x for d in overview["weeks"][0]["days"] for x in d["workouts"] if x["id"] == "w1-tue-run")
+    assert run["skipped"] is True and run["skippedAuto"] is True and run["skippedAt"]
+    assert overview["weekSummaries"][0]["skipped"] == 2
+
+
+def test_archived_and_future_plans_are_never_auto_skipped(plan):
+    plan_service.set_status("test-block-2026", "archived")
+    plan_service.plan_overview("test-block-2026", today=date(2026, 10, 15))
+    assert _skipped(plan) == {}
+
+
+def test_unskipping_a_past_workout_sticks(plan):
+    plan_service.plan_overview(today=date(2026, 9, 16))
+    assert "w1-mon-swim" in _skipped(plan)
+
+    plan_tools.skip_plan_workout("w1-mon-swim", skipped=False)
+    plan_service.plan_overview(today=date(2026, 9, 17))
+
+    assert "w1-mon-swim" not in _skipped(plan)
+    assert plan.get_workout_states("test-block-2026")["w1-mon-swim"]["skipped"] is False
+
+
+def test_unskipping_a_future_workout_leaves_it_to_the_automatic_skip(plan, monkeypatch):
+    monkeypatch.setattr(plan_service, "local_today", lambda: date(2026, 9, 21))
+    plan_tools.skip_plan_workout("w2-tue-run")
+    plan_tools.skip_plan_workout("w2-tue-run", skipped=False)
+
+    assert plan.get_workout_states("test-block-2026")["w2-tue-run"]["skipped"] is None
+    plan_service.plan_overview(today=date(2026, 9, 23))
+    assert _skipped(plan)["w2-tue-run"] == "auto"
+
+
+def test_a_late_sync_completes_a_skipped_workout(plan):
+    plan_service.plan_overview(today=date(2026, 9, 18))
+    assert "w1-thu-bike" in _skipped(plan)
+
+    plan.add_activity(9, "2026-09-17", "road_biking", "Ride", 92)
+    plan_service.match_new_activities([9])
+
+    assert "w1-thu-bike" not in _skipped(plan)
+    assert plan_service.completed_map("test-block-2026")["w1-thu-bike"] is True
+
+
+def test_completing_by_hand_clears_a_skip(plan):
+    plan_tools.skip_plan_workout("w1-thu-bike")
+    plan_tools.complete_plan_workout(workout_id="w1-thu-bike")
+    assert _skipped(plan) == {}
+
+
+def test_moving_a_skipped_workout_to_a_later_day_unskips_it(plan, monkeypatch):
+    monkeypatch.setattr(plan_service, "local_today", lambda: date(2026, 9, 15))
+    plan_service.plan_overview(today=date(2026, 9, 15))
+    assert set(_skipped(plan)) == {"w1-mon-swim"}
+
+    plan_service.apply_operations(None, [{"op": "move_workout", "workout_id": "w1-mon-swim",
+                                          "date": "2026-09-19"}], "test")
+
+    assert _skipped(plan) == {}
+
+
+def test_editing_a_skipped_workout_without_moving_it_keeps_the_skip(plan, monkeypatch):
+    monkeypatch.setattr(plan_service, "local_today", lambda: date(2026, 9, 16))
+    plan_tools.skip_plan_workout("w2-tue-run", reason="Travel")
+
+    plan_service.apply_operations(None, [{"op": "update_workout", "workout_id": "w2-tue-run",
+                                          "fields": {"name": "Hills"}}], "test")
+
+    assert _skipped(plan) == {"w2-tue-run": "manual"}
+
+
+def test_a_reason_on_a_missed_workout_keeps_it_marked_missed(plan):
+    plan_service.plan_overview(today=date(2026, 9, 16))
+
+    result = plan_tools.skip_plan_workout("w1-mon-swim", reason="  Pool closed  ")
+
+    assert result["skipReason"] == "Pool closed" and result["skippedAuto"] is True
+    assert _skipped(plan)["w1-mon-swim"] == "auto"
+    assert "skipReason" not in plan_tools.skip_plan_workout("w1-mon-swim", reason="")   # "" clears it
+    with pytest.raises(ToolError, match="under 200 characters"):
+        plan_tools.skip_plan_workout("w1-mon-swim", reason="x" * 201)
+
+
+def test_the_skip_reason_goes_when_the_skip_does(plan):
+    plan_tools.complete_plan_workout(workout_id="w1-thu-bike", notes="Felt strong")
+    plan_tools.skip_plan_workout("w1-thu-bike", reason="Travel")
+    assert plan.get_workout_states("test-block-2026")["w1-thu-bike"]["notes"] == "Felt strong"
+
+    result = plan_tools.complete_plan_workout(workout_id="w1-thu-bike")
+
+    assert "skipReason" not in result and result["notes"] == "Felt strong"
+    assert plan.get_workout_states("test-block-2026")["w1-thu-bike"]["skip_reason"] is None

@@ -185,9 +185,20 @@ class FakePlanDB:
         state = self.states.setdefault((plan_id, workout_id), {
             "workout_id": workout_id, "completed": False, "completed_at": None, "activity_id": None,
             "notes": None, "garmin_workout_id": None, "garmin_scheduled_date": None,
+            "skipped": None, "skipped_at": None, "skipped_auto": False, "skip_reason": None,
         })
         state.update(fields, updated_at=self._now())
         return dict(state)
+
+    def auto_skip_workouts(self, plan_id, workout_ids):
+        done = []
+        for wid in workout_ids:
+            state = self.states.get((plan_id, wid))
+            if state and (state.get("skipped") is not None or state.get("completed")):
+                continue
+            self.upsert_workout_state(plan_id, wid, skipped=True, skipped_at=self._now(), skipped_auto=True)
+            done.append(wid)
+        return done
 
     def get_activity_brief(self, garmin_id):
         return self.activities.get(garmin_id)
@@ -257,7 +268,7 @@ PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
     "update_training_plan", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
-    "get_workout_states", "get_season_plans", "upsert_workout_state", "get_activity_brief",
+    "get_workout_states", "get_season_plans", "upsert_workout_state", "auto_skip_workouts", "get_activity_brief",
     "get_activities_by_ids", "get_activities_in_range", "delete_activities_not_in", "get_setting", "set_setting",
     "get_calendar_settings", "save_calendar_schedule", "set_calendar_token",
 ]

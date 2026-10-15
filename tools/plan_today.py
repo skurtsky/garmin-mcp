@@ -85,6 +85,7 @@ def _workout_view(w: dict, d: dict, state: dict | None, activities: dict) -> dic
         "distanceKm": w.get("distanceKm"), "distanceMeters": w.get("distanceMeters"),
         "primaryZone": w.get("primaryZone"), "startTime": w.get("startTime") or None,
         "completed": bool(state.get("completed")),
+        "skipped": bool(state.get("skipped")) and not state.get("completed"),
         "is_test": plan_doc.is_test_workout(w),
         "activity": _activity_view(activities.get(state.get("activity_id"))) if state.get("completed") else None,
     }
@@ -111,8 +112,9 @@ def _unplanned_today(today: date, linked_ids: set) -> list[dict]:
 
 
 def _week_strip(plan_week: dict | None, monday: date, today: date, views_by_day: dict) -> list[dict]:
-    """M–S: done (filled tick), planned (open circle) or rest (moon), in the
-    first session's sport colour."""
+    """M–S: done (filled tick), skipped (every session skipped or done, at
+    least one skipped), planned (open circle) or rest (moon), in the first
+    session's sport colour."""
     strip = []
     for i in range(7):
         day = (monday + timedelta(days=i)).isoformat()
@@ -120,7 +122,8 @@ def _week_strip(plan_week: dict | None, monday: date, today: date, views_by_day:
         if not views:
             state, color = "rest", None
         else:
-            state = "done" if all(v["completed"] for v in views) else "planned"
+            state = ("done" if all(v["completed"] for v in views)
+                     else "skipped" if all(v["completed"] or v["skipped"] for v in views) else "planned")
             color = SPORT_COLORS.get(views[0]["sport"], SPORT_COLORS["other"])
         strip.append({"date": day, "letter": _WEEKDAY_LETTERS[i], "is_today": day == today.isoformat(),
                       "state": state, "color": color})
@@ -197,12 +200,12 @@ def build_plan_context(today: date, athlete: dict | None = None) -> dict | None:
     None without a database or an active plan."""
     if not db.is_configured():
         return None
-    from tools.plan_service import active_plan
+    from tools.plan_service import active_plan, workout_states
     row = active_plan()
     if row is None:
         return None
     plan = row["plan"]
-    states = db.get_workout_states(row["id"])
+    states = workout_states(row, today)
     linked_ids = [s["activity_id"] for s in states.values() if s.get("completed") and s.get("activity_id")]
     activities = db.get_activities_by_ids(linked_ids)
 

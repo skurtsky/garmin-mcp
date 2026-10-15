@@ -145,9 +145,20 @@ TRAINING_PLAN_SCHEMA = """
         notes                  TEXT,
         garmin_workout_id      BIGINT,
         garmin_scheduled_date  DATE,
+        skipped                BOOLEAN,
+        skipped_at             TIMESTAMPTZ,
+        skipped_auto           BOOLEAN NOT NULL DEFAULT FALSE,
+        skip_reason            TEXT,
         updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
         PRIMARY KEY (plan_id, workout_id)
     );
+    -- Skipping came later. skipped is NULL until decided: TRUE once skipped
+    -- (by hand, or automatically once its day passed), FALSE when un-skipped
+    -- by hand — so the automatic skip never overrides the athlete.
+    ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped BOOLEAN;
+    ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped_at TIMESTAMPTZ;
+    ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped_auto BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skip_reason TEXT;
 """
 
 # The published calendar feed (tools/plan_calendar.py): one row holding the
@@ -1409,7 +1420,8 @@ def get_workout_states(plan_id: str) -> dict[str, dict]:
         with conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """SELECT workout_id, completed, completed_at, activity_id, notes,
-                          garmin_workout_id, garmin_scheduled_date, updated_at
+                          garmin_workout_id, garmin_scheduled_date, skipped, skipped_at,
+                          skipped_auto, skip_reason, updated_at
                    FROM training_plan_workout_state WHERE plan_id = %s""",
                 (plan_id,),
             )
@@ -1440,7 +1452,7 @@ def get_season_plans(archived_since: str) -> tuple[list[dict], dict[str, set[str
 
 
 _STATE_FIELDS = ("completed", "completed_at", "activity_id", "notes",
-                 "garmin_workout_id", "garmin_scheduled_date")
+                 "garmin_workout_id", "garmin_scheduled_date", "skipped", "skipped_at", "skipped_auto", "skip_reason")
 
 
 def upsert_workout_state(plan_id: str, workout_id: str, **fields) -> dict:
@@ -1460,10 +1472,31 @@ def upsert_workout_state(plan_id: str, workout_id: str, **fields) -> dict:
                     VALUES ({placeholders})
                     ON CONFLICT (plan_id, workout_id) DO UPDATE SET {updates}
                     RETURNING workout_id, completed, completed_at, activity_id, notes,
-                              garmin_workout_id, garmin_scheduled_date, updated_at""",
+                              garmin_workout_id, garmin_scheduled_date, skipped, skipped_at,
+                              skipped_auto, skip_reason, updated_at""",
                 (plan_id, workout_id, *values),
             )
             return cur.fetchone()
+
+
+def auto_skip_workouts(plan_id: str, workout_ids: list[str]) -> list[str]:
+    """Mark these workouts skipped automatically, unless they were completed
+    or a skip was already decided in the meantime. Returns the ids skipped."""
+    if not workout_ids:
+        return []
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO training_plan_workout_state AS s
+                       (plan_id, workout_id, skipped, skipped_at, skipped_auto)
+                   SELECT %s, wid, TRUE, now(), TRUE FROM unnest(%s::text[]) AS wid
+                   ON CONFLICT (plan_id, workout_id) DO UPDATE
+                       SET skipped = TRUE, skipped_at = now(), skipped_auto = TRUE, updated_at = now()
+                       WHERE s.skipped IS NULL AND NOT s.completed
+                   RETURNING workout_id""",
+                (plan_id, list(workout_ids)),
+            )
+            return [r[0] for r in cur.fetchall()]
 
 
 def get_activity_brief(garmin_id: int) -> dict | None:
