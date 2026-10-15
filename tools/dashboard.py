@@ -1782,15 +1782,17 @@ def _no_plan_card(token: str | None) -> str:
     </div>"""
 
 
-def _focus_card(title: str, body: str, gap: int = 14) -> str:
-    # The caret is a placeholder for a longer view to come; it goes nowhere yet.
+def _focus_card(title: str, body: str, gap: int = 14, href: str | None = None) -> str:
+    # A card with an href opens its detail page (Recovery: tools/recovery.py);
+    # on the others the caret is a placeholder for a longer view to come.
+    tag, link = ("a", f' href="{_e(href)}"') if href else ("div", "")
     return f"""
-      <div class="focus-card" data-title="{_e(title)}" style="gap:{gap}px">
+      <{tag} class="focus-card{" t-link" if href else ""}"{link} data-title="{_e(title)}" style="gap:{gap}px">
         <div style="display:flex;align-items:center;justify-content:space-between">
           <div style="font-size:15px;font-weight:500">{_e(title)}</div>{_ph("caret-right", 16, "var(--color-neutral-600)")}
         </div>
         {body}
-      </div>"""
+      </{tag}>"""
 
 
 def _focus_training_status(data: dict) -> str:
@@ -1849,7 +1851,7 @@ def _focus_training_status(data: dict) -> str:
     return _focus_card("Training status", body)
 
 
-def _focus_recovery(data: dict) -> str:
+def _focus_recovery(data: dict, token: str | None = None) -> str:
     sleep = data.get("sleep") or {}
     readiness = data.get("readiness") or {}
     health = data.get("health") or {}
@@ -1914,11 +1916,11 @@ def _focus_recovery(data: dict) -> str:
             <div style="height:56px;display:flex;align-items:flex-end;gap:8px">{stress_bars}</div></div>
         </div>
         </div>"""
-    return _focus_card("Recovery", body, gap=12)
+    return _focus_card("Recovery", body, gap=12, href=_pwa_asset_url("/recovery", token))
 
 
-def _in_focus(data: dict, start: int) -> str:
-    cards = [_focus_training_status(data), _focus_recovery(data)]
+def _in_focus(data: dict, start: int, token: str | None = None) -> str:
+    cards = [_focus_training_status(data), _focus_recovery(data, token)]
     titles = ["Training status", "Recovery"]
     dots = "".join(f'<button type="button" class="focus-dot{" on" if i == start else ""}" data-focus-dot="{i}" '
                    f'aria-label="{t}"></button>' for i, t in enumerate(titles))
@@ -2042,7 +2044,7 @@ def _panel_today(data: dict, token: str | None = None) -> str:
     elif not plan:
         right.append(_no_plan_card(token))
     # A rest day opens In Focus on Recovery; a session day on Training status.
-    focus = _in_focus(data, 1 if rest_day else 0)
+    focus = _in_focus(data, 1 if rest_day else 0, token)
     return (
         '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:12px">'
         f'<div class="today-grid"><div class="today-col">{"".join(left)}</div>'

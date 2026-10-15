@@ -1136,6 +1136,7 @@ def build_asgi_app():
     from tools import weekly_summaries
     from tools import gear_tracker
     from tools import activity_detail
+    from tools import recovery
     import db
 
     db.ensure_schema()
@@ -1240,6 +1241,16 @@ def build_asgi_app():
                 headers["Content-Encoding"] = "gzip"
                 headers["Vary"] = "Accept-Encoding"
             response = StreamingResponse(chunks, media_type="text/html; charset=utf-8", headers=headers)
+            await response(scope, receive, send)
+            return
+
+        # Recovery detail page — opened from the Today tab's In Focus Recovery
+        # card; ?date= picks the day (default today).
+        if scope["type"] == "http" and scope.get("path") == recovery.PATH:
+            query = parse_qs(scope.get("query_string", b"").decode())
+            markup = await run_in_threadpool(recovery.render_recovery_page,
+                                             query.get("date", [None])[0], query.get("token", [None])[0])
+            response = HTMLResponse(markup, headers={"Cache-Control": "no-cache"})
             await response(scope, receive, send)
             return
 

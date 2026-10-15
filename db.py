@@ -425,6 +425,37 @@ def get_trend_metrics(start_date: str, end_date: str) -> list[dict]:
             return cur.fetchall()
 
 
+def get_recovery_days(start_date: str, end_date: str) -> list[dict]:
+    """The stored sleep / readiness / health / training-readiness payloads
+    for each synced day in range, oldest first — the Recovery page's data."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT metric_date, sleep_data, readiness_data, health_data, training_data
+                   FROM daily_metrics
+                   WHERE metric_date BETWEEN %s AND %s
+                   ORDER BY metric_date""",
+                (start_date, end_date),
+            )
+            return cur.fetchall()
+
+
+def get_readiness_scores(start_date: str, end_date: str) -> dict[str, int]:
+    """Training readiness score per synced day in range ({iso date: score}),
+    for the Recovery page's calendar dots."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """SELECT metric_date,
+                          NULLIF(training_data -> 'readiness' ->> 'score', '')::numeric AS score
+                   FROM daily_metrics
+                   WHERE metric_date BETWEEN %s AND %s""",
+                (start_date, end_date),
+            )
+            return {str(r["metric_date"]): int(r["score"]) for r in cur.fetchall()
+                    if r.get("score") is not None}
+
+
 def get_trend_series_rows(start_date: str, end_date: str) -> list[dict]:
     """Per-day trend values for the get_trends MCP tool, one row per synced
     day. HRV and body battery come out of the stored tool payloads rather than
