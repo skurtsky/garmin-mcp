@@ -668,10 +668,9 @@ SWIM_PACE_OFFSET_TABLE = (
 # (tools/assets/plan-viewer.html) carries the same two constants.
 # {{bike-watts:ss}} — sweet spot, as a % of FTP.
 BIKE_SWEET_SPOT_PCT = (88, 94)
-# {{run-pace:strides}} — the run zone(s) of RUN_PACE_OFFSET_TABLE that stride
-# pace spans (fast but relaxed, so VO2max for now). Several codes span from the
-# slowest low to the fastest high; the range follows the threshold pace.
-STRIDE_PACE_ZONES = ("5b",)
+# {{run-pace:strides}} — stride pace as a fixed offset in seconds/km from the
+# threshold pace (negative = faster), so the range follows the threshold pace.
+STRIDE_PACE_OFFSET = (-25, -10)
 
 
 def _pct(base: int, p: int) -> int:
@@ -757,10 +756,8 @@ def resolve_tokens(plan: dict, text) -> str:
     def sub(m):
         kind, code = m.group(1).lower(), m.group(2).lower()
         if kind == "run-pace" and code == "strides":
-            zs = [row(RUN_PACE_OFFSET_TABLE, c) for c in STRIDE_PACE_ZONES]
-            if pace is None:
-                return "Stride pace"
-            return span(pace + min(z[2] for z in zs), pace + max(z[3] for z in zs), fmt_mmss, "/km")
+            lo, hi = STRIDE_PACE_OFFSET
+            return span(pace + lo, pace + hi, fmt_mmss, "/km") if pace is not None else "Stride pace"
         if kind == "bike-watts" and code == "ss":
             ftp = t.get("ftp")
             lo, hi = BIKE_SWEET_SPOT_PCT

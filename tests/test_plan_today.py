@@ -308,15 +308,14 @@ def test_sweet_spot_recomputes_when_ftp_changes():
     assert plan_doc.resolve_tokens(_plan_with(ftp=260), "{{bike-watts:ss}}") == "229-244W"
 
 
-def test_stride_token_follows_the_run_zone_it_is_defined_as(monkeypatch):
-    p = _plan_with(pace="4:15")           # 5b is -20..-15 s/km from threshold
-    assert plan_doc.resolve_tokens(p, "{{run-pace:strides}}") == \
-        plan_doc.resolve_tokens(p, "{{run-pace:5b}}") == "3:55-4:00/km"
-    # follows a threshold-pace change
-    assert plan_doc.resolve_tokens(_plan_with(pace="4:10"), "{{run-pace:strides}}") == "3:50-3:55/km"
-    # the definition is one constant: a wider band spans its zones
-    monkeypatch.setattr(plan_doc, "STRIDE_PACE_ZONES", ("5a", "5b"))
-    assert plan_doc.resolve_tokens(p, "{{run-pace:strides}}") == "3:55-4:17/km"
+def test_stride_token_is_a_fixed_offset_from_threshold_pace(monkeypatch):
+    # -25..-10 s/km from the live threshold pace
+    assert plan_doc.resolve_tokens(_plan_with(pace="4:15"), "{{run-pace:strides}}") == "3:50-4:05/km"
+    # recomputes when the threshold pace changes
+    assert plan_doc.resolve_tokens(_plan_with(pace="4:10"), "{{run-pace:strides}}") == "3:45-4:00/km"
+    # the definition is one constant
+    monkeypatch.setattr(plan_doc, "STRIDE_PACE_OFFSET", (-20, -5))
+    assert plan_doc.resolve_tokens(_plan_with(pace="4:15"), "{{run-pace:strides}}") == "3:55-4:10/km"
 
 
 def test_new_tokens_without_thresholds_and_wrong_pairings():
@@ -347,7 +346,7 @@ def test_viewer_resolves_the_new_tokens_like_the_server():
     def grab(name, end):
         return re.search(r"const %s = .*?%s" % (name, re.escape(end)), src, re.S).group(0)
     js = "\n".join([
-        grab("BIKE_SWEET_SPOT_PCT", ";"), grab("STRIDE_PACE_ZONES", ";"),
+        grab("BIKE_SWEET_SPOT_PCT", ";"), grab("STRIDE_PACE_OFFSET", ";"),
         grab("RUN_PACE_OFFSET_TABLE", "];"), grab("TOKEN_RE", ";"),
         re.search(r"function parseMMSS.*", src).group(0), re.search(r"function fmtMMSS.*", src).group(0),
         re.search(r"function pct\(.*", src).group(0), re.search(r"function rangeStr.*?\n}", src, re.S).group(0),
@@ -358,4 +357,4 @@ def test_viewer_resolves_the_new_tokens_like_the_server():
         "console.log(JSON.stringify(resolveTokens('{{bike-watts:ss}} | {{run-pace:strides}} | {{run-pace:6}}')));",
     ])
     out = subprocess.run([node, "-e", js], capture_output=True, text=True, check=True).stdout
-    assert json.loads(out) == "218-233W | 3:55-4:00/km | {{run-pace:6}}"
+    assert json.loads(out) == "218-233W | 3:50-4:05/km | {{run-pace:6}}"

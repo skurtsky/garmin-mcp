@@ -496,7 +496,7 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     follow the plan's thresholds: {{run-pace:N}}, {{run-hr:N}},
     {{bike-watts:N}}, {{bike-hr:N}} (N = 1-4, 5a, 5b, 5c), {{swim-pace:N}}
     (N = 1-5), plus {{bike-watts:ss}} (sweet spot, 88-94% of FTP) and
-    {{run-pace:strides}} (stride pace, currently run zone 5b).
+    {{run-pace:strides}} (stride pace, threshold pace -25 to -10 s/km).
 
     Args:
         operations: The edits, applied in order.

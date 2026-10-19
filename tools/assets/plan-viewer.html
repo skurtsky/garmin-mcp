@@ -408,9 +408,9 @@ const RUN_PACE_OFFSET_TABLE = [
   { zone:'5c', name:'Anaerobic',     low:-35, high:-25 }
 ];
 /* Token-only bands (same constants as tools/plan_doc.py): {{bike-watts:ss}} is
-   a % of FTP; {{run-pace:strides}} spans these RUN_PACE_OFFSET_TABLE zones. */
+   a % of FTP; {{run-pace:strides}} is a seconds/km offset from threshold pace. */
 const BIKE_SWEET_SPOT_PCT = [88, 94];
-const STRIDE_PACE_ZONES = ['5b'];
+const STRIDE_PACE_OFFSET = [-25, -10];
 /* Swim pace offsets in seconds/100m from CSS (reference/zones.md). */
 const SWIM_PACE_OFFSET_TABLE = [
   { zone:'1', name:'Recovery',  low:15, high:20 },
@@ -864,9 +864,8 @@ function resolveTokens(text) {
     kind = kind.toLowerCase();
     code = code.toLowerCase();
     if (kind === 'run-pace' && code === 'strides') {
-      const zs = STRIDE_PACE_ZONES.map(c => tableRow(RUN_PACE_OFFSET_TABLE, c));
       const t = parseMMSS(ov.thresholdPace);
-      return t != null ? rangeStr(t + Math.min(...zs.map(z => z.low)), t + Math.max(...zs.map(z => z.high)), fmtMMSS, '/km') : 'Stride pace';
+      return t != null ? rangeStr(t + STRIDE_PACE_OFFSET[0], t + STRIDE_PACE_OFFSET[1], fmtMMSS, '/km') : 'Stride pace';
     }
     if (kind === 'bike-watts' && code === 'ss') {
       return ov.ftp ? rangeStr(pct(ov.ftp, BIKE_SWEET_SPOT_PCT[0]), pct(ov.ftp, BIKE_SWEET_SPOT_PCT[1]), String, 'W') : 'Sweet spot';
