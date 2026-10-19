@@ -42,6 +42,13 @@ _TOKEN_LABELS = {"run-pace": "Zone {} pace", "run-hr": "Zone {} HR", "bike-watts
 _TOKEN_NAMES = {"ss": "Sweet spot", "strides": "Stride pace"}
 
 
+def _ftp_token_label(m) -> str:
+    try:
+        return plan_doc.format_ftp_token(*plan_doc._parse_ftp_token(m)[:2], "pct", None)
+    except ValueError:
+        return m.group(0)
+
+
 def _token_label(m) -> str:
     code = m.group(2).lower()
     return _TOKEN_NAMES.get(code) or _TOKEN_LABELS[m.group(1).lower()].format(code)
@@ -245,7 +252,10 @@ def _details(w: dict, done: bool, imperial: bool, skipped: bool = False, skip_re
         parts.append(f"Key targets: {w['keyTargets']}")
     if w.get("humanReadable"):
         # Zone tokens become their zone name; the viewer shows the live paces.
-        parts.append(_TOKEN_RE.sub(_token_label, w["humanReadable"]).strip())
+        # A %FTP token keeps its percent (it never goes stale) but not the
+        # watts, which a calendar would cache past the next FTP change.
+        text = plan_doc._FTP_TOKEN_RE.sub(_ftp_token_label, w["humanReadable"])
+        parts.append(_TOKEN_RE.sub(_token_label, text).strip())
     if done:
         parts.append("✓ Completed")
     elif skipped:

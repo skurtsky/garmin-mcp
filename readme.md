@@ -288,6 +288,11 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
   `STRIDE_PACE_OFFSET` in `tools/plan_doc.py` (mirrored in
   `tools/assets/plan-viewer.html`). A token that doesn't match is left as
   written; one that can't resolve (no threshold set) shows its zone name.
+  `{{bike-ftp:75-77}}` (or `{{bike-ftp:75}}`) is a whole-number % of FTP, 30–200,
+  rendered from the current FTP as `75–77% FTP (186–191 W)`; `:w` gives only
+  `186–191 W`, `:pct` only `75–77% FTP`, and with no FTP set the percent form
+  is shown. `amend_training_plan` rejects a malformed `{{bike-ftp…}}` token.
+  The calendar feed shows the percent only.
 - **Active, future and archived plans.** A plan is keyed by its `meta.id`, and
   one plan is active at a time. The upload form has a **Make this the active
   plan** box — unticked (the default while a plan is active), a new plan is
