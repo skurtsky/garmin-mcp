@@ -407,6 +407,10 @@ const RUN_PACE_OFFSET_TABLE = [
   { zone:'5b', name:'VO2max',        low:-20, high:-15 },
   { zone:'5c', name:'Anaerobic',     low:-35, high:-25 }
 ];
+/* Token-only bands (same constants as tools/plan_doc.py): {{bike-watts:ss}} is
+   a % of FTP; {{run-pace:strides}} is a seconds/km offset from threshold pace. */
+const BIKE_SWEET_SPOT_PCT = [88, 94];
+const STRIDE_PACE_OFFSET = [-25, -10];
 /* Swim pace offsets in seconds/100m from CSS (reference/zones.md). */
 const SWIM_PACE_OFFSET_TABLE = [
   { zone:'1', name:'Recovery',  low:15, high:20 },
@@ -845,19 +849,27 @@ function rangeStr(lo, hi, fmt, suffix) {
 }
 
 /* Zone tokens embedded in a workout's humanReadable text — e.g.
-   "{{run-pace:5a}}" or "{{bike-watts:2}}" — written by the plan author
+   "{{run-pace:5a}}" or "{{bike-watts:2}}" (also "{{bike-watts:ss}}" sweet spot and
+   "{{run-pace:strides}}") — written by the plan author
    instead of a hand-typed pace/watt number (see
    reference/humanreadable-format.md). Resolved here using the exact same
    tables and overrides as the dashboard's Fitness page (tools/plan_doc.py zone_rows), so a workout's numbers and
    the Dashboard's zone table always agree and both move together when the
    athlete edits a threshold on Settings. */
-const TOKEN_RE = /\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?)\s*\}\}/gi;
+const TOKEN_RE = /\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?|ss|strides)\s*\}\}/gi;
 function tableRow(table, code) { return table.find(z => z.zone === code) || null; }
 function resolveTokens(text) {
   const ov = state.overrides;
   return String(text || '').replace(TOKEN_RE, (match, kind, code) => {
     kind = kind.toLowerCase();
     code = code.toLowerCase();
+    if (kind === 'run-pace' && code === 'strides') {
+      const t = parseMMSS(ov.thresholdPace);
+      return t != null ? rangeStr(t + STRIDE_PACE_OFFSET[0], t + STRIDE_PACE_OFFSET[1], fmtMMSS, '/km') : 'Stride pace';
+    }
+    if (kind === 'bike-watts' && code === 'ss') {
+      return ov.ftp ? rangeStr(pct(ov.ftp, BIKE_SWEET_SPOT_PCT[0]), pct(ov.ftp, BIKE_SWEET_SPOT_PCT[1]), String, 'W') : 'Sweet spot';
+    }
     if (kind === 'run-pace') {
       const z = tableRow(RUN_PACE_OFFSET_TABLE, code);
       const t = parseMMSS(ov.thresholdPace);

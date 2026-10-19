@@ -664,6 +664,14 @@ SWIM_PACE_OFFSET_TABLE = (
     ("4", "Threshold", 0, 0), ("5", "VO2max", -5, -3),
 )
 
+# Token-only bands that aren't rows of the zone tables above. The viewer
+# (tools/assets/plan-viewer.html) carries the same two constants.
+# {{bike-watts:ss}} — sweet spot, as a % of FTP.
+BIKE_SWEET_SPOT_PCT = (88, 94)
+# {{run-pace:strides}} — stride pace as a fixed offset in seconds/km from the
+# threshold pace (negative = faster), so the range follows the threshold pace.
+STRIDE_PACE_OFFSET = (-25, -10)
+
 
 def _pct(base: int, p: int) -> int:
     return int(base * p / 100 + 0.5)   # half up, like the viewer's Math.round
@@ -724,13 +732,14 @@ def zone_rows(plan: dict, sport: str) -> list[dict]:
     return rows
 
 
-_TOKEN_RE = re.compile(r"\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?)\s*\}\}",
+_TOKEN_RE = re.compile(r"\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?|ss|strides)\s*\}\}",
                        re.IGNORECASE)
 
 
 def resolve_tokens(plan: dict, text) -> str:
     """A workout's humanReadable with its zone tokens ("{{run-pace:5a}}",
-    "{{bike-watts:2}}") written out from the current thresholds — the
+    "{{bike-watts:2}}", plus "{{bike-watts:ss}}" and "{{run-pace:strides}}")
+    written out from the current thresholds — the
     viewer's resolveTokens, so a workout reads the same on Today as in the
     plan."""
     t = effective_thresholds(plan)
@@ -746,6 +755,13 @@ def resolve_tokens(plan: dict, text) -> str:
 
     def sub(m):
         kind, code = m.group(1).lower(), m.group(2).lower()
+        if kind == "run-pace" and code == "strides":
+            lo, hi = STRIDE_PACE_OFFSET
+            return span(pace + lo, pace + hi, fmt_mmss, "/km") if pace is not None else "Stride pace"
+        if kind == "bike-watts" and code == "ss":
+            ftp = t.get("ftp")
+            lo, hi = BIKE_SWEET_SPOT_PCT
+            return span(_pct(ftp, lo), _pct(ftp, hi), str, "W") if ftp else "Sweet spot"
         if kind == "run-pace":
             z = row(RUN_PACE_OFFSET_TABLE, code)
             return span(pace + z[2], pace + z[3], fmt_mmss, "/km") if z and pace is not None else f"Zone {code} pace"

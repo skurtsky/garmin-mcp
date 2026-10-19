@@ -278,6 +278,16 @@ viewer (`tools/assets/plan-viewer.html`) on every request.
 http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 ```
 
+- **Live zone tokens.** A workout's `humanReadable` text can hold tokens that
+  resolve against the plan's own thresholds, so the numbers move when FTP /
+  pace / CSS change (`set_zones`): `{{run-pace:N}}`, `{{run-hr:N}}`,
+  `{{bike-watts:N}}`, `{{bike-hr:N}}` (N = `1`–`4`, `5a`, `5b`, `5c`),
+  `{{swim-pace:N}}` (N = `1`–`5`), plus `{{bike-watts:ss}}` — sweet spot,
+  88–94 % of FTP — and `{{run-pace:strides}}` — stride pace, threshold pace
+  −25 to −10 s/km. The two band definitions are `BIKE_SWEET_SPOT_PCT` and
+  `STRIDE_PACE_OFFSET` in `tools/plan_doc.py` (mirrored in
+  `tools/assets/plan-viewer.html`). A token that doesn't match is left as
+  written; one that can't resolve (no threshold set) shows its zone name.
 - **Active, future and archived plans.** A plan is keyed by its `meta.id`, and
   one plan is active at a time. The upload form has a **Make this the active
   plan** box — unticked (the default while a plan is active), a new plan is
