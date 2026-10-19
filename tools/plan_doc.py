@@ -318,6 +318,7 @@ def _clean_workout_fields(fields: dict, *, adding: bool) -> dict:
     for key in ("name", "type", "description", "keyTargets", "humanReadable", "primaryZone"):
         if key in fields and fields[key] is not None and not isinstance(fields[key], str):
             raise PlanError(f"{key} must be text.")
+    check_ftp_tokens(fields.get("humanReadable"), "humanReadable")
     # The calendar feed's start time for this one workout; blank falls back
     # to the weekly schedule in Settings.
     if fields.get("startTime") not in (None, ""):
@@ -736,10 +737,59 @@ _TOKEN_RE = re.compile(r"\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s
                        re.IGNORECASE)
 
 
+# {{bike-ftp:75-77}} / {{bike-ftp:75}} — a % of FTP, written as watts from the
+# plan's current FTP; ":w" keeps only the watts, ":pct" only the percent. The
+# viewer (tools/assets/plan-viewer.html) carries the same grammar and bounds.
+FTP_PCT_BOUNDS = (30, 200)
+FTP_TOKEN_SYNTAX = "{{bike-ftp:75-77}}, {{bike-ftp:75}}, with an optional :w or :pct suffix"
+_FTP_TOKEN_RE = re.compile(r"\{\{\s*bike-ftp\s*:\s*(\d+)(?:\s*-\s*(\d+))?(?:\s*:\s*(w|pct))?\s*\}\}", re.IGNORECASE)
+# Anything that starts like the token, valid or not — for validation.
+_FTP_TOKEN_ANY_RE = re.compile(r"\{\{\s*bike-ftp\b[^{}]*(?:\}\})?", re.IGNORECASE)
+
+
+def _parse_ftp_token(m) -> tuple[int, int, str | None]:
+    """(low %, high %, mode) of a matched bike-ftp token; ValueError says why not."""
+    lo = int(m.group(1))
+    hi = int(m.group(2)) if m.group(2) is not None else lo
+    low, high = FTP_PCT_BOUNDS
+    if not (low <= lo <= high and low <= hi <= high):
+        raise ValueError(f"percent of FTP must be a whole number from {low} to {high}")
+    if lo > hi:
+        raise ValueError("the range runs backwards — write the lower percent first")
+    return lo, hi, (m.group(3) or "").lower() or None
+
+
+def format_ftp_token(lo: int, hi: int, mode: str | None, ftp) -> str:
+    """"75–77% FTP (186–191 W)"; ``mode`` "w" is the watts only, "pct" the
+    percent only. Without an FTP there are no watts, so it falls back to the
+    percent form."""
+    pct = _range(lo, hi) + "% FTP"
+    try:
+        watts = _range(_pct(ftp, lo), _pct(ftp, hi)) + " W" if ftp and mode != "pct" else None
+    except (TypeError, ValueError):   # an FTP stored in an odd shape
+        watts = None
+    if watts is None:
+        return pct
+    return watts if mode == "w" else f"{pct} ({watts})"
+
+
+def check_ftp_tokens(text, field: str) -> None:
+    """Raise PlanError for a {{bike-ftp…}} token that wouldn't render — saved
+    plan text would otherwise show it literally and nobody would notice."""
+    for m in _FTP_TOKEN_ANY_RE.finditer(str(text or "")):
+        good = _FTP_TOKEN_RE.fullmatch(m.group(0))
+        try:
+            if good is None:
+                raise ValueError(f"expected {FTP_TOKEN_SYNTAX}")
+            _parse_ftp_token(good)
+        except ValueError as e:
+            raise PlanError(f"{field}: {m.group(0).strip()} — {e}.") from None
+
+
 def resolve_tokens(plan: dict, text) -> str:
     """A workout's humanReadable with its zone tokens ("{{run-pace:5a}}",
-    "{{bike-watts:2}}", plus "{{bike-watts:ss}}" and "{{run-pace:strides}}")
-    written out from the current thresholds — the
+    "{{bike-watts:2}}", plus "{{bike-watts:ss}}" and "{{run-pace:strides}}",
+    and "{{bike-ftp:75-77}}") written out from the current thresholds — the
     viewer's resolveTokens, so a workout reads the same on Today as in the
     plan."""
     t = effective_thresholds(plan)
@@ -782,7 +832,13 @@ def resolve_tokens(plan: dict, text) -> str:
         except (TypeError, ValueError):   # a threshold stored in an odd shape
             return f"Zone {m.group(2).lower()}"
 
-    return _TOKEN_RE.sub(safe_sub, str(text or ""))
+    def ftp_sub(m):
+        try:
+            return format_ftp_token(*_parse_ftp_token(m), t.get("ftp"))
+        except ValueError:   # out of range or reversed: left as written
+            return m.group(0)
+
+    return _TOKEN_RE.sub(safe_sub, _FTP_TOKEN_RE.sub(ftp_sub, str(text or "")))
 
 
 # Each threshold's sport (for zone validation) and the coach's source note.

@@ -348,9 +348,10 @@ def test_viewer_resolves_the_new_tokens_like_the_server():
     js = "\n".join([
         grab("BIKE_SWEET_SPOT_PCT", ";"), grab("STRIDE_PACE_OFFSET", ";"),
         grab("RUN_PACE_OFFSET_TABLE", "];"), grab("TOKEN_RE", ";"),
+        grab("FTP_TOKEN_RE", ";"), grab("FTP_PCT_BOUNDS", ";"),
         re.search(r"function parseMMSS.*", src).group(0), re.search(r"function fmtMMSS.*", src).group(0),
         re.search(r"function pct\(.*", src).group(0), re.search(r"function rangeStr.*?\n}", src, re.S).group(0),
-        re.search(r"function tableRow.*", src).group(0),
+        re.search(r"function tableRow.*", src).group(0), re.search(r"function ftpSpan.*", src).group(0),
         re.search(r"function resolveTokens\(text\) \{.*?\n}\n", src, re.S).group(0),
         "const BIKE_POWER_PCT_TABLE=[],HR_PCT_TABLE=[],SWIM_PACE_OFFSET_TABLE=[];",
         "const state={overrides:{ftp:248,thresholdPace:'4:15'}};",

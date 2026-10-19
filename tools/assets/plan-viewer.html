@@ -857,10 +857,26 @@ function rangeStr(lo, hi, fmt, suffix) {
    the Dashboard's zone table always agree and both move together when the
    athlete edits a threshold on Settings. */
 const TOKEN_RE = /\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?|ss|strides)\s*\}\}/gi;
+/* "{{bike-ftp:75-77}}" — a % of FTP written as watts from the current FTP
+   (":w" watts only, ":pct" percent only; no FTP set → the percent form).
+   Same grammar and bounds as tools/plan_doc.py. */
+const FTP_TOKEN_RE = /\{\{\s*bike-ftp\s*:\s*(\d+)(?:\s*-\s*(\d+))?(?:\s*:\s*(w|pct))?\s*\}\}/gi;
+const FTP_PCT_BOUNDS = [30, 200];
 function tableRow(table, code) { return table.find(z => z.zone === code) || null; }
+function ftpSpan(lo, hi, fmt) { return lo === hi ? fmt(lo) : fmt(lo) + '–' + fmt(hi); }
 function resolveTokens(text) {
   const ov = state.overrides;
-  return String(text || '').replace(TOKEN_RE, (match, kind, code) => {
+  text = String(text || '').replace(FTP_TOKEN_RE, (match, a, b, mode) => {
+    const lo = parseInt(a, 10), hi = b == null ? lo : parseInt(b, 10);
+    if (lo < FTP_PCT_BOUNDS[0] || hi > FTP_PCT_BOUNDS[1] || hi < FTP_PCT_BOUNDS[0] || lo > FTP_PCT_BOUNDS[1] || lo > hi) return match;
+    mode = (mode || '').toLowerCase();
+    const pctText = ftpSpan(lo, hi, String) + '% FTP';
+    const ftp = Number(ov.ftp);
+    if (!ftp || mode === 'pct') return pctText;
+    const watts = ftpSpan(pct(ftp, lo), pct(ftp, hi), String) + ' W';
+    return mode === 'w' ? watts : pctText + ' (' + watts + ')';
+  });
+  return text.replace(TOKEN_RE, (match, kind, code) => {
     kind = kind.toLowerCase();
     code = code.toLowerCase();
     if (kind === 'run-pace' && code === 'strides') {
