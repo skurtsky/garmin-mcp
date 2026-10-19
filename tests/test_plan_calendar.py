@@ -370,3 +370,9 @@ def test_feed_marks_done_and_skipped_workouts(client, fake_db):
     assert events["w1-tue-run"]["DESCRIPTION"].endswith("✗ Skipped — Sick")
     # The sample plan is in the past: the rest were missed.
     assert events["w2-tue-run"]["SUMMARY"] == "✗ Intervals"
+
+
+def test_calendar_labels_the_new_tokens_by_name():
+    text = "{{bike-watts:ss}} then {{run-pace:strides}} and {{bike-watts:2}}"
+    assert plan_calendar._TOKEN_RE.sub(plan_calendar._token_label, text) == \
+        "Sweet spot then Stride pace and Zone 2"

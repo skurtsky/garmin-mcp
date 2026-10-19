@@ -36,9 +36,15 @@ DEFAULT_TIME = "06:00"
 DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
 SCHEDULE_SPORTS = tuple(s for s in plan_doc.SPORTS if s != "rest")
 
-_TOKEN_RE = re.compile(r"\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?)\s*\}\}", re.I)
+_TOKEN_RE = re.compile(r"\{\{\s*(run-pace|run-hr|bike-watts|bike-hr|swim-pace)\s*:\s*([1-5][abc]?|ss|strides)\s*\}\}", re.I)
 _TOKEN_LABELS = {"run-pace": "Zone {} pace", "run-hr": "Zone {} HR", "bike-watts": "Zone {}",
                  "bike-hr": "Zone {} HR", "swim-pace": "Zone {} pace"}
+_TOKEN_NAMES = {"ss": "Sweet spot", "strides": "Stride pace"}
+
+
+def _token_label(m) -> str:
+    code = m.group(2).lower()
+    return _TOKEN_NAMES.get(code) or _TOKEN_LABELS[m.group(1).lower()].format(code)
 
 
 # ── SETTINGS ──────────────────────────────────────────────────────────────────
@@ -239,8 +245,7 @@ def _details(w: dict, done: bool, imperial: bool, skipped: bool = False, skip_re
         parts.append(f"Key targets: {w['keyTargets']}")
     if w.get("humanReadable"):
         # Zone tokens become their zone name; the viewer shows the live paces.
-        parts.append(_TOKEN_RE.sub(lambda m: _TOKEN_LABELS[m.group(1).lower()].format(m.group(2).lower()),
-                                   w["humanReadable"]).strip())
+        parts.append(_TOKEN_RE.sub(_token_label, w["humanReadable"]).strip())
     if done:
         parts.append("✓ Completed")
     elif skipped:

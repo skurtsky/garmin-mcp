@@ -286,3 +286,76 @@ def test_an_empty_garmin_answer_prunes_nothing(monkeypatch, plan):
     sync_garmin.sync_activities()
 
     assert set(plan.activities) == {1}
+
+
+# ── sweet spot and stride tokens ────────────────────────────────────────────
+
+def _plan_with(ftp=None, pace=None):
+    p = sample_plan()
+    if ftp:
+        p["overrides"] = {**(p.get("overrides") or {}), "ftp": ftp}
+    if pace:
+        p["overrides"] = {**(p.get("overrides") or {}), "thresholdPace": pace}
+    return p
+
+
+def test_sweet_spot_token_is_88_to_94_percent_of_ftp():
+    assert plan_doc.resolve_tokens(_plan_with(ftp=248), "{{bike-watts:ss}}") == "218-233W"
+    assert plan_doc.resolve_tokens(_plan_with(ftp=248), "{{ BIKE-WATTS : SS }}") == "218-233W"
+
+
+def test_sweet_spot_recomputes_when_ftp_changes():
+    assert plan_doc.resolve_tokens(_plan_with(ftp=260), "{{bike-watts:ss}}") == "229-244W"
+
+
+def test_stride_token_follows_the_run_zone_it_is_defined_as(monkeypatch):
+    p = _plan_with(pace="4:15")           # 5b is -20..-15 s/km from threshold
+    assert plan_doc.resolve_tokens(p, "{{run-pace:strides}}") == \
+        plan_doc.resolve_tokens(p, "{{run-pace:5b}}") == "3:55-4:00/km"
+    # follows a threshold-pace change
+    assert plan_doc.resolve_tokens(_plan_with(pace="4:10"), "{{run-pace:strides}}") == "3:50-3:55/km"
+    # the definition is one constant: a wider band spans its zones
+    monkeypatch.setattr(plan_doc, "STRIDE_PACE_ZONES", ("5a", "5b"))
+    assert plan_doc.resolve_tokens(p, "{{run-pace:strides}}") == "3:55-4:17/km"
+
+
+def test_new_tokens_without_thresholds_and_wrong_pairings():
+    p = sample_plan()
+    p["zones"]["bike"]["power"] = {}
+    p["zones"]["run"]["pace"] = {}
+    assert plan_doc.resolve_tokens(p, "{{bike-watts:ss}} {{run-pace:strides}}") == "Sweet spot Stride pace"
+    q = sample_plan()
+    # a code that belongs to the other token falls back like any unknown zone
+    assert plan_doc.resolve_tokens(q, "{{bike-watts:strides}} {{run-pace:ss}} {{run-hr:ss}}") == \
+        "Zone strides Zone ss pace Zone ss HR"
+
+
+def test_existing_tokens_unchanged_and_bad_ones_left_alone():
+    p = sample_plan()
+    assert plan_doc.resolve_tokens(p, "{{bike-watts:2}} {{bike-watts:5a}} {{run-pace:5c}} {{swim-pace:5}}") == \
+        "140-188W 250-263W 3:42-3:52/km 2:00-2:02/100m"
+    for bad in ("{{bike-watts:6}}", "{{bike-watts:sss}}", "{{run-pace:stride}}", "{{bike-watts:}}", "{{foo:ss}}"):
+        assert plan_doc.resolve_tokens(p, bad) == bad
+
+
+def test_viewer_resolves_the_new_tokens_like_the_server():
+    import json, re, shutil, subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    src = open("tools/assets/plan-viewer.html", encoding="utf-8").read()
+    def grab(name, end):
+        return re.search(r"const %s = .*?%s" % (name, re.escape(end)), src, re.S).group(0)
+    js = "\n".join([
+        grab("BIKE_SWEET_SPOT_PCT", ";"), grab("STRIDE_PACE_ZONES", ";"),
+        grab("RUN_PACE_OFFSET_TABLE", "];"), grab("TOKEN_RE", ";"),
+        re.search(r"function parseMMSS.*", src).group(0), re.search(r"function fmtMMSS.*", src).group(0),
+        re.search(r"function pct\(.*", src).group(0), re.search(r"function rangeStr.*?\n}", src, re.S).group(0),
+        re.search(r"function tableRow.*", src).group(0),
+        re.search(r"function resolveTokens\(text\) \{.*?\n}\n", src, re.S).group(0),
+        "const BIKE_POWER_PCT_TABLE=[],HR_PCT_TABLE=[],SWIM_PACE_OFFSET_TABLE=[];",
+        "const state={overrides:{ftp:248,thresholdPace:'4:15'}};",
+        "console.log(JSON.stringify(resolveTokens('{{bike-watts:ss}} | {{run-pace:strides}} | {{run-pace:6}}')));",
+    ])
+    out = subprocess.run([node, "-e", js], capture_output=True, text=True, check=True).stdout
+    assert json.loads(out) == "218-233W | 3:55-4:00/km | {{run-pace:6}}"
