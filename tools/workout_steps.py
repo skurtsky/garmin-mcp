@@ -23,6 +23,10 @@ plan's current thresholds::
   swim CSS-pace zone: 1–4, 5a–5c, ss for bike sweet spot, strides for run;
   swim 1–5; a range like "1-2"), ``hrZone`` (run/bike, 1–4, 5a–5c),
   ``pctFtp`` (bike, 75 or [88, 92]) or ``rpe`` (1–10).
+* ``ramp`` (bike, with a ``pctFtp`` range only): ``"build"`` climbs through the
+  range, ``"recover"`` comes down through it; left out, the step holds the
+  range (sustain). It only shapes the graph — Garmin gets the range as the
+  step's target either way.
 * ``note``; swim steps may add ``stroke`` and ``equipment``.
 
 Strength has no graph; its steps are exercises::
@@ -58,7 +62,8 @@ _ZONE_SPECIALS = {"bike": "ss", "run": "strides"}
 # Garmin can take these sports now; swim (pool lengths, strokes) comes later.
 GARMIN_SPORT = {"run": "running", "bike": "cycling", "strength": "strength_training"}
 
-_ENDURANCE_KEYS = {"kind", "durationS", "distanceM", "target", "note", "stroke", "equipment"}
+_ENDURANCE_KEYS = {"kind", "durationS", "distanceM", "target", "ramp", "note", "stroke", "equipment"}
+RAMPS = ("build", "recover")
 _REPEAT_KEYS = {"kind", "count", "steps", "note"}
 _EXERCISE_KEYS = {"kind", "exercise", "sets", "reps", "durationS", "weightKg", "weightLb",
                   "setWeightsKg", "setWeightsLb", "restS", "warmup", "note"}
@@ -152,6 +157,13 @@ def _clean_endurance_step(sport: str, step, where: str) -> dict:
         out["distanceM"] = _number(step["distanceM"], f"{where}.distanceM", positive=True, high=500000)
     if step.get("target") is not None:
         out["target"] = _clean_target(sport, step["target"], f"{where}.target")
+    ramp = step.get("ramp")
+    if ramp not in (None, "", "sustain"):
+        if ramp not in RAMPS:
+            raise PlanError(f"{where}.ramp must be build, sustain or recover.")
+        if not isinstance(out.get("target", {}).get("pctFtp"), list):
+            raise PlanError(f"{where}.ramp needs a % FTP range to ramp through, like {{\"pctFtp\": [66, 83]}}.")
+        out["ramp"] = ramp
     if step.get("note") not in (None, ""):
         if not isinstance(step["note"], str):
             raise PlanError(f"{where}.note must be text.")
@@ -311,7 +323,8 @@ def _resolve_target(sport: str, target: dict | None, t: dict) -> dict:
         pair = target["pctFtp"] if isinstance(target["pctFtp"], list) else [target["pctFtp"]] * 2
         pct = _span(pair[0], pair[1], str, "% FTP")
         watts = _span(plan_doc._pct(ftp, pair[0]), plan_doc._pct(ftp, pair[1]), str, " W") if ftp else ""
-        return {"text": f"{watts} · {pct}" if watts else pct, "intensity": _mid(*pair) / 100, "sec_per_km": None}
+        return {"text": f"{watts} · {pct}" if watts else pct, "intensity": _mid(*pair) / 100, "sec_per_km": None,
+                "pct": pair, "ftp": ftp}
     kind = "hrZone" if "hrZone" in target else "zone"
     lo, hi = parse_zone(sport, kind, target[kind])
     label = _zone_label(lo, hi)
@@ -393,10 +406,56 @@ def _endurance_bar(sport: str, step: dict, t: dict) -> dict:
         extras.append(" + ".join(_STROKE_LABEL.get(g, g) for g in step["equipment"]))
     rest = step["kind"] == "rest"
     color, zone = (REST_COLOR, "") if rest else _band(intensity)
-    return {"kind": step["kind"], "label": _KIND_LABEL[step["kind"]], "amount": amount, "approx": approx,
-            "target": target["text"], "extras": " · ".join(extras), "note": step.get("note") or "",
-            "seconds": seconds, "estimated": estimated, "intensity": round(min(max(intensity, .15), 1.6), 3),
-            "color": color, "band": zone}
+    bar = {"kind": step["kind"], "label": _KIND_LABEL[step["kind"]], "amount": amount, "approx": approx,
+           "target": target["text"], "extras": " · ".join(extras), "note": step.get("note") or "",
+           "seconds": seconds, "estimated": estimated, "intensity": round(min(max(intensity, .15), 1.6), 3),
+           "color": color, "fill": color, "band": zone, "ramp": None}
+    if step.get("ramp") in RAMPS and target.get("pct"):
+        _ramp(bar, step["ramp"], target)
+    return bar
+
+
+def _ramp(bar: dict, ramp: str, target: dict) -> None:
+    """Make a % FTP range bar a ramp: it starts at one end of the range and
+    finishes at the other, its colour fading from one zone to the next."""
+    lo, hi = target["pct"]
+    a, b = (lo, hi) if ramp == "build" else (hi, lo)
+    ftp = target.get("ftp")
+    pct = f"{a} → {b}% FTP"
+    bar["target"] = f"{plan_doc._pct(ftp, a)} → {plan_doc._pct(ftp, b)} W · {pct}" if ftp else pct
+    c1, c2 = _band(a / 100)[0], _band(b / 100)[0]
+    bar.update(intensity=round(hi / 100, 3), color=c2, band=_band(b / 100)[1],
+               fill=f"linear-gradient(180deg, {c2}, {c1})",
+               ramp={"shape": ramp, "from": a / 100, "to": b / 100, "c1": c1, "c2": c2})
+
+
+# ── GRAPH GEOMETRY (shared by the workout view and Today) ─────────────────────
+
+# The graph's y axis runs from GRAPH_FLOOR to GRAPH_TOP of threshold: starting
+# above zero makes the steps' differences (and a ramp's slope) easy to read.
+GRAPH_TOP, GRAPH_FLOOR = 1.25, .3
+THRESHOLD_AT = round((1 - GRAPH_FLOOR) / (GRAPH_TOP - GRAPH_FLOOR) * 100, 1)   # % up the graph
+
+
+def graph_height(intensity: float) -> float:
+    """A bar's height, as a % of the graph, for an intensity."""
+    return max(6.0, min(100.0, round((intensity - GRAPH_FLOOR) / (GRAPH_TOP - GRAPH_FLOOR) * 100, 1)))
+
+
+def ramp_svg(bar: dict, gid: str) -> str:
+    """A ramp bar's fill: one polygon whose top runs from the start height to
+    the end height, filled with a fade between the two zones' colours. Its box
+    is the bar (as tall as the ramp's high end); '' for a bar that holds."""
+    r = bar.get("ramp")
+    if not r:
+        return ""
+    top = graph_height(max(r["from"], r["to"]))
+    cut = round((top - graph_height(min(r["from"], r["to"]))) / top * 100, 1)
+    pts = f"0,{cut} 100,0 100,100 0,100" if r["to"] > r["from"] else f"0,0 100,{cut} 100,100 0,100"
+    return (f'<svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">'
+            f'<defs><linearGradient id="{gid}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="{r["c1"]}"/>'
+            f'<stop offset="1" stop-color="{r["c2"]}"/></linearGradient></defs>'
+            f'<polygon points="{pts}" fill="url(#{gid})"/></svg>')
 
 
 def resolve(plan: dict, sport: str, steps: list[dict] | None) -> dict | None:

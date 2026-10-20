@@ -36,6 +36,7 @@ from urllib.parse import urlencode
 
 from tools.local_time import local_now, to_local, utc_offset_hours
 from tools.navbar import ICON_LINKS, THEME_BOOT, render_nav_html
+from tools import workout_steps
 from tools.workout_detail import WD_CSS, WD_JS
 
 # Coming back to the app once the page is this old (seconds) refreshes it
@@ -1337,6 +1338,9 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   transition:opacity .12s ease; }
 .wg-bar:hover { opacity:.8; }
 .wg-bar.on { opacity:1; box-shadow:0 0 0 2px var(--color-text); }
+.wg-bar.ramp { background:none; border-radius:0; }
+.wg-bar.ramp svg { display:block; width:100%; height:100%; overflow:visible; }
+.wg-bar.ramp.on { box-shadow:none; filter:drop-shadow(2px 0 0 var(--color-text)) drop-shadow(-2px 0 0 var(--color-text)) drop-shadow(0 -2px 0 var(--color-text)); }
 .wg-bar:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
 .wg-line { position:absolute; left:0; right:0; border-top:1px dashed var(--color-neutral-600); pointer-events:none; }
 .wg-line span { position:absolute; right:0; top:-17px; font-size:10px; color:var(--color-neutral-500); }
@@ -2303,7 +2307,6 @@ def _desk_readiness(data: dict) -> str:
     </section>"""
 
 
-_WG_SCALE = 1.25          # intensity at the top of the graph (threshold sits at 80%)
 _WG_THRESHOLD = {"bike": "FTP", "run": "Threshold", "swim": "CSS"}
 
 
@@ -2329,11 +2332,13 @@ def _workout_graph(steps: dict, sport: str) -> str:
     html = ""
     for i, b in enumerate(bars):
         kick, value, note = _wg_text(b, i, n)
-        height = max(6, min(100, round(b["intensity"] / _WG_SCALE * 100)))
-        html += (f'<button type="button" class="wg-bar{" on" if i == start else ""}" data-wg-i="{i}" '
+        height = workout_steps.graph_height(b["intensity"])
+        ramp = workout_steps.ramp_svg(b, f"wgr-{i}")
+        html += (f'<button type="button" class="wg-bar{" ramp" if ramp else ""}{" on" if i == start else ""}" data-wg-i="{i}" '
                  f'aria-pressed="{"true" if i == start else "false"}" aria-label="{_e(kick)}: {_e(value)}" '
                  f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(note)}" '
-                 f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%;background:{b["color"]}"></button>')
+                 f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
+                 f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
     k, v, note = _wg_text(bars[start], start, n)
     total = steps["total_s"]
     approx = "~" if steps.get("estimated") else ""
@@ -2345,7 +2350,7 @@ def _workout_graph(steps: dict, sport: str) -> str:
             <div class="wg-n"{'' if note else ' hidden'}>{_e(note)}</div>
           </div>
           <div class="wg-plot">
-            <div class="wg-line" style="bottom:{round(100 / _WG_SCALE)}%"><span>{_WG_THRESHOLD.get(sport, "Threshold")}</span></div>
+            <div class="wg-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_WG_THRESHOLD.get(sport, "Threshold")}</span></div>
             <div class="wg-bars" role="group" aria-label="Workout steps">{html}</div>
           </div>
           <div class="wg-axis"><span>0</span><span>{approx}{_wg_clock(total / 2)}</span><span>{approx}{_wg_clock(total)}</span></div>
@@ -2355,7 +2360,7 @@ def _workout_graph(steps: dict, sport: str) -> str:
 def _step_rows(steps: dict) -> str:
     """The step list beside the graph; a row selects its bar."""
     def row(item, indent=False):
-        swatch = f'<span class="wg-sw" style="background:{item["color"]}"></span>'
+        swatch = f'<span class="wg-sw" style="background:{item["fill"]}"></span>'
         sub = " · ".join(p for p in (item["target"], item["extras"]) if p)
         return (f'<li><button type="button" class="wg-row{" in" if indent else ""}" data-wg-i="{item["index"]}">'
                 f'{swatch}<span class="wg-row-t"><span>{_e(item["label"])}</span>'

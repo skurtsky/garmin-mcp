@@ -4,6 +4,7 @@ draws from them, the conversion to Garmin's workout builder, and the plan /
 API / dashboard plumbing around them (amend ops, Send to Garmin, the graph).
 The in-memory FakePlanDB stands in for PostgreSQL; Garmin is monkeypatched.
 """
+import re
 from datetime import date
 
 import pytest
@@ -313,3 +314,77 @@ def test_workout_details_button_opens_its_dialog():
     # Workout details button included.
     assert "return inner && inner !== card ? null : card;" in dashboard._ACTIVITY_MODAL_JS
     assert "fetch('/training-plan/api/garmin/send'" in dashboard._ACTIVITY_MODAL_JS
+
+
+# ── ramps (build / recover) ───────────────────────────────────────────────────
+
+RAMPS = [{"kind": "warmup", "durationS": 120, "target": {"pctFtp": [66, 75]}, "ramp": "build"},
+         {"kind": "work", "durationS": 600, "target": {"pctFtp": [88, 92]}, "ramp": "sustain"},
+         {"kind": "cooldown", "durationS": 300, "target": {"pctFtp": [45, 55]}, "ramp": "recover"}]
+
+
+def test_ramps_are_kept_and_sustain_is_the_default():
+    steps = workout_steps.clean_steps("bike", RAMPS)
+    assert steps[0]["ramp"] == "build" and steps[2]["ramp"] == "recover"
+    assert "ramp" not in steps[1]          # sustain is what a range does anyway
+
+
+@pytest.mark.parametrize("sport, step, message", [
+    ("bike", {"kind": "work", "durationS": 60, "target": {"pctFtp": 80}, "ramp": "build"}, "steps[0].ramp needs a % FTP range"),
+    ("bike", {"kind": "work", "durationS": 60, "target": {"pctFtp": [80, 80]}, "ramp": "build"}, "steps[0].ramp needs a % FTP range"),
+    ("bike", {"kind": "work", "durationS": 60, "target": {"zone": "2-3"}, "ramp": "build"}, "steps[0].ramp needs a % FTP range"),
+    ("bike", {"kind": "work", "durationS": 60, "ramp": "recover"}, "steps[0].ramp needs a % FTP range"),
+    ("run", {"kind": "work", "durationS": 60, "target": {"zone": "2"}, "ramp": "build"}, "steps[0].ramp needs a % FTP range"),
+    ("bike", {"kind": "work", "durationS": 60, "target": {"pctFtp": [60, 70]}, "ramp": "up"}, "steps[0].ramp must be build, sustain or recover"),
+])
+def test_a_ramp_needs_a_pct_ftp_range(sport, step, message):
+    with pytest.raises(PlanError, match=re.escape(message)):
+        workout_steps.clean_steps(sport, [step])
+
+
+def test_resolve_draws_a_ramp_from_one_end_of_the_range_to_the_other():
+    bars = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", RAMPS))["bars"]
+    up, hold, down = bars
+    assert up["target"] == "165 → 188 W · 66 → 75% FTP"
+    assert up["ramp"] == {"shape": "build", "from": .66, "to": .75, "c1": "#5eb8ad", "c2": "#5eb8ad"}
+    assert hold["ramp"] is None and hold["target"] == "220–230 W · 88–92% FTP" and hold["fill"] == hold["color"]
+    assert down["target"] == "138 → 113 W · 55 → 45% FTP"
+    assert down["ramp"]["from"] == .55 and down["ramp"]["to"] == .45
+    # Crossing a zone fades from one zone's colour to the next.
+    cross = workout_steps.resolve(PLAN, "bike", [{"kind": "warmup", "durationS": 60, "target": {"pctFtp": [50, 70]}, "ramp": "build"}])["bars"][0]
+    assert (cross["ramp"]["c1"], cross["ramp"]["c2"]) == ("#6c93b0", "#5eb8ad")
+    assert cross["fill"] == "linear-gradient(180deg, #5eb8ad, #6c93b0)"
+    # Its height is the range's high end.
+    assert cross["intensity"] == .7
+
+
+def test_ramp_svg_is_one_sloped_shape():
+    bars = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", RAMPS))["bars"]
+    up = workout_steps.ramp_svg(bars[0], "g0")
+    top, low = workout_steps.graph_height(.75), workout_steps.graph_height(.66)
+    cut = round((top - low) / top * 100, 1)
+    assert f'points="0,{cut} 100,0 100,100 0,100"' in up and 'fill="url(#g0)"' in up
+    assert f'points="0,0 100,{round((workout_steps.graph_height(.55) - workout_steps.graph_height(.45)) / workout_steps.graph_height(.55) * 100, 1)} 100,100 0,100"' in workout_steps.ramp_svg(bars[2], "g2")
+    assert workout_steps.ramp_svg(bars[1], "g1") == ""
+
+
+def test_the_graph_starts_above_zero():
+    assert workout_steps.graph_height(workout_steps.GRAPH_FLOOR) == 6.0           # the floor bar is a sliver
+    assert workout_steps.graph_height(1.25) == 100.0
+    assert workout_steps.THRESHOLD_AT == round(.7 / .95 * 100, 1)
+
+
+def test_garmin_gets_the_range_whatever_the_ramp():
+    shaped = workout_steps.to_garmin(PLAN, "bike", workout_steps.clean_steps("bike", RAMPS))
+    flat = workout_steps.to_garmin(PLAN, "bike", workout_steps.clean_steps("bike", [{k: v for k, v in s.items() if k != "ramp"} for s in RAMPS]))
+    assert shaped == flat
+    assert shaped[1][0]["power_watts_min"] == 165 and shaped[1][0]["power_watts_max"] == 188
+    assert "ramp" not in str(shaped)
+
+
+def test_hero_draws_ramps_as_sloped_shapes():
+    steps = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", RAMPS))
+    html = _hero(steps=steps)
+    assert html.count('class="wg-bar ramp') == 2 and '<polygon points="0,' in html
+    assert "165 → 188 W · 66 → 75% FTP" in html
+    assert f'class="wg-line" style="bottom:{workout_steps.THRESHOLD_AT}%"' in html

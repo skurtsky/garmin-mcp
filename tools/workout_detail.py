@@ -16,6 +16,7 @@ behaves the same wherever it was opened from.
 """
 import html as _html
 import re
+import secrets
 from datetime import date, datetime
 from urllib.parse import urlencode
 
@@ -29,7 +30,6 @@ _DIFFICULTY = {"easy": "#7fb87a", "moderate": "#d9b35a", "hard": "#d9705e", "ver
 _ZONE_COLORS = {"1": "#6c93b0", "2": "#5eb8ad", "3": "#8fb85e", "4": "#d9b35a", "5": "#d9705e",
                 "5a": "#d9705e", "5b": "#d9705e", "5c": "#c9506a"}
 _THRESHOLD_NAME = {"bike": "FTP", "run": "Threshold", "swim": "CSS"}
-_GRAPH_SCALE = 1.25     # intensity at the top of the graph; threshold sits at 80%
 
 
 def _e(value) -> str:
@@ -251,14 +251,16 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
     bars = resolved["bars"]
     n = len(bars)
     start = next((i for i, b in enumerate(bars) if b["kind"] == "work"), 0)
-    html = ""
+    html, gid = "", f"wdr{secrets.token_hex(3)}-"
     for i, b in enumerate(bars):
         kick, value = _bar_text(b, i, n)
-        height = max(6, min(100, round(b["intensity"] / _GRAPH_SCALE * 100)))
-        html += (f'<button type="button" class="wd-bar{" on" if i == start else ""}" data-wg-i="{i}" '
+        height = workout_steps.graph_height(b["intensity"])
+        ramp = workout_steps.ramp_svg(b, f"{gid}{i}")
+        html += (f'<button type="button" class="wd-bar{" ramp" if ramp else ""}{" on" if i == start else ""}" data-wg-i="{i}" '
                  f'aria-pressed="{"true" if i == start else "false"}" aria-label="{_e(kick)}: {_e(value)}" '
-                 f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(b["note"])}" data-c="{b["color"]}" '
-                 f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%;background:{b["color"]}"></button>')
+                 f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(b["note"])}" data-c="{b["fill"]}" '
+                 f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
+                 f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
     total = resolved["total_s"]
     step = 300 if total <= 1800 else 900 if total <= 7200 else 1800 if total <= 14400 else 3600
     # h:mm ticks; the last one is the total, so drop a tick crowding it.
@@ -278,12 +280,12 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
             <span class="wd-muted">{approx}{_dur(total / 60)} · {n} steps</span>
             <span class="wd-legend" aria-hidden="true">{legend}</span></div>
           <div class="wd-strip" aria-live="polite">
-            <span class="wd-strip-c" style="background:{bars[start]['color']}"></span>
+            <span class="wd-strip-c" style="background:{bars[start]['fill']}"></span>
             <div class="wd-strip-t"><div class="wd-kick wd-k">{_e(kick)}</div><div class="wd-v">{_e(value)}</div></div>
             <div class="wd-n"{'' if note else ' hidden'}>{_e(note)}</div>
           </div>
           <div class="wd-plot">
-            <div class="wd-line" style="bottom:{round(100 / _GRAPH_SCALE)}%"><span>{_e(line)}</span></div>
+            <div class="wd-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_e(line)}</span></div>
             <div class="wd-bars" role="group" aria-label="Workout steps — select one to see it above">{html}</div>
           </div>
           <div class="wd-ticks">{ticks}<span style="left:100%">{approx}{_hm(total)}</span></div>
@@ -300,7 +302,7 @@ def _step_table(resolved: dict) -> str:
         target = " · ".join(p for p in (item["target"], item["extras"]) if p) or '<span class="wd-muted">—</span>'
         return (f'<button type="button" class="wd-row{" in" if indent else ""}" data-wg-i="{item["index"]}">'
                 f'<span class="wd-rn">{n}</span>'
-                f'<span class="wd-rs"><i style="background:{item["color"]}"></i>{_e(item["label"])}</span>'
+                f'<span class="wd-rs"><i style="background:{item["fill"]}"></i>{_e(item["label"])}</span>'
                 f'<span class="wd-rt">{amount}</span><span class="wd-rg">{target if "<span" in target else _e(target)}</span>'
                 f'<span class="wd-rc">{_e(item["note"])}</span></button>')
     for g in resolved["groups"]:
@@ -706,6 +708,10 @@ html.wd-lock, html.wd-lock body { overflow:hidden; }
 .wd-bar:hover { opacity:.8; }
 html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
 .wd-bar.on { opacity:1; box-shadow:0 0 0 2px var(--color-text); }
+/* A ramp (build / recover) is one sloped shape; its outline follows the slope. */
+.wd-bar.ramp { background:none; border-radius:0; }
+.wd-bar.ramp svg { display:block; width:100%; height:100%; overflow:visible; }
+.wd-bar.ramp.on { box-shadow:none; filter:drop-shadow(2px 0 0 var(--color-text)) drop-shadow(-2px 0 0 var(--color-text)) drop-shadow(0 -2px 0 var(--color-text)); }
 .wd-bar:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
 .wd-line { position:absolute; left:0; right:0; border-top:1px dashed var(--color-neutral-600); pointer-events:none; }
 .wd-line span { position:absolute; left:0; top:-9px; padding:0 6px 0 0; font-size:11px; line-height:18px; color:var(--color-neutral-400);
