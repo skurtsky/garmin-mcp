@@ -571,10 +571,11 @@ def test_api_completion_on_an_archived_plan_is_rejected(client):
 def test_viewer_links_workouts_and_their_garmin_activities(client):
     _upload(client, sample_plan())
     r = client.get("/training-plan", params=TOKEN)
-    # ?workout=<id> opens a workout (Today's Tomorrow card), and a done
-    # workout's Garmin activity links to its detail on the dashboard.
-    assert "new URLSearchParams(APP_QUERY).get('workout')" in r.text
-    assert "tab: 'activity', activity: String(id), from: 'plan'" in r.text
+    # ?workout=<id> opens a workout in the shared workout view (Today's cards
+    # and the view's "Open in plan"), whose script is on the page; a done
+    # workout's activity link is in that view (tests/test_workout_detail.py).
+    assert "const id = q.get('workout');" in r.text and "openWorkout(URL_WORKOUT.id)" in r.text
+    assert "window.WD = {" in r.text and ".wd-overlay {" in r.text
 
 
 def test_plan_list_highlights_settings_in_the_nav(client):

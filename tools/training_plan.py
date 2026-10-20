@@ -192,6 +192,9 @@ def render_viewer_html(row: dict, token: str | None = None, goal_future=None, tz
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
     athlete = (row["plan"].get("meta") or {}).get("athlete")
+    # The shared workout detail view (tools/workout_detail.py).
+    from tools.workout_detail import WD_CSS, WD_JS
+    page = page.replace("</body>", f"<style>{WD_CSS}</style><script>{WD_JS}</script></body>", 1)
     return inject_pdf_links(inject_icon_links(inject_nav(page, "plan", token, title=athlete)))
 
 
@@ -876,6 +879,22 @@ async def api_completion(request):
     return _plan_response(row)
 
 
+async def api_workout(request):
+    """The shared workout detail view (tools/workout_detail.py) for
+    ?workout_id=, as HTML for the overlay both the plan viewer and the
+    dashboard open."""
+    from tools import workout_detail
+    workout_id = request.query_params.get("workout_id") or ""
+    try:
+        if not workout_id:
+            raise PlanError("workout_id is required.")
+        row = plan_service.require_plan(_plan_param(request))
+        result = await run_in_threadpool(workout_detail.render, row, workout_id, _token(request))
+    except (PlanStorageUnavailable, LookupError, PlanError) as e:
+        return _api_error(e)
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 async def api_garmin_send(request):
     """Today's "Send to Garmin": build the workout from its steps, put it on
     its day in Garmin Connect, and link it to the plan."""
@@ -1106,6 +1125,7 @@ ROUTES = [
     Route("/training-plan/api/operations", api_operations, methods=["POST"]),
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
     Route("/training-plan/api/skip", api_skip, methods=["POST"]),
+    Route("/training-plan/api/workout", api_workout, methods=["GET"]),
     Route("/training-plan/api/garmin/send", api_garmin_send, methods=["POST"]),
     Route("/training-plan/api/carryover", api_carryover, methods=["POST"]),
     Route("/training-plan/api/carryover/dismiss", api_carryover_dismiss, methods=["POST"]),

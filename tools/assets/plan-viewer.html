@@ -462,19 +462,16 @@ const state = {
   completed: {},
   skipped: {},                     // {workout id: 'auto' | 'manual'}
   skipReasons: {},                 // {workout id: why it was skipped}
-  skipDraft: null,                 // {id, text}: the workout dialog's "why skip?" form, while open
   activities: {},
   unit: 'metric',
   zoneSport: PLAN.zones?.bike ? 'bike' : (PLAN.zones?.run ? 'run' : 'swim'),
   overrides: {},
   zonesValidated: {},
-  modalId: null,
   editId: null,
   editDraft: null,
   saving: false,
   revisions: null,
   historyOpen: false,
-  modalMenu: false,
   revisionsError: '',
   calendar: null,
   calendarError: '',
@@ -1545,93 +1542,6 @@ function startSync() {
     .catch(err => { state.syncStarting = false; state.syncFormError = err.message; render(); });
 }
 
-function modal() {
-  if (!state.modalId) return '';
-  const hit = workoutById(state.modalId);
-  if (!hit) return '';
-  const w = hit.wo;
-  const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
-  const zc = zoneColorFromLabel(w.primaryZone);
-  const done = !!state.completed[w.id];
-  const skipped = isSkipped(w.id);
-  const skipForm = !READ_ONLY && state.skipDraft && state.skipDraft.id === w.id;
-  const dist = distanceLabel(w);
-  return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
-    + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
-      + '<span>' + esc(w.name) + '</span>'
-      + '<button type="button" class="btn btn-icon" data-act="close">' + icon('x') + '</button></div>'
-    + '<div class="dialog-body">'
-      + '<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">'
-        + '<span class="tag" style="background:' + tint(color) + '; color:' + color + ';">' + esc(w.sport) + '</span>'
-        + (w.type ? '<span class="tag tag-outline">' + esc(w.type) + '</span>' : '')
-        + '<span class="tag tag-outline">' + esc(dayMonth(hit.date)) + (w.startTime ? ' · ' + esc(w.startTime) : '') + '</span>'
-        + (w.durationMinutes ? '<span class="tag tag-outline">' + esc(fmtDuration(w.durationMinutes)) + '</span>' : '')
-        + (dist ? '<span class="tag tag-outline">' + esc(dist) + '</span>' : '')
-        + (w.terrain ? '<span class="tag tag-outline">' + esc(w.terrain) + '</span>' : '')
-        + (w.trainingEffect ? '<span class="tag tag-outline">' + esc(w.trainingEffect) + '</span>' : '')
-        + (w.difficulty ? '<span class="tag" style="background:' + tint(DIFFICULTY_COLORS[w.difficulty] || '#7c8194') + '; color:' + (DIFFICULTY_COLORS[w.difficulty] || 'var(--color-neutral-300)') + ';">' + esc(w.difficulty) + '</span>' : '')
-        + (w.primaryZone ? '<span class="tag" style="background:' + (zc ? tint(zc) : 'var(--color-neutral-800)') + '; color:' + (zc || 'var(--color-neutral-300)') + ';">' + esc(w.primaryZone) + '</span>' : '')
-      + '</div>'
-      + (done && state.activities[w.id] ? '<a class="garmin-link" href="' + esc(activityLink(state.activities[w.id].id)) + '" style="color:' + color + ';">' + icon('link', 14)
-          + '<span style="flex:1; min-width:0;">Done with <b style="font-weight:500;">' + esc(state.activities[w.id].name || 'Garmin activity') + '</b>'
-          + [state.activities[w.id].distanceKm ? fmtKm(state.activities[w.id].distanceKm) : '', state.activities[w.id].durationMin ? fmtDuration(state.activities[w.id].durationMin) : ''].filter(Boolean).map(x => ' · ' + esc(x)).join('')
-          + '</span>' + icon('right', 14) + '</a>' : '')
-      + (skipForm ? skipFormHtml(w, skipped) : skipped ? skipNoteHtml(w) : '')
-      + '<div style="font-size:13px; color:var(--color-neutral-300); margin-bottom:12px;">' + esc(w.description) + '</div>'
-      + (w.humanReadable ? '<div style="font-size:13px; white-space:pre-wrap; line-height:1.6; background:var(--color-neutral-900); border:1px solid var(--color-neutral-800); border-radius:var(--radius-md); padding:12px;">' + resolveTokens(esc(w.humanReadable)) + '</div>' : '')
-    + '</div>'
-    + '<div class="dialog-actions" style="justify-content:space-between; align-items:center;">'
-      + (READ_ONLY ? '<span></span>' : workoutMenu(w.id))
-      + (skipForm
-        ? '<div style="display:flex; gap:var(--space-2);">'
-          + '<button type="button" class="btn btn-secondary" data-skip-act="cancel">Cancel</button>'
-          + '<button type="button" class="btn btn-primary btn-skip-confirm" data-skip-act="confirm">' + (skipped ? 'Save reason' : 'Skip workout') + '</button></div>'
-        : '<div style="display:flex; gap:var(--space-2);">'
-        + '<button type="button" class="btn btn-secondary" data-act="close">Close</button>'
-        + (READ_ONLY || done || w.sport === 'rest' ? '' : '<button type="button" class="btn btn-secondary btn-skip" data-skip="' + esc(w.id) + '">' + (skipped ? 'Unskip' : 'Skip') + '</button>')
-        + (READ_ONLY ? '' : '<button type="button" class="btn btn-primary" data-toggle="' + esc(w.id) + '">' + (done ? 'Mark incomplete' : 'Mark complete') + '</button>')
-      + '</div>')
-    + '</div>'
-  + '</div></div>';
-}
-
-/* A skipped workout's note in its dialog: how it was skipped, and why. */
-function skipNoteHtml(w) {
-  const reason = state.skipReasons[w.id];
-  const how = state.skipped[w.id] === 'auto' ? 'Missed — its day went by without it being done.' : 'Skipped.';
-  return '<div class="skip-note">' + icon('minus', 16) + '<div style="flex:1; min-width:0;">'
-    + '<div>' + how + '</div>'
-    + (reason ? '<div class="skip-reason">“' + esc(reason) + '”</div>' : '')
-    + (READ_ONLY ? '' : '<div class="skip-note-actions">'
-      + '<button type="button" class="link-btn" data-skip-act="reason" data-id="' + esc(w.id) + '">' + (reason ? 'Edit reason' : 'Add a reason') + '</button>'
-      + '<span>Done it after all? Mark it complete.</span></div>')
-  + '</div></div>';
-}
-/* "Why are you skipping it?" — optional, but asked every time. */
-function skipFormHtml(w, skipped) {
-  return '<div class="skip-form">'
-    + '<label for="skip-reason">' + (skipped ? 'Why was it skipped?' : 'Why are you skipping it?') + ' <span class="skip-optional">Optional</span></label>'
-    + '<input id="skip-reason" class="input" type="text" maxlength="200" autocomplete="off" data-skip-reason'
-      + ' placeholder="e.g. sick, travelling, legs too sore" value="' + esc(state.skipDraft.text) + '">'
-    + '<div class="skip-hint">Kept with the workout and shown in your calendar.</div>'
-  + '</div>';
-}
-
-/* The pencil in the workout dialog's bottom-left corner opens the
-   duplicate / edit / delete menu. */
-function workoutMenu(id) {
-  return '<div class="wmenu">'
-    + '<button type="button" class="btn btn-icon btn-secondary" data-act="toggle-wmenu" title="Duplicate, edit or delete" aria-label="Workout actions" aria-expanded="' + (state.modalMenu ? 'true' : 'false') + '">' + icon('pencil', 18) + '</button>'
-    + (state.modalMenu
-      ? '<div class="wmenu-pop" role="menu">'
-        + '<button type="button" role="menuitem" data-act="duplicate-workout" data-id="' + esc(id) + '">' + icon('copy', 16) + 'Duplicate</button>'
-        + '<button type="button" role="menuitem" data-act="open-edit" data-id="' + esc(id) + '">' + icon('pencil', 16) + 'Edit</button>'
-        + '<button type="button" role="menuitem" class="danger" data-act="delete-workout" data-id="' + esc(id) + '">' + icon('trash', 16) + 'Delete</button>'
-      + '</div>'
-      : '')
-  + '</div>';
-}
-
 /* One dialog for editing a workout and for adding one from a day's "+"
    button. Distance is metres for swims and kilometres otherwise, matching
    how the coach writes them (distanceMeters / distanceKm). */
@@ -1699,7 +1609,7 @@ function draftToFields(d) {
 function render() {
   const body = state.tab === 'settings' ? settingsTab() : planTab();
   document.getElementById('app').innerHTML =
-    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + modal() + editModal()
+    '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + editModal()
     + (state.saving ? '<div class="saving-pill">Saving…</div>' : '');
   pinSyncLog();
 }
@@ -1736,68 +1646,16 @@ function toggleCompleted(id) {
     .catch(err => { state.completed[id] = !next; if (wasSkipped) state.skipped[id] = wasSkipped; alert('Could not save: ' + err.message); })
     .finally(render);
 }
-/* Skip a workout with an optional reason (on one already skipped, only the
-   reason changes), or un-skip it (reason undefined). Skipping clears a
-   completion; un-skipping a past workout keeps it un-skipped. */
-function setSkipped(id, next, reason) {
-  const before = { done: state.completed[id], skipped: state.skipped[id], reason: state.skipReasons[id] };
-  if (next) {                                       // optimistic
-    state.skipped[id] = state.skipped[id] || 'manual'; delete state.completed[id];
-    if (reason) state.skipReasons[id] = reason; else delete state.skipReasons[id];
-  } else { delete state.skipped[id]; delete state.skipReasons[id]; }
-  render();
-  api('skip', next ? { workout_id: id, skipped: true, reason: reason || '' } : { workout_id: id, skipped: false })
-    .then(takeWorkoutStates)
-    .catch(err => {
-      if (before.done) state.completed[id] = before.done;
-      if (before.skipped) state.skipped[id] = before.skipped; else delete state.skipped[id];
-      if (before.reason) state.skipReasons[id] = before.reason; else delete state.skipReasons[id];
-      alert('Could not save: ' + err.message);
-    })
-    .finally(render);
-}
-function openSkipForm(id) {
-  state.skipDraft = { id, text: state.skipReasons[id] || '' };
-  render();
-  const input = document.querySelector('[data-skip-reason]');
-  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
-}
-function submitSkipForm() {
-  const draft = state.skipDraft;
-  if (!draft) return;
-  state.skipDraft = null; state.modalId = null; state.modalMenu = false;
-  setSkipped(draft.id, true, draft.text.trim());
-}
-
 document.getElementById('app').addEventListener('click', e => {
   if (e.target.closest('a[data-garmin]')) return;
   const toggle = e.target.closest('[data-toggle]');
   if (toggle) {
     e.stopPropagation();
     if (READ_ONLY) return;
-    if (toggle.closest('.dialog')) { state.modalId = null; state.modalMenu = false; }
     return toggleCompleted(toggle.getAttribute('data-toggle'));
   }
-  /* Skip asks why first (optional); Unskip acts straight away. */
-  const skip = e.target.closest('[data-skip]');
-  if (skip) {
-    e.stopPropagation();
-    if (READ_ONLY) return;
-    const id = skip.getAttribute('data-skip');
-    if (!isSkipped(id)) return openSkipForm(id);
-    state.modalId = null; state.modalMenu = false;
-    return setSkipped(id, false);
-  }
-  const skipAct = e.target.closest('[data-skip-act]');
-  if (skipAct) {
-    e.stopPropagation();
-    const act = skipAct.getAttribute('data-skip-act');
-    if (act === 'reason') return openSkipForm(skipAct.getAttribute('data-id'));
-    if (act === 'cancel') { state.skipDraft = null; return render(); }
-    if (act === 'confirm') return submitSkipForm();
-  }
   const open = e.target.closest('[data-open]');
-  if (open) { state.modalId = open.getAttribute('data-open'); state.modalMenu = false; state.skipDraft = null; return render(); }
+  if (open) return openWorkout(open.getAttribute('data-open'));
 
 
   const zone = e.target.closest('[data-zone]');
@@ -1818,10 +1676,6 @@ document.getElementById('app').addEventListener('click', e => {
 
   const act = e.target.closest('[data-act]');
   const a = act ? act.getAttribute('data-act') : null;
-  if (state.modalMenu && a !== 'toggle-wmenu' && !e.target.closest('.wmenu-pop')) {
-    state.modalMenu = false;                         // any click elsewhere closes the menu
-    if (!act || a === 'backdrop') return render();
-  }
   if (!act) return;
   if (a === 'backdrop' && e.target !== act) return;
   if (a === 'view-week' || a === 'view-month') return setPlanView(a.slice(5));
@@ -1830,7 +1684,7 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'open-plan') return goToPlan(NEIGHBORS[act.dataset.neighbor], { month: state.monthKey });
   if (a === 'prev') return isMonth() ? stepMonth(-1) : stepWeek(-1);
   if (a === 'next') return isMonth() ? stepMonth(1) : stepWeek(1);
-  if (a === 'close' || a === 'backdrop') { state.modalId = null; state.modalMenu = false; state.editId = null; state.editDraft = null; return render(); }
+  if (a === 'close' || a === 'backdrop') { state.editId = null; state.editDraft = null; return render(); }
   if (a === 'toggle-focus') { act.classList.toggle('open'); return; }
   if (a === 'settings-cat') { state.settingsCat = act.dataset.cat; render(); window.scrollTo(0, 0); if (state.settingsCat === 'sync') loadSync({ quiet: true }); return; }
   if (a === 'settings-back') { state.settingsCat = null; render(); window.scrollTo(0, 0); return; }
@@ -1929,25 +1783,6 @@ document.getElementById('app').addEventListener('click', e => {
   if (a === 'add-workout') {
     state.editId = '__new__';
     state.editDraft = draftFor({ sport: 'run' }, act.getAttribute('data-date'), 'add');
-    state.modalId = null;
-    return render();
-  }
-  if (a === 'toggle-wmenu') { state.modalMenu = !state.modalMenu; return render(); }
-  if (a === 'duplicate-workout') {
-    const hit = workoutById(act.getAttribute('data-id'));
-    if (!hit) return;
-    state.editId = '__new__';
-    state.editDraft = draftFor(hit.wo, hit.date, 'duplicate');
-    state.modalId = null; state.modalMenu = false;
-    return render();
-  }
-  if (a === 'open-edit') {
-    const id = act.getAttribute('data-id');
-    const hit = workoutById(id);
-    if (!hit) return;
-    state.editId = id;
-    state.editDraft = draftFor(hit.wo, hit.date, 'edit');
-    state.modalId = null; state.modalMenu = false;
     return render();
   }
   if (a === 'cancel-edit') { state.editId = null; state.editDraft = null; return render(); }
@@ -1962,16 +1797,32 @@ document.getElementById('app').addEventListener('click', e => {
       : { op: 'update_workout', workout_id: state.editId, fields: Object.assign(fields, { date: d.date }) };
     return saveOps([op], () => { state.editId = null; state.editDraft = null; });
   }
-  if (a === 'delete-workout') {
-    const id = act.getAttribute('data-id');
-    state.modalMenu = false;
-    if (id && confirm('Delete this workout from the plan? It can be restored from Settings → History.')) {
-      state.modalId = null;
+});
+
+/* A workout opens the shared workout view (tools/workout_detail.py) — the
+   same one Today shows. Its completion, skip and Send to Garmin go through
+   the API, after which the plan is reloaded underneath; Edit, Duplicate and
+   Delete come back here to this page's own editor. */
+function openWorkout(id) {
+  if (!window.WD) return;
+  window.WD.open(id, { inPlan: true, onChange: reloadPlan, onAction: workoutAction });
+}
+function reloadPlan() {
+  return api('plan').then(data => { applyServer(data); render(); }).catch(() => { /* next load shows it */ });
+}
+function workoutAction(what, id) {
+  if (READ_ONLY) return;
+  const hit = workoutById(id);
+  if (!hit) return;
+  if (what === 'edit') { state.editId = id; state.editDraft = draftFor(hit.wo, hit.date, 'edit'); return render(); }
+  if (what === 'duplicate') { state.editId = '__new__'; state.editDraft = draftFor(hit.wo, hit.date, 'duplicate'); return render(); }
+  if (what === 'delete') {
+    if (confirm('Delete this workout from the plan? It can be restored from Settings → History.')) {
       return saveOps([{ op: 'remove_workout', workout_id: id }]);
     }
-    return render();
+    return openWorkout(id);
   }
-});
+}
 
 /* Edit-dialog fields update the draft as you type without re-rendering (a
    re-render would steal focus); only the sport picker re-renders, since it
@@ -1983,7 +1834,6 @@ document.getElementById('app').addEventListener('scroll', e => {
 }, true);
 
 document.getElementById('app').addEventListener('input', e => {
-  if (state.skipDraft && e.target.hasAttribute && e.target.hasAttribute('data-skip-reason')) state.skipDraft.text = e.target.value;
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
   const syncField = e.target.getAttribute && e.target.getAttribute('data-sync-field');
@@ -2102,7 +1952,7 @@ function inSideScroller(el) {
 let swipe = null;
 document.addEventListener('touchstart', e => {
   swipe = null;
-  if (e.touches.length !== 1 || state.tab !== 'plan' || state.modalId || state.editId) return;
+  if (e.touches.length !== 1 || state.tab !== 'plan' || (window.WD && window.WD.isOpen()) || state.editId) return;
   const t = e.touches[0];
   if (t.clientX < 24 || t.clientX > window.innerWidth - 24) return;   // leave the screen edges to iOS
   if (!e.target.closest || !e.target.closest('.scroller') || e.target.closest('input, select, textarea')) return;
@@ -2120,14 +1970,9 @@ document.addEventListener('touchend', e => {
 }, { passive: true });
 
 document.addEventListener('keydown', e => {
-  if (state.skipDraft && e.target.hasAttribute && e.target.hasAttribute('data-skip-reason')) {
-    if (e.key === 'Enter') { e.preventDefault(); return submitSkipForm(); }
-    if (e.key === 'Escape') { state.skipDraft = null; return render(); }
-  }
+  if (window.WD && window.WD.isOpen()) return;   // the workout view has the keys
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
-  else if (e.key === 'Escape' && state.modalMenu) { state.modalMenu = false; render(); }
-  else if (e.key === 'Escape' && state.modalId) { state.modalId = null; render(); }
-  if (state.tab === 'plan' && !state.modalId && !state.editId) {
+  if (state.tab === 'plan' && !state.editId) {
     if (e.key === 'ArrowLeft') stepWeek(-1);
     if (e.key === 'ArrowRight') stepWeek(1);
   }
@@ -2162,23 +2007,31 @@ document.addEventListener('click', e => {
   setView(link.getAttribute('data-nav'));
 });
 
-/* ?workout=<id> opens that workout on its week (Today's Tomorrow card links
-   here); the parameter is dropped so a reload doesn't reopen it. */
-(function openFromUrl() {
-  const id = new URLSearchParams(APP_QUERY).get('workout');
+/* ?workout=<id> opens that workout on its week (Today's cards and the
+   shared view's "Open in plan" link here); ?do=edit|duplicate|delete goes
+   straight to that action (the shared view's menu, opened on another page).
+   Both are dropped so a reload doesn't repeat them. */
+const URL_WORKOUT = (function () {
+  const q = new URLSearchParams(APP_QUERY);
+  const id = q.get('workout');
   const hit = id && workoutById(id);
-  if (!hit) return;
+  if (!hit) return null;
   state.tab = 'plan';
   state.planWeekNumber = hit.week;
-  state.modalId = id;
   try {
     const url = new URL(location.href);
     url.searchParams.delete('workout');
+    url.searchParams.delete('do');
     history.replaceState(history.state, '', url.toString());
   } catch (e) { /* history unavailable */ }
+  return { id, act: q.get('do') };
 })();
 
 render();
+if (URL_WORKOUT) {
+  if (['edit', 'duplicate', 'delete'].includes(URL_WORKOUT.act)) workoutAction(URL_WORKOUT.act, URL_WORKOUT.id);
+  else openWorkout(URL_WORKOUT.id);
+}
 
 /* The Season page is a separate page load (Week / Month switch in place), so
    let the browser start loading it as soon as the pointer rests on a link to
