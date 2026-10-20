@@ -1324,6 +1324,46 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   .today-desk { gap:20px; grid-template-areas:var(--td-wide); }
 }
 
+/* ── Desktop Today: the workout graph and step list (workout_steps.py) ── */
+.wg { display:flex; flex-direction:column; gap:8px; }
+.wg-info { min-height:58px; padding:10px 12px; border-radius:8px; background:var(--color-inset);
+  box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
+.wg-v { font-size:15px; font-weight:500; }
+.wg-n { font-size:12px; color:var(--color-neutral-400); margin-top:2px; }
+.wg-plot { position:relative; height:110px; padding:0 2px; border-bottom:1px solid var(--color-neutral-800); }
+.wg-bars { position:absolute; inset:0 2px; display:flex; align-items:flex-end; gap:2px; }
+.wg-bar { flex:1 1 0; min-width:4px; padding:0; border:0; border-radius:3px 3px 0 0; cursor:pointer; opacity:.55;
+  transition:opacity .12s ease; }
+.wg-bar:hover { opacity:.8; }
+.wg-bar.on { opacity:1; box-shadow:0 0 0 2px var(--color-text); }
+.wg-bar:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
+.wg-line { position:absolute; left:0; right:0; border-top:1px dashed var(--color-neutral-600); pointer-events:none; }
+.wg-line span { position:absolute; right:0; top:-17px; font-size:10px; color:var(--color-neutral-500); }
+.wg-axis { display:flex; justify-content:space-between; font-size:11px; color:var(--color-neutral-500); }
+.wg-list { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; font-size:13px; }
+.wg-list > li { border-bottom:1px solid var(--color-divider-soft); }
+.wg-list > li:last-child { border-bottom:0; }
+.wg-row, .wg-srow { width:100%; display:grid; grid-template-columns:10px minmax(0,1fr) auto; gap:10px; align-items:center;
+  padding:7px 6px; border:0; border-radius:6px; background:none; color:inherit; font:inherit; text-align:left; }
+.wg-srow { grid-template-columns:minmax(0,1fr) auto; }
+.wg-row { cursor:pointer; }
+.wg-row:hover { background:var(--color-inset); }
+.wg-row.on { background:color-mix(in srgb, var(--color-accent) 14%, transparent); }
+.wg-row.in { padding-left:18px; grid-template-columns:10px minmax(0,1fr) auto; }
+.wg-rep { padding:8px 6px 2px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-500); border-bottom:0 !important; }
+.wg-sw { width:8px; height:8px; border-radius:2px; }
+.wg-row-t { display:flex; flex-direction:column; min-width:0; }
+.wg-row-s { font-size:11px; color:var(--color-neutral-500); }
+.wg-row-a { color:var(--color-neutral-300); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.td-actions-wrap { display:flex; flex-direction:column; gap:6px; margin-top:auto; }
+.td-actions-wrap .td-actions { margin-top:0; }
+.td-gsend[disabled] { opacity:.45; cursor:not-allowed; box-shadow:inset 0 0 0 1px var(--color-neutral-700); color:var(--color-neutral-400); }
+.td-gsend[disabled]:hover { background:transparent; }
+.td-gsend.sent { opacity:1; color:#7fb87a; box-shadow:inset 0 0 0 1px color-mix(in srgb, #7fb87a 45%, transparent); }
+.td-send-msg { font-size:12px; color:var(--color-neutral-400); min-height:0; }
+.td-send-msg:empty { display:none; }
+.td-send-msg.err { color:var(--color-danger); }
+
 /* ── Fitness (design 4a) ── */
 .f-row { display:grid; grid-template-columns:minmax(0,1fr) 64px 86px; gap:8px; align-items:center; padding:11px 14px; }
 .f-ellipsis { font-size:11px; color:var(--color-neutral-600); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -2251,6 +2291,100 @@ def _desk_readiness(data: dict) -> str:
     </section>"""
 
 
+_WG_SCALE = 1.25          # intensity at the top of the graph (threshold sits at 80%)
+_WG_THRESHOLD = {"bike": "FTP", "run": "Threshold", "swim": "CSS"}
+
+
+def _wg_clock(seconds: float) -> str:
+    m = int(round(seconds / 60))
+    return f"{m // 60}:{m % 60:02d}" if m >= 60 else f"{m} min"
+
+
+def _wg_text(bar: dict, i: int, n: int) -> tuple[str, str, str]:
+    """(kicker, value, note) shown for a bar in the graph's detail strip."""
+    kick = f"Step {i + 1} of {n} · {bar['label']}" + (f" · Rep {bar['rep']}" if bar.get("rep") else "")
+    value = " · ".join(p for p in (bar["amount"], bar.get("approx"), bar["target"], bar["extras"]) if p)
+    return kick, value, bar["note"]
+
+
+def _workout_graph(steps: dict, sport: str) -> str:
+    """The workout as bars — width is time, height is intensity against the
+    sport's threshold — with a detail strip above that shows the step a bar
+    (or a step-list row) was clicked for. Starts on the first work step."""
+    bars = steps["bars"]
+    n = len(bars)
+    start = next((i for i, b in enumerate(bars) if b["kind"] == "work"), 0)
+    html = ""
+    for i, b in enumerate(bars):
+        kick, value, note = _wg_text(b, i, n)
+        height = max(6, min(100, round(b["intensity"] / _WG_SCALE * 100)))
+        html += (f'<button type="button" class="wg-bar{" on" if i == start else ""}" data-wg-i="{i}" '
+                 f'aria-pressed="{"true" if i == start else "false"}" aria-label="{_e(kick)}: {_e(value)}" '
+                 f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(note)}" '
+                 f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%;background:{b["color"]}"></button>')
+    k, v, note = _wg_text(bars[start], start, n)
+    total = steps["total_s"]
+    approx = "~" if steps.get("estimated") else ""
+    return f"""
+        <div class="wg">
+          <div class="wg-info" aria-live="polite">
+            <div class="t-kick wg-k">{_e(k)}</div>
+            <div class="wg-v">{_e(v)}</div>
+            <div class="wg-n"{'' if note else ' hidden'}>{_e(note)}</div>
+          </div>
+          <div class="wg-plot">
+            <div class="wg-line" style="bottom:{round(100 / _WG_SCALE)}%"><span>{_WG_THRESHOLD.get(sport, "Threshold")}</span></div>
+            <div class="wg-bars" role="group" aria-label="Workout steps">{html}</div>
+          </div>
+          <div class="wg-axis"><span>0</span><span>{approx}{_wg_clock(total / 2)}</span><span>{approx}{_wg_clock(total)}</span></div>
+        </div>"""
+
+
+def _step_rows(steps: dict) -> str:
+    """The step list beside the graph; a row selects its bar."""
+    def row(item, indent=False):
+        swatch = f'<span class="wg-sw" style="background:{item["color"]}"></span>'
+        sub = " · ".join(p for p in (item["target"], item["extras"]) if p)
+        return (f'<li><button type="button" class="wg-row{" in" if indent else ""}" data-wg-i="{item["index"]}">'
+                f'{swatch}<span class="wg-row-t"><span>{_e(item["label"])}</span>'
+                f'{f"<span class=wg-row-s>{_e(sub)}</span>" if sub else ""}</span>'
+                f'<span class="wg-row-a">{_e(item["amount"])}</span></button></li>')
+    out = ""
+    for g in steps["groups"]:
+        if "repeat" in g:
+            out += f'<li class="wg-rep">{g["repeat"]} &times;{f" · {_e(g["note"])}" if g["note"] else ""}</li>'
+            out += "".join(row(c, indent=True) for c in g["children"])
+        else:
+            out += row(g)
+    return f'<ol class="wg-list">{out}</ol>'
+
+
+def _strength_rows(steps: dict) -> str:
+    out = ""
+    for s in steps["groups"]:
+        tag = f'<span class="wg-row-a">{_e(s["amount"])}</span>' if s["amount"] else ""
+        sub = " · ".join(p for p in (s["detail"], s["note"]) if p)
+        out += (f'<li class="wg-srow"><span class="wg-row-t"><span>{_e(s["label"])}</span>'
+                f'{f"<span class=wg-row-s>{_e(sub)}</span>" if sub else ""}</span>{tag}</li>')
+    return f'<ol class="wg-list">{out}</ol>'
+
+
+def _garmin_button(w: dict) -> str:
+    """Send to Garmin: live when the steps can go, greyed out (with why) when
+    not, and a tick once it's on Garmin. Nothing for a finished session."""
+    if w.get("completed") or not w.get("id"):
+        return ""
+    if w.get("garmin_workout_id"):
+        return (f'<button type="button" class="t-btn td-gsend sent" disabled>'
+                f'{_ph("check-circle", 15)}<span class="gs-label">On Garmin</span></button>')
+    blocker = w.get("garmin_blocker")
+    if blocker:
+        return (f'<button type="button" class="t-btn td-gsend" disabled title="{_e(blocker)}">'
+                f'<span class="gs-label">Send to Garmin</span></button>')
+    return (f'<button type="button" class="t-btn td-gsend" data-garmin-send="{_e(w["id"])}">'
+            f'<span class="gs-label">Send to Garmin</span></button>')
+
+
 def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: str) -> str:
     color = _plan_color(w["sport"])
     act = w.get("activity")
@@ -2259,24 +2393,35 @@ def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: 
     desc = f'<p class="td-desc">{_e(w["description"])}</p>' if w.get("description") else ""
     actions = ""
     if w.get("id"):
-        actions = (f'<div class="td-actions">'
+        blocker = None if w.get("completed") or w.get("garmin_workout_id") else w.get("garmin_blocker")
+        actions = (f'<div class="td-actions-wrap"><div class="td-actions">'
                    f'<button type="button" class="t-btn td-btn-primary" data-plan-workout="{_e(w["id"])}">Workout details</button>'
-                   f'<a class="t-btn" href="{_e(_plan_link(token, w["id"]))}">Open in plan</a></div>')
-    steps = (f'<div class="t-kick">Steps</div><div class="td-steps">{_e(w["details"])}</div>'
-             if w.get("details") else "")
-    side = f'<div class="td-hero-side">{steps}{actions}</div>' if steps else ""
-    main_actions = "" if steps else actions
+                   f'<a class="t-btn" href="{_e(_plan_link(token, w["id"]))}">Open in plan</a>{_garmin_button(w)}</div>'
+                   f'<div class="td-send-msg" role="status">{_e(blocker) if blocker and w["sport"] == "swim" else ""}</div></div>')
+    steps = w.get("steps")
+    graph = ""
+    if steps and steps.get("graph"):
+        graph = _workout_graph(steps, w["sport"])
+        listing = f'<div class="t-kick">Steps</div>{_step_rows(steps)}'
+    elif steps:
+        listing = f'<div class="t-kick">Exercises</div>{_strength_rows(steps)}'
+    elif w.get("details"):
+        listing = f'<div class="t-kick">Steps</div><div class="td-steps">{_e(w["details"])}</div>'
+    else:
+        listing = ""
+    side = f'<div class="td-hero-side">{listing}{actions}</div>' if listing else ""
+    main_actions = "" if listing else actions
     return f"""
       <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
         <div class="t-kick" style="color:var(--color-accent-400)">{kick}</div>
         <div style="display:flex;align-items:center;gap:10px">{done}<span class="td-tag"
             style="background:color-mix(in srgb, {color} 16%, transparent);color:{color}">{_e(w["sport"])}</span></div>
       </div>
-      <div class="td-hero-body">
+      <div class="td-hero-body" data-wg>
         <div class="td-hero-main">
           <div><h2 class="td-title">{_e(w.get("name"))}</h2>
             <div class="t-sub" style="font-size:13px;margin-top:2px">{_session_line(w, planned_prefix=bool(act))}</div></div>
-          {desc}{_session_activity_row(act)}{_session_ftp_row(w, ftp_test)}{main_actions}
+          {desc}{graph}{_session_activity_row(act)}{_session_ftp_row(w, ftp_test)}{main_actions}
         </div>
         {side}
       </div>"""
@@ -3717,8 +3862,13 @@ _ACTIVITY_MODAL_JS = """
   };
   function planWorkoutTarget(e) {
     var t = e.target;
-    if (!t.closest || t.closest('.t-act, button, a, input')) return null;
-    return t.closest('[data-plan-workout]');
+    if (!t.closest) return null;
+    var card = t.closest('[data-plan-workout]');
+    if (!card) return null;
+    // A control inside a card does its own thing — unless it is the
+    // control carrying data-plan-workout (Today's "Workout details").
+    var inner = t.closest('.t-act, button, a, input');
+    return inner && inner !== card ? null : card;
   }
   document.addEventListener('click', function (e) {
     var card = planWorkoutTarget(e);
@@ -3728,6 +3878,76 @@ _ACTIVITY_MODAL_JS = """
     if (e.key !== 'Enter' && e.key !== ' ') return;
     var card = planWorkoutTarget(e);
     if (card && card === e.target) { e.preventDefault(); window.openPlanWorkout(card.getAttribute('data-plan-workout')); }
+  });
+
+  // ── Today (desktop): the workout graph — a bar or step row shows its
+  // step in the strip above the graph; arrow keys walk the bars. ──
+  function wgSelect(scope, i, focus) {
+    var bar = scope.querySelector('.wg-bar[data-wg-i="' + i + '"]');
+    if (!bar) return;
+    scope.querySelectorAll('.wg-bar.on, .wg-row.on').forEach(function (x) {
+      x.classList.remove('on');
+      if (x.classList.contains('wg-bar')) x.setAttribute('aria-pressed', 'false');
+    });
+    bar.classList.add('on');
+    bar.setAttribute('aria-pressed', 'true');
+    scope.querySelectorAll('.wg-row[data-wg-i="' + i + '"]').forEach(function (r) { r.classList.add('on'); });
+    var info = scope.querySelector('.wg-info');
+    info.querySelector('.wg-k').textContent = bar.getAttribute('data-k');
+    info.querySelector('.wg-v').textContent = bar.getAttribute('data-v');
+    var note = info.querySelector('.wg-n');
+    note.textContent = bar.getAttribute('data-n');
+    note.hidden = !bar.getAttribute('data-n');
+    if (focus) bar.focus();
+  }
+  document.addEventListener('click', function (e) {
+    var el = e.target.closest && e.target.closest('[data-wg-i]');
+    var scope = el && el.closest('[data-wg]');
+    if (scope) wgSelect(scope, el.getAttribute('data-wg-i'), false);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    var bar = e.target.closest && e.target.closest('.wg-bar');
+    var scope = bar && bar.closest('[data-wg]');
+    if (!scope) return;
+    e.preventDefault();
+    wgSelect(scope, parseInt(bar.getAttribute('data-wg-i'), 10) + (e.key === 'ArrowLeft' ? -1 : 1), true);
+  });
+
+  // ── Today (desktop): Send to Garmin — builds the workout from its steps,
+  // schedules it on its day and links it to the plan. ──
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-garmin-send]');
+    if (!btn || btn.disabled) return;
+    var label = btn.querySelector('.gs-label');
+    var wrap = btn.closest('.td-actions-wrap');
+    var msg = wrap && wrap.querySelector('.td-send-msg');
+    btn.disabled = true;
+    label.textContent = 'Sending…';
+    if (msg) { msg.textContent = ''; msg.classList.remove('err'); }
+    var t = token();
+    fetch('/training-plan/api/garmin/send' + (t ? '?token=' + encodeURIComponent(t) : ''), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workout_id: btn.getAttribute('data-garmin-send') })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, j: j }; });
+    }).then(function (res) {
+      if (res.ok) {
+        btn.classList.add('sent');
+        btn.removeAttribute('data-garmin-send');
+        label.textContent = 'On Garmin';
+        if (msg) msg.textContent = 'Scheduled on Garmin for ' + (res.j.scheduled_date || 'its day') +
+          ((res.j.warnings || []).length ? ' — Garmin changed: ' + res.j.warnings.join('; ') : '.');
+      } else {
+        btn.disabled = false;
+        label.textContent = 'Send to Garmin';
+        if (msg) { msg.textContent = res.j.error || 'Couldn’t send it to Garmin.'; msg.classList.add('err'); }
+      }
+    }).catch(function () {
+      btn.disabled = false;
+      label.textContent = 'Send to Garmin';
+      if (msg) { msg.textContent = 'Couldn’t reach the server.'; msg.classList.add('err'); }
+    });
   });
 
   window.closeActivityModal = function () {

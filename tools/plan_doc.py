@@ -230,6 +230,12 @@ def validate_plan(plan) -> tuple[list[str], list[str]]:
                     text = w.get(field)
                     if isinstance(text, str) and len(text) > budget:
                         warnings.append(f"{wid}: {field} is {len(text)} characters (budget {budget}).")
+                if w.get("steps") not in (None, []):
+                    from tools import workout_steps
+                    try:
+                        workout_steps.clean_steps(w.get("sport"), w["steps"])
+                    except PlanError as e:
+                        warnings.append(f"{wid}: steps ignored — {e}")
                 if w.get("startTime") not in (None, ""):
                     try:
                         parse_clock(w["startTime"])
@@ -290,7 +296,8 @@ def normalize_plan(plan: dict) -> dict:
 
 # ── EDIT OPERATIONS ───────────────────────────────────────────────────────────
 
-def _clean_workout_fields(fields: dict, *, adding: bool) -> dict:
+def _clean_workout_fields(fields: dict, *, adding: bool, sport: str | None = None) -> dict:
+    """``sport`` is the workout's current sport (an edit), for its steps."""
     if not isinstance(fields, dict):
         raise PlanError("Workout fields must be an object.")
     fields = dict(fields)
@@ -319,6 +326,10 @@ def _clean_workout_fields(fields: dict, *, adding: bool) -> dict:
         if key in fields and fields[key] is not None and not isinstance(fields[key], str):
             raise PlanError(f"{key} must be text.")
     check_ftp_tokens(fields.get("humanReadable"), "humanReadable")
+    if "steps" in fields:
+        # Structured steps (tools/workout_steps.py); null/[] removes them.
+        from tools import workout_steps
+        fields["steps"] = workout_steps.clean_steps(fields.get("sport") or sport, fields["steps"])
     # The calendar feed's start time for this one workout; blank falls back
     # to the weekly schedule in Settings.
     if fields.get("startTime") not in (None, ""):
@@ -347,7 +358,14 @@ def _op_add_workout(plan, op):
 
 def _op_update_workout(plan, op):
     _, _, workout = _require_workout(plan, op.get("workout_id"))
-    fields = _clean_workout_fields(op.get("fields") or {}, adding=False)
+    fields = _clean_workout_fields(op.get("fields") or {}, adding=False, sport=workout.get("sport"))
+    if "sport" in fields and "steps" not in fields and workout.get("steps"):
+        from tools import workout_steps
+        try:
+            workout_steps.clean_steps(fields["sport"], workout["steps"])
+        except PlanError as e:
+            raise PlanError(f"Its steps don't fit a {fields['sport']} workout ({e}) — "
+                            "send new steps (or null to remove them) with the sport change.") from None
     new_date = fields.pop("date", None)
     _apply_fields(workout, fields)
     if not str(workout.get("name") or "").strip():

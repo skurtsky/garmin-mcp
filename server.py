@@ -420,7 +420,7 @@ def get_training_plan(
         plan_id: Plan id (meta.id). Omit for the active plan.
         week_number: One week of detail.
         start_date / end_date: YYYY-MM-DD range of weeks to detail.
-        include_details: False omits description/humanReadable to save tokens.
+        include_details: False omits description/humanReadable/steps to save tokens.
         sections: Top-level parts of the plan document to return in full
             under "sections" — e.g. ["raceStrategy", "assessment", "zones",
             "phases", "preferences"] — before editing them with
@@ -502,6 +502,39 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     (186–191 W)" from the plan's current FTP; add :w for watts only or :pct
     for percent only. Without an FTP it shows the percent. A malformed
     {{bike-ftp…}} token is rejected with an error.
+
+    Structured steps: a run, bike, swim or strength workout may carry
+    "steps" (in add_workout's workout or update_workout's fields; null or []
+    removes them). Today draws run/bike/swim steps as a clickable graph and
+    "Send to Garmin" builds the Garmin workout from them (run, bike and
+    strength; swim later). Keep humanReadable too — it is the text shown
+    everywhere else. Targets name zones, so like the tokens they follow the
+    plan's thresholds. Run/bike/swim:
+      [{"kind": "warmup", "durationS": 900, "target": {"zone": "1-2"}},
+       {"kind": "repeat", "count": 3, "steps": [
+          {"kind": "work", "durationS": 480, "target": {"pctFtp": [88, 92]}},
+          {"kind": "recovery", "durationS": 240, "target": {"zone": "1"}}]},
+       {"kind": "cooldown", "durationS": 600}]
+      kind: warmup | work | recovery | rest | cooldown | repeat (count 1-50
+        and steps; no repeat inside a repeat).
+      durationS or distanceM (not both; neither = until lap).
+      target (optional), exactly one of: {"zone": …} — bike power / run pace /
+        swim CSS-pace zone: 1-4, 5a, 5b, 5c ("ss" bike sweet spot, "strides"
+        run; swim 1-5) or a range "1-2"; {"hrZone": …} (run/bike);
+        {"pctFtp": 75 or [88, 92]} (bike); {"rpe": 1-10}.
+      note (shown with the step); swim only: stroke (free, back, breast, fly,
+        im, drill, kick, pull, choice) and equipment (pullbuoy, paddles, fins,
+        snorkel, kickboard).
+      For Garmin: work steps need a duration or distance and a target Garmin
+        can use (bike: zone or pctFtp; run: zone or hrZone).
+    Strength:
+      [{"kind": "exercise", "exercise": "BARBELL_BACK_SQUAT", "sets": 3,
+        "reps": 8, "weightKg": 60, "restS": 90},
+       {"kind": "rest", "durationS": 120}]
+      exercise is a Garmin exercise name (search_exercises), validated; reps or
+        durationS; weightKg | weightLb, or one weight per set in
+        setWeightsKg | setWeightsLb; restS; warmup: true for warm-up sets; note.
+    A bad step is rejected with an error naming it (e.g. "steps[1].steps[0]").
 
     Args:
         operations: The edits, applied in order.
