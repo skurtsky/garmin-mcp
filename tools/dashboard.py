@@ -1165,14 +1165,36 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 /* ── top bar: the date, or Fitness's own back header ── */
 .topbar-inner { max-width:1120px; margin:0 auto; padding:11px 16px; display:flex; align-items:center; gap:12px; }
 .topbar-fitness { display:none; }
-.dash-date { position:relative; flex:0 0 auto; width:36px; height:36px; display:grid; place-items:center; border-radius:50%;
-  cursor:pointer; color:var(--color-neutral-400); background:rgba(124,129,148,.16); }
+.dash-date-wrap { position:relative; flex:0 0 auto; }
+.dash-date { width:36px; height:36px; display:grid; place-items:center; border-radius:50%; border:0; padding:0;
+  cursor:pointer; color:var(--color-neutral-400); background:rgba(124,129,148,.16); font:inherit; }
 .dash-date.past { color:var(--color-accent-200); background:color-mix(in srgb, var(--color-accent) 20%, transparent); }
-.dash-date input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; border:0; padding:0; }
-.dash-date input::-webkit-calendar-picker-indicator { position:absolute; inset:0; width:100%; height:100%; cursor:pointer; }
-.dash-date:focus-within { outline:2px solid var(--color-accent); outline-offset:2px; }
-#tab-trends:checked ~ .topbar .dash-date, #tab-activity:checked ~ .topbar .dash-date,
-#tab-gear:checked ~ .topbar .dash-date { display:none; }
+.dash-date:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
+.dp-cal { position:absolute; left:0; top:44px; z-index:30; width:336px; max-width:calc(100vw - 32px); box-sizing:border-box;
+  background:var(--color-surface); border-radius:16px; padding:12px; box-shadow:var(--shadow-md);
+  display:flex; flex-direction:column; gap:8px; }
+.dp-cal[hidden] { display:none; }
+.dp-sp { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.dp-title { font-size:15px; font-weight:600; }
+.dp-grid { display:grid; grid-template-columns:repeat(7, minmax(0, 1fr)); gap:2px; }
+.dp-wd { text-align:center; font-size:11px; color:var(--color-neutral-500); }
+.dp-day { height:44px; border:0; border-radius:10px; background:transparent; color:var(--color-text); padding:0;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font:inherit; font-size:14px; cursor:pointer; }
+.dp-day:hover:not(:disabled) { background:var(--color-neutral-900); }
+.dp-day:disabled { color:var(--color-neutral-700); cursor:default; }
+.dp-day.today { box-shadow:inset 0 0 0 1.5px var(--color-accent); }
+.dp-day.sel, .dp-day.sel:hover { background:var(--color-accent); color:var(--color-bg); }
+.dp-day i { width:5px; height:5px; border-radius:99px; }
+.dp-foot { border-top:1px solid var(--color-divider-soft); padding-top:8px; }
+.dp-icbtn { width:44px; height:44px; border:0; border-radius:10px; background:transparent; color:var(--color-neutral-300);
+  display:grid; place-items:center; cursor:pointer; }
+.dp-icbtn:disabled { opacity:.35; cursor:default; }
+.dp-textbtn { min-height:36px; padding:0 10px; border:0; border-radius:8px; background:transparent; color:var(--color-accent-400);
+  font:inherit; font-size:13px; font-weight:500; cursor:pointer; }
+.dp-legend { display:flex; gap:10px; font-size:11px; color:var(--color-neutral-400); align-items:center; }
+.dp-legend i { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:4px; }
+#tab-trends:checked ~ .topbar .dash-date-wrap, #tab-activity:checked ~ .topbar .dash-date-wrap,
+#tab-gear:checked ~ .topbar .dash-date-wrap { display:none; }
 #tab-you:checked ~ .topbar .topbar-main { display:none; }
 #tab-you:checked ~ .topbar .topbar-fitness { display:flex; }
 .week-pill { display:flex; align-items:center; gap:6px; flex:0 0 auto; font-size:11px; padding:4px 10px; border-radius:999px;
@@ -1262,6 +1284,10 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .td-hero { box-shadow:0 0 0 1px var(--color-neutral-700); }
 .td-hero-body { display:flex; flex-wrap:wrap; gap:24px; }
 .td-hero-main { flex:3 1 320px; min-width:0; display:flex; flex-direction:column; gap:12px; }
+.td-steps-fold > summary { cursor:pointer; list-style:none; margin-bottom:6px; }
+.td-steps-fold > summary::-webkit-details-marker { display:none; }
+.td-steps-fold > summary::before { content:"\\25B8  "; }
+.td-steps-fold[open] > summary::before { content:"\\25BE  "; }
 .td-hero-side { flex:2 1 240px; min-width:0; display:flex; flex-direction:column; gap:10px; }
 .td-title { font-size:24px; font-weight:500; letter-spacing:-.01em; line-height:1.25; }
 .td-desc { margin:0; font-size:14px; color:var(--color-neutral-300); max-width:62ch; }
@@ -2426,6 +2452,9 @@ def _garmin_button(w: dict) -> str:
             f'title="{label}">{_GSEND_ICON}</button>')
 
 
+_DESK_STEPS_OPEN_MAX = 4   # longer step lists start collapsed on the desktop hero
+
+
 def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: str) -> str:
     color = _plan_color(w["sport"])
     act = w.get("activity")
@@ -2443,7 +2472,12 @@ def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: 
     graph = ""
     if steps and steps.get("graph"):
         graph = _workout_graph(steps, w["sport"])
-        listing = f'<div class="t-kick">Steps</div>{_step_rows(steps)}'
+        n_steps = sum(len(g["children"]) if "repeat" in g else 1 for g in steps["groups"])
+        if n_steps > _DESK_STEPS_OPEN_MAX:
+            listing = (f'<details class="td-steps-fold"><summary class="t-kick">Steps &middot; {n_steps}</summary>'
+                       f'{_step_rows(steps)}</details>')
+        else:
+            listing = f'<div class="t-kick">Steps</div>{_step_rows(steps)}'
     elif steps:
         listing = f'<div class="t-kick">Exercises</div>{_strength_rows(steps)}'
     elif w.get("details"):
@@ -2582,7 +2616,10 @@ def _desk_week(week: dict, token: str | None) -> str:
             elif d.get("is_today"):
                 body += f'<div class="td-sess t-link{faded}"{_plan_workout_attrs(s)}>{inner}</div>'
             else:
-                body += f'<a class="td-sess{faded}" href="{_e(_plan_link(token, s["id"]))}">{inner}</a>'
+                # Opens the workout dialog in place (the shared view fetches
+                # any plan workout by id); the href is the no-JS fallback.
+                body += (f'<a class="td-sess{faded}" href="{_e(_plan_link(token, s["id"]))}"'
+                         f'{_plan_workout_attrs(s)}>{inner}</a>')
         days += (f'<div class="td-day{" today" if d.get("is_today") else ""}">'
                  f'<div class="td-day-head">{head}{mark}</div>{body}</div>')
     return f"""
@@ -3926,7 +3963,10 @@ _ACTIVITY_MODAL_JS = """
   }
   document.addEventListener('click', function (e) {
     var card = planWorkoutTarget(e);
-    if (card) window.openPlanWorkout(card.getAttribute('data-plan-workout'));
+    if (card) {
+      if (card.tagName === 'A') e.preventDefault();   // the href is the no-JS fallback
+      window.openPlanWorkout(card.getAttribute('data-plan-workout'));
+    }
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -4158,18 +4198,73 @@ _APP_JS = """
   });
 
   // ── Today tab: see another day as if it were today ──
-  var dayInput = document.getElementById('dash-date');
-  if (dayInput) {
-    dayInput.addEventListener('click', function () {
-      try { if (dayInput.showPicker) dayInput.showPicker(); } catch (e) { /* the browser opens it itself */ }
-    });
-    dayInput.addEventListener('change', function () {
-      var day = dayInput.value;
-      if (!day || day > dayInput.max || day < dayInput.min) return;
+  var dpBtn = document.getElementById('dash-date'), dpCal = document.getElementById('dp-cal');
+  if (dpBtn && dpCal) {
+    var DP = JSON.parse(dpCal.getAttribute('data-cfg') || '{}');
+    var DP_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September',
+                     'October', 'November', 'December'];
+    var dpView = { y: +DP.date.slice(0, 4), m: +DP.date.slice(5, 7) - 1 };
+    var dpPad = function (n) { return (n < 10 ? '0' : '') + n; };
+    var dpIso = function (y, m, d) { return y + '-' + dpPad(m + 1) + '-' + dpPad(d); };
+    var dpColor = function (score) {
+      if (score == null) return 'transparent';
+      return score >= 75 ? '#4fae72' : score >= 50 ? '#d9a441' : '#cf5a4e';
+    };
+    var dpQ = function (sel) { return dpCal.querySelector(sel); };
+    var dpGo = function (day) {
       var url = new URL(location.href);
-      if (day === dayInput.getAttribute('data-today')) url.searchParams.delete('date');
-      else url.searchParams.set('date', day);
+      if (day === DP.today) url.searchParams.delete('date'); else url.searchParams.set('date', day);
       location.href = url.toString();
+    };
+    var dpRender = function () {
+      dpQ('[data-cal-title]').textContent = DP_MONTHS[dpView.m] + ' ' + dpView.y;
+      var grid = dpQ('[data-cal-days]');
+      grid.textContent = '';
+      var lead = (new Date(dpView.y, dpView.m, 1).getDay() + 6) % 7;
+      var count = new Date(dpView.y, dpView.m + 1, 0).getDate();
+      for (var i = 0; i < lead; i++) grid.appendChild(document.createElement('span'));
+      for (var d = 1; d <= count; d++) {
+        var day = dpIso(dpView.y, dpView.m, d);
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'dp-day' + (day === DP.today ? ' today' : '') + (day === DP.date ? ' sel' : '');
+        var out = day > DP.today || day < DP.min;
+        b.disabled = out;
+        var score = DP.scores[day];
+        b.setAttribute('aria-label', DP_MONTHS[dpView.m] + ' ' + d + (out ? '' : score != null ? ', readiness ' + score : ', no readiness score'));
+        if (day === DP.date) b.setAttribute('aria-current', 'date');
+        var n = document.createElement('span');
+        n.textContent = d;
+        var dot = document.createElement('i');
+        dot.style.background = day === DP.date && score != null ? 'currentColor' : dpColor(score);
+        b.appendChild(n); b.appendChild(dot);
+        if (!out) b.addEventListener('click', (function (target) { return function () { dpGo(target); }; })(day));
+        grid.appendChild(b);
+      }
+      var last = dpIso(dpView.y, dpView.m, count);
+      dpQ('[data-cal-step="1"]').disabled = last >= DP.today;
+      dpQ('[data-cal-step="-1"]').disabled = dpIso(dpView.y, dpView.m, 1) <= DP.min;
+    };
+    var dpOpen = function (show) {
+      dpCal.hidden = !show;
+      dpBtn.setAttribute('aria-expanded', show ? 'true' : 'false');
+      if (show) { dpView = { y: +DP.date.slice(0, 4), m: +DP.date.slice(5, 7) - 1 }; dpRender(); }
+    };
+    dpBtn.addEventListener('click', function () { dpOpen(dpCal.hidden); });
+    dpCal.querySelectorAll('[data-cal-step]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var t = new Date(dpView.y, dpView.m + +b.getAttribute('data-cal-step'), 1);
+        dpView = { y: t.getFullYear(), m: t.getMonth() };
+        dpRender();
+      });
+    });
+    dpQ('[data-cal-today]').addEventListener('click', function () { dpGo(DP.today); });
+    dpQ('[data-cal-close]').addEventListener('click', function () { dpOpen(false); dpBtn.focus(); });
+    document.addEventListener('click', function (e) {
+      if (!dpCal.hidden && !dpCal.contains(e.target) && !dpBtn.contains(e.target)) dpOpen(false);
+    });
+    dpCal.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { dpOpen(false); dpBtn.focus(); }
     });
   }
 
@@ -4581,18 +4676,43 @@ DASHBOARD_COMPLETE_MARKER = "<!--dashboard-complete-->"
 
 def _date_picker(data: dict) -> str:
     """The Today tab's day picker, left of the date title: pick a past day to
-    see Today as it was then (/dashboard?date=). A native date input sits
-    invisibly over the icon, so each platform's own picker opens (_APP_JS)."""
+    see Today as it was then (/dashboard?date=). The same month calendar as
+    the Recovery page's, its days dotted with that day's readiness (_APP_JS)."""
     try:
         viewing = date.fromisoformat(str(data["date"])[:10])
         today = date.fromisoformat(str(data.get("today") or data["date"])[:10])
     except (KeyError, ValueError, TypeError):
         return ""
     past = viewing < today
-    return (f'<label class="dash-date{" past" if past else ""}" title="Choose a day">{_ph("calendar-blank", 18)}'
-            f'<input type="date" id="dash-date" value="{viewing.isoformat()}" data-today="{today.isoformat()}" '
-            f'min="{(today - timedelta(days=VIEW_HISTORY_DAYS)).isoformat()}" max="{today.isoformat()}" '
-            f'aria-label="Show Today for another day"></label>')
+    scores: dict[str, int] = {}
+    try:
+        import db
+        if db.is_configured():
+            scores = db.get_readiness_scores((today - timedelta(days=VIEW_HISTORY_DAYS)).isoformat(),
+                                             today.isoformat()) or {}
+    except Exception:
+        logger.warning("Date picker: readiness scores unavailable", exc_info=True)
+    cfg = json.dumps({"date": viewing.isoformat(), "today": today.isoformat(),
+                      "min": (today - timedelta(days=VIEW_HISTORY_DAYS)).isoformat(), "scores": scores})
+    dot = lambda c, label: f'<span><i style="background:{c}"></i>{label}</span>'
+    return f"""<div class="dash-date-wrap">
+      <button type="button" id="dash-date" class="dash-date{" past" if past else ""}" aria-haspopup="dialog"
+          aria-expanded="false" aria-controls="dp-cal" aria-label="Show Today for another day" title="Choose a day">{_ph("calendar-blank", 18)}</button>
+      <div id="dp-cal" class="dp-cal" role="dialog" aria-label="Choose a day" data-cfg="{_e(cfg)}" hidden>
+        <div class="dp-sp">
+          <button type="button" class="dp-icbtn" data-cal-step="-1" aria-label="Previous month">{_ph("caret-left", 18)}</button>
+          <div class="dp-title" data-cal-title></div>
+          <button type="button" class="dp-icbtn" data-cal-step="1" aria-label="Next month">{_ph("caret-right", 18)}</button>
+        </div>
+        <div class="dp-grid dp-wd" aria-hidden="true"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+        <div class="dp-grid" data-cal-days></div>
+        <div class="dp-sp dp-foot">
+          <div class="dp-legend">{dot("#4fae72", "High")}{dot("#d9a441", "Moderate")}{dot("#cf5a4e", "Low")}</div>
+          <div style="display:flex;gap:4px"><button type="button" class="dp-textbtn" data-cal-today>Today</button>
+            <button type="button" class="dp-textbtn" data-cal-close>Close</button></div>
+        </div>
+      </div>
+    </div>"""
 
 
 def render_dashboard_body(data: dict, token: str | None = None,
