@@ -107,21 +107,54 @@ def test_page_has_every_section_filter_pills_and_a_back_link():
     assert "Recovered and ready" in page and "74" in page
 
 
-def test_today_reads_last_night_and_the_hrv_card_keeps_its_own_night():
-    page = recovery.render_recovery_html(_data())
-    assert 'aria-label="Choose day, showing Today"' in page
-    assert 'data-hrv-label>Last night<' in page
-    assert 'data-night="2026-10-15"' in page and 'class="rc-dot on" data-night="2026-10-15"' in page
-    assert 'data-label="Mon 12 Oct"' in page               # another night, picked in the card only
-    assert "data-hrv-pinned hidden" in page
+def _hrv_card(page):
+    return page.split('data-sec="hrv"', 1)[1].split("</section>", 1)[0]
 
 
-def test_a_past_day_shows_its_date_not_last_night():
+def test_the_week_runs_monday_to_sunday_and_future_days_are_empty():
+    page = recovery.render_recovery_html(_data())          # Thu 15 Oct 2026
+    card = _hrv_card(page)
+    days = [m.split('"')[0] for m in card.split('data-go="')[1:]]
+    assert days == ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15"]    # Mon..Thu, Fri-Sun not yet
+    assert card.count("rc-dot-none") == 3
+    assert card.index("<span>M 12</span>") < card.index("<span>Today</span>")
+    assert '<div class="rc-stat-l">Last night</div>' in card
+    assert 'class="rc-dot on" data-go="2026-10-15"' in card
+
+
+def test_a_past_day_shows_its_date_and_its_own_week():
     page = recovery.render_recovery_html(_data(day="2026-10-12"))
+    card = _hrv_card(page)
     assert 'aria-label="Choose day, showing Mon 12 Oct"' in page
-    assert 'data-hrv-label>Mon 12 Oct<' in page
-    assert "Last night" not in page.split('data-sec="hrv"', 1)[1].split("</section>", 1)[0].split("rc-dots", 1)[0]
+    assert '<div class="rc-stat-l">Mon 12 Oct</div>' in card
+    assert 'class="rc-dot on" data-go="2026-10-12"' in card
     assert "Mon 12 Oct, morning" in page
+
+
+def test_vitals_bars_are_the_same_week_and_pick_the_day():
+    page = recovery.render_recovery_html(_data(day="2026-10-13"))
+    vitals = page.split('data-sec="vitals"', 1)[1].split("</section>", 1)[0]
+    assert vitals.count('class="rc-mbar on" data-go="2026-10-13"') == 2     # resting HR and respiration
+    assert vitals.count('data-go="2026-10-12"') == 2
+    assert vitals.count("<button") == 14 and vitals.count(" disabled") == 6    # Fri-Sun can't be picked
+    assert "data-hrv" not in page
+
+
+def test_a_week_in_the_past_loads_all_seven_days(monkeypatch):
+    seen = []
+    import db
+    monkeypatch.setattr(db, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "get_recovery_days", lambda a, b: seen.append((a, b)) or [])
+    monkeypatch.setattr(db, "get_readiness_scores", lambda a, b: {})
+    monkeypatch.setattr(recovery, "_workout_hours", lambda d: [])
+    monkeypatch.setattr(recovery, "_live_day", lambda iso: {})
+    monkeypatch.setattr(recovery, "_intraday", lambda iso, t: None)
+    monkeypatch.setattr(recovery, "_local_now", lambda: datetime(2026, 10, 15, 9, tzinfo=timezone.utc))
+    recovery.build_recovery_data("2026-10-07")                # a Wednesday
+    assert seen == [("2026-10-05", "2026-10-11")]
+    seen.clear()
+    recovery.build_recovery_data(None)                        # this week stops at today
+    assert seen == [("2026-10-12", "2026-10-15")]
 
 
 def test_hourly_charts_and_sleep_timeline_render_and_today_stops_at_now():

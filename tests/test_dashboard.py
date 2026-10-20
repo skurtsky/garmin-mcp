@@ -1606,3 +1606,63 @@ def test_a_cached_past_week_is_redone_after_activities_are_added_or_removed(monk
     stamp["at"] = "2026-10-14T18:19:22+00:00"
     assert dashboard._past_week_from_db(1)[0] == {"total_activities": 2}   # changed: redone
     assert calls == [1, 1]
+
+
+# ── Today tab: date picker for a past day ──
+
+def test_parse_view_day_accepts_only_a_past_day_within_the_year(monkeypatch):
+    from datetime import date, datetime, timezone
+    monkeypatch.setattr(dashboard, "_local_now", lambda: datetime(2026, 10, 20, 9, tzinfo=timezone.utc))
+    assert dashboard.parse_view_day("2026-10-12") == date(2026, 10, 12)
+    assert dashboard.parse_view_day("2025-10-20") == date(2025, 10, 20)
+    for bad in (None, "", "junk", "2026-10-20", "2026-10-21", "2025-10-19"):   # today, future, too old
+        assert dashboard.parse_view_day(bad) is None
+
+
+def test_week_offset_of_the_week_holding_a_day():
+    from datetime import date
+    today = date(2026, 10, 20)                                     # a Tuesday
+    assert dashboard._weeks_before_current(date(2026, 10, 19), today) == 0
+    assert dashboard._weeks_before_current(date(2026, 10, 18), today) == 1   # the Sunday before
+    assert dashboard._weeks_before_current(date(2026, 10, 5), today) == 2
+
+
+def test_date_picker_sits_before_the_title_and_marks_a_past_day():
+    now = dashboard.render_dashboard_html({**SAMPLE, "date": "2026-10-20", "today": "2026-10-20"})
+    assert now.index('id="dash-date"') < now.index('class="topbar-title"')
+    assert 'value="2026-10-20"' in now and 'max="2026-10-20"' in now and 'class="dash-date"' in now
+    past = dashboard.render_dashboard_html({**SAMPLE, "date": "2026-10-12", "today": "2026-10-20"})
+    assert 'class="dash-date past"' in past and 'value="2026-10-12"' in past
+    assert "Monday 12 October" in past
+    assert "/recovery?date=2026-10-12" in past                      # Recovery opens on the same day
+
+
+def test_a_past_day_reads_that_days_metrics_and_plan(monkeypatch):
+    import db
+    from datetime import date, datetime, timezone
+    from tools import gear_tracker
+
+    asked = {}
+    monkeypatch.setattr(db, "is_configured", lambda: True)
+    monkeypatch.setattr(db, "get_today_metrics", lambda d: asked.setdefault("metrics", d) and
+                        {"readiness_data": {}, "health_data": {}, "sleep_data": {}, "training_data": {},
+                         "training_status_data": {}})
+    monkeypatch.setattr(dashboard, "_local_now", lambda: datetime(2026, 10, 20, 9, tzinfo=timezone.utc))
+    monkeypatch.setattr(db, "get_trend_metrics", lambda s, e: asked.update(trend=(s, e)) or [])
+    monkeypatch.setattr(db, "get_recent_activities", lambda limit=20: [])
+    monkeypatch.setattr(db, "get_weekly_activities", lambda ws, we: asked.setdefault("weeks", []).append(ws) or [])
+    monkeypatch.setattr(db, "get_personal_records_from_db", lambda: {})
+    monkeypatch.setattr(db, "get_athlete_profile_from_db", lambda: {})
+    monkeypatch.setattr(db, "get_active_goals_from_db", lambda: [])
+    monkeypatch.setattr(db, "get_sync_state", lambda: {})
+    monkeypatch.setattr(gear_tracker, "build_gear_status", lambda: {"gear": []})
+    monkeypatch.setattr(dashboard, "_plan_context", lambda day, athlete: asked.update(plan=day))
+    monkeypatch.setattr(dashboard, "_redesign_data", lambda day, *a: asked.update(redesign=day) or {})
+
+    data = dashboard.build_dashboard_data(day=date(2026, 10, 7))
+    assert data["date"] == "2026-10-07" and data["today"] == "2026-10-20"
+    assert asked["metrics"] == "2026-10-07"
+    assert asked["trend"][1] == "2026-10-07"
+    assert asked["plan"] == asked["redesign"] == date(2026, 10, 7)
+    assert asked["weeks"][0] == "2026-10-05"                        # the Today week widget: that day's week
+    assert "2026-10-19" in asked["weeks"]                           # the Activity tab stays on the current week

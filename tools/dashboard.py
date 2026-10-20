@@ -117,6 +117,20 @@ def _local_now() -> datetime:
     return local_now()
 
 
+VIEW_HISTORY_DAYS = 365   # how far back the Today tab's date picker goes
+
+
+def parse_view_day(value) -> date | None:
+    """The Today tab's ?date= as a past day to view, or None for today —
+    which is also what a bad, future or over-a-year-old value means."""
+    try:
+        day = date.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    today = _local_now().date()
+    return day if today - timedelta(days=VIEW_HISTORY_DAYS) <= day < today else None
+
+
 def _safe(fn, *args, **kwargs):
     """Run a data fetch, returning (result, error_message). Never raises."""
     try:
@@ -244,6 +258,12 @@ def _build_trends_from_db(rows: list[dict], days: int) -> dict:
     return {"period": TREND_PERIOD, "days": days, "metrics": metrics}
 
 
+def _weeks_before_current(day: date, today: date) -> int:
+    """How many weeks the Monday-to-Sunday week holding ``day`` is before
+    the current one (the week_offset the weekly summaries take)."""
+    return max(0, ((today - timedelta(days=today.weekday())) - (day - timedelta(days=day.weekday()))).days // 7)
+
+
 def _past_week_from_db(week_offset: int) -> tuple[dict | None, str | None]:
     """One closed week's summary from PostgreSQL, via the per-offset cache.
 
@@ -278,7 +298,7 @@ def _activities_changed_at() -> str | None:
         return None
 
 
-def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
+def _build_dashboard_data_from_db(week_offset: int = 0, day: date | None = None) -> dict | None:
     """Try to build dashboard data from PostgreSQL. Returns None if DB is
     empty or unavailable, signalling the caller to fall back to Garmin."""
     import db
@@ -288,7 +308,11 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
     _page_t0 = time.monotonic()
     try:
         now = _local_now()
-        today = now.date().isoformat()
+        real_today = now.date()
+        # The day the Today tab shows: today, or a past day picked in its
+        # date picker, in which case everything "today" is as it was then.
+        view = day or real_today
+        today = view.isoformat()
 
         with _timed("today_metrics"):
             today_metrics = db.get_today_metrics(today)
@@ -296,7 +320,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             return None  # DB has no data yet, fall back to Garmin
 
         # Trends: fetch 180 days from DB
-        trend_start = (now.date() - timedelta(days=179)).isoformat()
+        trend_start = (view - timedelta(days=179)).isoformat()
         with _timed("trend_metrics"):
             trend_rows = db.get_trend_metrics(trend_start, today)
 
@@ -316,9 +340,11 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         # at all rather than just a cheaper one (issue 85).
         from tools.activities import get_weekly_summary_from_db
         with _timed("weekly_summary(current)"):
-            week_data, _ = _safe(get_weekly_summary_from_db)
-        if week_offset == 0:
+            week_data, _ = _safe(get_weekly_summary_from_db, _weeks_before_current(view, real_today))
+        if week_offset == 0 and not day:
             activity_week_data, activity_week_err = week_data, None
+        elif week_offset == 0:   # a past day's week isn't the Activity tab's current week
+            activity_week_data, activity_week_err = _safe(get_weekly_summary_from_db)
         else:
             activity_week_data, activity_week_err = _past_week_from_db(week_offset)
 
@@ -343,15 +369,16 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             gear_status, gear_err = _safe(build_gear_status)
 
         with _timed("training_plan"):
-            plan, plan_err = _safe(_plan_context, now.date(), athlete)
+            plan, plan_err = _safe(_plan_context, view, athlete)
         with _timed("redesign"):
-            redesign, _ = _safe(_redesign_data, now.date(), plan, athlete, personal_records)
+            redesign, _ = _safe(_redesign_data, view, plan, athlete, personal_records)
 
         logger.info("dashboard timing: TOTAL %6.0fms (week_offset=%s)",
                     (time.monotonic() - _page_t0) * 1000, week_offset)
 
         data = {
             "date": today,
+            "today": real_today.isoformat(),
             "generated_at": now.strftime("%Y-%m-%d %H:%M"),
             "tz_offset_hours": _tz_offset_hours(),
             "readiness": today_metrics.get("readiness_data"),
@@ -364,7 +391,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "training_err": None,
             "training_status": today_metrics.get("training_status_data"),
             "training_status_err": None,
-            "training_status_daily_history": _daily_training_status_history(trend_rows, now.date(), 90),
+            "training_status_daily_history": _daily_training_status_history(trend_rows, view, 90),
             "training_status_daily_history_err": None,
             "activities": activities,
             "activities_err": None,
@@ -388,7 +415,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
             "plan": plan,
             "plan_err": plan_err,
             "redesign": redesign or {},
-            **_activity_bundle(week_offset, activity_week_data, now.date()),
+            **_activity_bundle(week_offset, activity_week_data, real_today),
         }
         return data
     except Exception as e:
@@ -396,7 +423,7 @@ def _build_dashboard_data_from_db(week_offset: int = 0) -> dict | None:
         return None
 
 
-def build_dashboard_data(week_offset: int = 0) -> dict:
+def build_dashboard_data(week_offset: int = 0, day: date | None = None) -> dict:
     """Fetch every dashboard section from the Garmin client, concurrently.
 
     Each section is fetched independently and its failure is captured rather
@@ -406,9 +433,12 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     the Activity tab shows (issue 85 — week navigation); it never affects the
     Today tab's own "this week" widget, which always reflects the current
     week via the "week" key.
+
+    ``day`` (a past day, from the Today tab's date picker) shows the Today
+    tab as it was that day; None is today.
     """
     # Try PostgreSQL first (fast — no Garmin API calls for cached data)
-    db_data = _build_dashboard_data_from_db(week_offset)
+    db_data = _build_dashboard_data_from_db(week_offset, day)
     if db_data is not None:
         return db_data
 
@@ -431,7 +461,8 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     from tools.gear_tracker import build_gear_status
 
     now = _local_now()
-    today = now.date().isoformat()
+    view = day or now.date()
+    today = view.isoformat()
 
     tasks = {
         "readiness":        (get_daily_readiness, (today,), {}),
@@ -454,6 +485,9 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     # _activity_week_cache_key) so a different past week never serves stale
     # data cached under a different offset.
     cache_keys = {key: key for key in tasks}
+    if day:   # the per-day sections must not share a cache entry with today's
+        for key in ("readiness", "health", "sleep", "training"):
+            cache_keys[key] = f"{key}:{today}"
 
     # The Activity tab's own week when browsing away from the current week
     # (issue 85). Folded into the same fetch batch below — not bolted on
@@ -463,9 +497,18 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
     if week_offset:
         tasks["activity_week"] = (get_weekly_summary, (), {"week_offset": week_offset})
         cache_keys["activity_week"] = _activity_week_cache_key(week_offset)
+    elif day:
+        tasks["activity_week"] = (get_weekly_summary, (), {})
+        cache_keys["activity_week"] = _activity_week_cache_key(0)
+    if day:
+        back = _weeks_before_current(view, now.date())
+        if back:
+            tasks["week"] = (get_weekly_summary, (), {"week_offset": back})
+            cache_keys["week"] = _activity_week_cache_key(back)
 
     data = {
         "date": today,
+        "today": now.date().isoformat(),
         "generated_at": now.strftime("%Y-%m-%d %H:%M"),
         "tz_offset_hours": _tz_offset_hours(),
     }
@@ -495,11 +538,11 @@ def build_dashboard_data(week_offset: int = 0) -> dict:
 
     # The training plan lives in PostgreSQL only, so it's there even when
     # the Garmin data above came live.
-    data["plan"], data["plan_err"] = _safe(_plan_context, now.date(), data.get("athlete"))
-    data["redesign"] = _safe(_redesign_data, now.date(), data["plan"], data.get("athlete"),
+    data["plan"], data["plan_err"] = _safe(_plan_context, view, data.get("athlete"))
+    data["redesign"] = _safe(_redesign_data, view, data["plan"], data.get("athlete"),
                              data.get("personal_records"))[0] or {}
 
-    if not week_offset:
+    if not week_offset and not day:
         data["activity_week"] = data.get("week")
         data["activity_week_err"] = data.get("week_err")
     data["activity_week_offset"] = week_offset
@@ -576,9 +619,9 @@ def get_activity_week_data(week_offset: int = 0) -> dict:
     }
 
 
-def get_dashboard_data(week_offset: int = 0) -> dict:
+def get_dashboard_data(week_offset: int = 0, day: date | None = None) -> dict:
     """Public entry point — returns a snapshot, warm or cold."""
-    return build_dashboard_data(week_offset)
+    return build_dashboard_data(week_offset, day)
 
 
 # ── FORMATTING HELPERS ──────────────────────────────────────────────────────
@@ -1120,6 +1163,14 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 /* ── top bar: the date, or Fitness's own back header ── */
 .topbar-inner { max-width:1120px; margin:0 auto; padding:11px 16px; display:flex; align-items:center; gap:12px; }
 .topbar-fitness { display:none; }
+.dash-date { position:relative; flex:0 0 auto; width:36px; height:36px; display:grid; place-items:center; border-radius:50%;
+  cursor:pointer; color:var(--color-neutral-400); background:rgba(124,129,148,.16); }
+.dash-date.past { color:var(--color-accent-200); background:color-mix(in srgb, var(--color-accent) 20%, transparent); }
+.dash-date input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; border:0; padding:0; }
+.dash-date input::-webkit-calendar-picker-indicator { position:absolute; inset:0; width:100%; height:100%; cursor:pointer; }
+.dash-date:focus-within { outline:2px solid var(--color-accent); outline-offset:2px; }
+#tab-trends:checked ~ .topbar .dash-date, #tab-activity:checked ~ .topbar .dash-date,
+#tab-gear:checked ~ .topbar .dash-date { display:none; }
 #tab-you:checked ~ .topbar .topbar-main { display:none; }
 #tab-you:checked ~ .topbar .topbar-fitness { display:flex; }
 .week-pill { display:flex; align-items:center; gap:6px; flex:0 0 auto; font-size:11px; padding:4px 10px; border-radius:999px;
@@ -1916,7 +1967,10 @@ def _focus_recovery(data: dict, token: str | None = None) -> str:
             <div style="height:56px;display:flex;align-items:flex-end;gap:8px">{stress_bars}</div></div>
         </div>
         </div>"""
-    return _focus_card("Recovery", body, gap=12, href=_pwa_asset_url("/recovery", token))
+    href = _pwa_asset_url("/recovery", token)
+    if data.get("today") and data.get("date") != data.get("today"):   # opens the Recovery page on the day being viewed
+        href += ("&" if "?" in href else "?") + urlencode({"date": data.get("date")})
+    return _focus_card("Recovery", body, gap=12, href=href)
 
 
 def _in_focus(data: dict, start: int, token: str | None = None) -> str:
@@ -2169,7 +2223,7 @@ def _panel_activity(data: dict, token: str | None = None) -> str:
     err = data.get("activity_week_err") or data.get("week_err") or data.get("activities_err")
     today = _local_now().date()
     try:
-        today = date.fromisoformat(str(data.get("date"))[:10])
+        today = date.fromisoformat(str(data.get("today") or data.get("date"))[:10])
     except (TypeError, ValueError):
         pass
     return render_panel(week, data.get("activity_prev_week"), data.get("activity_extras"),
@@ -2359,7 +2413,7 @@ def _panel_fitness(data: dict) -> str:
     redesign = data.get("redesign") or {}
     today = _local_now().date()
     try:
-        today = date.fromisoformat(str(data.get("date"))[:10])
+        today = date.fromisoformat(str(data.get("today") or data.get("date"))[:10])
     except (TypeError, ValueError):
         pass
     return f"""
@@ -3415,6 +3469,22 @@ _APP_JS = """
     }
   });
 
+  // ── Today tab: see another day as if it were today ──
+  var dayInput = document.getElementById('dash-date');
+  if (dayInput) {
+    dayInput.addEventListener('click', function () {
+      try { if (dayInput.showPicker) dayInput.showPicker(); } catch (e) { /* the browser opens it itself */ }
+    });
+    dayInput.addEventListener('change', function () {
+      var day = dayInput.value;
+      if (!day || day > dayInput.max || day < dayInput.min) return;
+      var url = new URL(location.href);
+      if (day === dayInput.getAttribute('data-today')) url.searchParams.delete('date');
+      else url.searchParams.set('date', day);
+      location.href = url.toString();
+    });
+  }
+
   // ── Activity tab: change week in place ──
   var weekCache = {};
   var loadingWeek = false;
@@ -3821,6 +3891,22 @@ _BOOT_HTML = """
 DASHBOARD_COMPLETE_MARKER = "<!--dashboard-complete-->"
 
 
+def _date_picker(data: dict) -> str:
+    """The Today tab's day picker, left of the date title: pick a past day to
+    see Today as it was then (/dashboard?date=). A native date input sits
+    invisibly over the icon, so each platform's own picker opens (_APP_JS)."""
+    try:
+        viewing = date.fromisoformat(str(data["date"])[:10])
+        today = date.fromisoformat(str(data.get("today") or data["date"])[:10])
+    except (KeyError, ValueError, TypeError):
+        return ""
+    past = viewing < today
+    return (f'<label class="dash-date{" past" if past else ""}" title="Choose a day">{_ph("calendar-blank", 18)}'
+            f'<input type="date" id="dash-date" value="{viewing.isoformat()}" data-today="{today.isoformat()}" '
+            f'min="{(today - timedelta(days=VIEW_HISTORY_DAYS)).isoformat()}" max="{today.isoformat()}" '
+            f'aria-label="Show Today for another day"></label>')
+
+
 def render_dashboard_body(data: dict, token: str | None = None,
                           initial_tab: str | None = None, error: str | None = None,
                           activity_filter: str | None = None) -> str:
@@ -3862,6 +3948,7 @@ def render_dashboard_body(data: dict, token: str | None = None,
     fitness_sub = f"Garmin + {plan['title']}" if plan else "Garmin"
     nav = render_nav_html(None, token, tabs=_NAV_TABS, title=(plan or {}).get("athlete") or "Ridgeline")
 
+    date_picker = _date_picker(data)
     body = f"""
 <div style="min-height:100vh;background:
     radial-gradient(120% 60% at 12% -10%, color-mix(in srgb, var(--color-accent) 13%, transparent), transparent 60%),
@@ -3877,6 +3964,7 @@ def render_dashboard_body(data: dict, token: str | None = None,
   <div class="topbar" style="position:sticky;top:0;z-index:20;backdrop-filter:blur(14px);
       background:color-mix(in srgb, var(--color-bg) 78%, transparent);border-bottom:1px solid var(--color-divider)">
     <div class="topbar-main topbar-inner">
+      {date_picker}
       <div style="flex:1;min-width:0">
         <div class="topbar-title">{_e(weekday_line)}</div>
         <div style="font-size:12px;color:var(--color-neutral-500)">{sync_line}</div>
@@ -3962,7 +4050,7 @@ def render_dashboard_html(data: dict, token: str | None = None,
 
 async def stream_dashboard(week_offset: int = 0, token: str | None = None,
                            initial_tab: str | None = None, error: str | None = None,
-                           activity_filter: str | None = None):
+                           activity_filter: str | None = None, day: date | None = None):
     """The dashboard as two chunks: the head plus a loading skeleton right
     away, then the real page once its data has been fetched (in a worker
     thread, so a slow fetch doesn't block other requests).
@@ -3973,7 +4061,8 @@ async def stream_dashboard(week_offset: int = 0, token: str | None = None,
     import anyio
     yield _dashboard_head(token) + _BOOT_HTML
     try:
-        data = await anyio.to_thread.run_sync(get_dashboard_data, week_offset)
+        fetch = (get_dashboard_data, week_offset) + ((day,) if day else ())
+        data = await anyio.to_thread.run_sync(*fetch)
         yield render_dashboard_body(data, token, initial_tab, error, activity_filter)
     except Exception as e:  # noqa: BLE001 — shown in the page, never raised
         logger.exception("Dashboard render failed")

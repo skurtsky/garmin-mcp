@@ -1138,8 +1138,8 @@ def build_asgi_app():
     from starlette.concurrency import run_in_threadpool
     from starlette.responses import StreamingResponse
 
-    from tools.dashboard import (get_activity_week_data, render_activity_calendar, render_activity_panel,
-                                 stream_dashboard)
+    from tools.dashboard import (get_activity_week_data, parse_view_day, render_activity_calendar,
+                                 render_activity_panel, stream_dashboard)
     from tools import training_plan
     from tools import plan_calendar
     from tools import weekly_summaries
@@ -1243,7 +1243,9 @@ def build_asgi_app():
             week_offset = _week_offset(query)
             # Streamed: the head and a loading skeleton go out at once, the
             # rest once the data is in (tools.dashboard.stream_dashboard).
-            chunks = stream_dashboard(week_offset, token, initial_tab, error, activity_filter)
+            # ?date= shows Today as it was on a past day.
+            day = parse_view_day(query.get("date", [None])[0])
+            chunks = stream_dashboard(week_offset, token, initial_tab, error, activity_filter, day)
             headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
             if _accepts_gzip(scope):
                 chunks = _gzip_flushing(chunks)

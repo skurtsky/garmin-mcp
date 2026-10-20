@@ -5,7 +5,7 @@ sleep (with a stage timeline), HRV status against its baseline, body battery
 and stress hour by hour, and the overnight vitals.
 
 The day's numbers are the synced daily_metrics payloads (PostgreSQL), the
-same ones the Today tab reads, with the six days before it for the weekly
+same ones the Today tab reads, with the rest of its Monday-to-Sunday week for the weekly
 charts. A day the sync hasn't stored yet (or a deployment without
 PostgreSQL) falls back to the live Garmin tools for that one day.
 
@@ -14,9 +14,11 @@ synced, so they come from Garmin live (get_sleep_data / get_stress_data),
 cached per day in the dashboard's section cache. If that call fails the
 page still renders; those charts just say they're unavailable.
 
-?date=YYYY-MM-DD picks the day (default today; up to a year back). Picking
-another day in the calendar is a navigation. Everything else — the section
-filter pills, the HRV card's own night, the linked hour of the two hourly
+?date=YYYY-MM-DD picks the day (default today; up to a year back). The
+weekly charts show that day's calendar week, Monday to Sunday. Picking
+another day — in the calendar, on an HRV dot or on a resting HR / respiration
+bar — is a navigation, so the whole page follows it. Everything else — the section
+filter pills, the linked hour of the two hourly
 charts, the sleep-stage highlight — is a small inline script over
 server-rendered markup (_RECOVERY_JS).
 """
@@ -248,12 +250,13 @@ def build_recovery_data(day_param: str | None = None) -> dict:
     now = _local_now()
     today = now.date()
     day = _parse_day(day_param, today)
-    start = day - timedelta(days=6)
+    start = day - timedelta(days=day.weekday())      # the week runs Monday to Sunday
+    end = min(today, start + timedelta(days=6))
     days: dict[str, dict] = {}
     scores: dict[str, int] = {}
     workout_hours: list[int] = []
     if db.is_configured():
-        rows, err = _safe(db.get_recovery_days, start.isoformat(), day.isoformat())
+        rows, err = _safe(db.get_recovery_days, start.isoformat(), end.isoformat())
         for r in rows or []:
             days[str(r["metric_date"])] = {
                 "sleep": r.get("sleep_data") or {}, "readiness": r.get("readiness_data") or {},
@@ -524,8 +527,7 @@ def _hrv_section(day: date, today: date, week: list[tuple[date, dict]]) -> str:
             in_range = low is None or high is None or low <= v <= high
             c = _GREEN if in_range else _AMBER
             dots.append(
-                f'<button type="button" class="rc-dot{" on" if sel else ""}" data-night="{d.isoformat()}" '
-                f'data-v="{_num(v)}" data-label="{html.escape(label, quote=True)}" '
+                f'<button type="button" class="rc-dot{" on" if sel else ""}" data-go="{d.isoformat()}" '
                 f'aria-label="{_day_short(d)}, HRV {_num(v)} milliseconds" aria-pressed="{"true" if sel else "false"}">'
                 f'<span class="rc-dot-v">{_num(v)}</span><span class="rc-dot-d" style="background:{c}"></span>'
                 f'<span class="rc-dot-s" style="height:{max(0, y(v) - 5):.0f}px;background:color-mix(in srgb, {c} 45%, transparent)"></span></button>')
@@ -539,7 +541,7 @@ def _hrv_section(day: date, today: date, week: list[tuple[date, dict]]) -> str:
   <section class="rc-card" data-sec="hrv" aria-label="HRV status">
     {_card_head(_I_PULSE, _TEAL, "HRV status", pill)}
     <div class="rc-3">
-      <div><div class="rc-stat-l" data-hrv-label>{_e(sel_label)}</div><div class="rc-stat-v rc-lg"><span data-hrv-value>{_num(sel_v)}</span>{_unit("ms")}</div></div>
+      <div><div class="rc-stat-l">{_e(sel_label)}</div><div class="rc-stat-v rc-lg">{_num(sel_v)}{_unit("ms")}</div></div>
       <div><div class="rc-stat-l">7-day avg</div><div class="rc-stat-v rc-lg">{_num(weekly)}{_unit("ms")}</div></div>
       <div><div class="rc-stat-l">Baseline</div><div class="rc-stat-v" style="padding-top:6px">{baseline}{_unit("ms")}</div></div>
     </div>
@@ -549,10 +551,6 @@ def _hrv_section(day: date, today: date, week: list[tuple[date, dict]]) -> str:
         <div class="rc-hrv-plot">{band}{avg_line}<div class="rc-dots">{"".join(dots)}</div></div>
         <div class="rc-dots rc-dot-days">{"".join(labels)}</div>
       </div>
-    </div>
-    <div class="rc-pinned" data-hrv-pinned hidden>
-      <span>Showing <b data-hrv-pinned-label></b> in this chart only</span>
-      <button type="button" data-hrv-reset>Reset</button>
     </div>
     <div class="rc-legend">
       <span><i class="rc-lg-band"></i>Your baseline</span><span><i class="rc-lg-avg"></i>7-day avg</span>
@@ -691,20 +689,27 @@ def _stress_section(d: dict, hrs: dict) -> str:
   </section>"""
 
 
-def _mini_bars(values: list, color: str) -> str:
+def _mini_bars(values: list, color: str, week: list[tuple[date, dict]], day: date, today: date, what: str) -> str:
+    """One bar per weekday, Monday to Sunday; a tap picks that day for the page."""
     known = [v for v in values if v is not None]
     if not known:
         return ""
     lo, hi = min(known), max(known)
     span = (hi - lo) or 1
-    bars = "".join(
-        '<span style="height:4px;background:var(--color-neutral-800)"></span>' if v is None else
-        f'<span style="height:{round((v - lo) / span * 30) + 8}px;background:{color if i == len(values) - 1 else "var(--color-neutral-700)"}"></span>'
-        for i, v in enumerate(values))
-    return f'<div class="rc-mini" aria-hidden="true">{bars}</div>'
+    bars = []
+    for (d, _), v in zip(week, values):
+        sel = d == day
+        h = 4 if v is None else round((v - lo) / span * 30) + 8
+        bg = ("var(--color-neutral-800)" if v is None else color if sel else "var(--color-neutral-700)")
+        label = f"{_day_short(d)}, {what} {_num(v, 1) if what == 'respiration' else _num(v)}" if v is not None else f"{_day_short(d)}, no {what}"
+        go = f' data-go="{d.isoformat()}"' if d <= today else " disabled"
+        bars.append(f'<button type="button" class="rc-mbar{" on" if sel else ""}"{go} aria-label="{label}" '
+                    f'aria-pressed="{"true" if sel else "false"}"><span style="height:{h}px;background:{bg}"></span></button>')
+    days = "".join(f'<span class="{"on" if d == day else ""}">{d.strftime("%a")[0]}</span>' for d, _ in week)
+    return f'<div class="rc-mini">{"".join(bars)}</div><div class="rc-mini-days" aria-hidden="true">{days}</div>'
 
 
-def _vitals_section(d: dict, week: list[tuple[date, dict]]) -> str:
+def _vitals_section(day: date, today: date, d: dict, week: list[tuple[date, dict]]) -> str:
     rhr = [_f(_resting_hr(x)) for _, x in week]
     resp = [_f(_respiration(x)) for _, x in week]
     known = [v for v in rhr if v is not None]
@@ -715,13 +720,13 @@ def _vitals_section(d: dict, week: list[tuple[date, dict]]) -> str:
     <div class="rc-card rc-vital">
       <div class="rc-vl"><span style="color:#e0736f">{_icon(_I_HEART, 14)}</span>Resting HR</div>
       <div class="rc-big rc-v">{_num(_resting_hr(d))}{_unit("bpm")}</div>
-      {_mini_bars(rhr, "#e0736f")}
+      {_mini_bars(rhr, "#e0736f", week, day, today, "resting heart rate")}
       <div class="rc-small">7-day avg {_num(rhr_avg)} bpm</div>
     </div>
     <div class="rc-card rc-vital">
       <div class="rc-vl"><span style="color:{_TEAL}">{_icon(_I_LUNGS, 14)}</span>Respiration</div>
       <div class="rc-big rc-v">{_num(_respiration(d), 1)}{_unit("brpm")}</div>
-      {_mini_bars(resp, _TEAL)}
+      {_mini_bars(resp, _TEAL, week, day, today, "respiration")}
       <div class="rc-small">Avg while asleep</div>
     </div>
   </section>"""
@@ -739,8 +744,9 @@ def render_recovery_body(data: dict, token: str | None = None) -> str:
     today = date.fromisoformat(data["today"])
     is_today = day == today
     days = data.get("days") or {}
-    week = [(day - timedelta(days=i), days.get((day - timedelta(days=i)).isoformat()) or {})
-            for i in range(6, -1, -1)]
+    monday = day - timedelta(days=day.weekday())
+    week = [(monday + timedelta(days=i), days.get((monday + timedelta(days=i)).isoformat()) or {})
+            for i in range(7)]
     d = days.get(data["date"]) or {}
     hrs = _hours(data, d)
 
@@ -784,7 +790,7 @@ def render_recovery_body(data: dict, token: str | None = None) -> str:
   {_readiness_section(day, d, is_today)}
   <div class="rc-row">{_sleep_section(d, data.get("intraday"))}{_hrv_section(day, today, week)}</div>
   <div class="rc-row">{_battery_section(data, d, hrs)}{_stress_section(d, hrs)}</div>
-  {_vitals_section(d, week)}
+  {_vitals_section(day, today, d, week)}
 </main>"""
     nav = render_nav_html("today", token, title="Ridgeline")
     return (f"{nav}{main}<script>window.__RC = {config};</script><script>{_RECOVERY_JS}</script>"
@@ -970,7 +976,13 @@ RECOVERY_CSS = """
 .rc-vl span { display:grid; }
 .rc-big.rc-v { font-size:26px; }
 .rc-mini { display:flex; gap:4px; height:40px; align-items:flex-end; }
-.rc-mini span { flex:1; border-radius:3px; }
+.rc-mbar { flex:1; min-width:0; height:100%; padding:0; border:0; background:transparent; cursor:pointer; display:flex; align-items:flex-end; }
+.rc-mbar:disabled { cursor:default; }
+.rc-mbar span { display:block; width:100%; border-radius:3px; }
+.rc-mbar.on span { box-shadow:0 0 0 1.5px var(--color-surface), 0 0 0 3px var(--color-text); }
+.rc-mini-days { display:flex; gap:4px; margin-top:6px; font-size:10px; color:var(--color-neutral-500); }
+.rc-mini-days span { flex:1; text-align:center; }
+.rc-mini-days .on { color:var(--color-text); font-weight:600; }
 @media (min-width: 900px) {
   .rc { max-width:1160px; padding:24px 24px 48px; gap:20px; }
   .rc-row { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:20px; align-items:stretch; }
@@ -1053,28 +1065,6 @@ _RECOVERY_JS = r"""
     b.addEventListener('click', function () { pickHour(+b.getAttribute('data-hour')); });
   });
 
-  // ── HRV: its own night, never the page's day ──
-  var pinned = one('[data-hrv-pinned]');
-  function pickNight(btn) {
-    all('[data-night]').forEach(function (b) {
-      var on = b === btn;
-      b.classList.toggle('on', on);
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    });
-    setText('[data-hrv-label]', btn.getAttribute('data-label'));
-    setText('[data-hrv-value]', btn.getAttribute('data-v'));
-    if (pinned) {
-      pinned.hidden = btn.getAttribute('data-night') === C.date;
-      setText('[data-hrv-pinned-label]', btn.getAttribute('data-label'));
-    }
-  }
-  all('[data-night]').forEach(function (b) { b.addEventListener('click', function () { pickNight(b); }); });
-  var reset = one('[data-hrv-reset]');
-  if (reset) reset.addEventListener('click', function () {
-    var own = one('[data-night="' + C.date + '"]');
-    if (own) pickNight(own);
-  });
-
   // ── Date picker ──
   var btn = document.getElementById('rc-date-btn'), cal = document.getElementById('rc-cal');
   if (!btn || !cal) return;
@@ -1092,6 +1082,10 @@ _RECOVERY_JS = r"""
     if (day === C.today) u.searchParams.delete('date'); else u.searchParams.set('date', day);
     window.location.href = u.toString();
   }
+  // The HRV dots and the resting HR / respiration bars each pick a day for the whole page.
+  all('[data-go]').forEach(function (b) {
+    b.addEventListener('click', function () { go(b.getAttribute('data-go')); });
+  });
   function render() {
     one('[data-cal-title]', cal).textContent = MONTHS[view.m] + ' ' + view.y;
     var grid = one('[data-cal-days]', cal);
