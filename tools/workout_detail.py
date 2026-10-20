@@ -99,6 +99,20 @@ _WATCH = ('<g transform="translate(-1.6 0)"><rect x="10" y="6" width="12" height
           '<path class="gs-tick" d="M13.2 12.2l2 2 3.6-3.8"></path></g>')
 
 
+# Darker shades of the palette for light mode, so coloured text on its tint
+# keeps 4.5:1 on white (the plan viewer's SPORT_COLORS_LIGHT, extended).
+_LIGHT = {"#7fb87a": "#3f7a3a", "#5eb8c9": "#24707f", "#d99a5e": "#9a5a1f", "#9184d9": "#5d51b0",
+          "#c97fa0": "#94416a", "#d9b35a": "#7d6210", "#7c8194": "#5d6275", "#6c93b0": "#355f7e",
+          "#5eb8ad": "#24716a", "#8fb85e": "#4c6c24", "#d9705e": "#a5402e", "#c9506a": "#9c2f48",
+          "#d98a5e": "#9f5126"}
+
+
+def _ink(color: str) -> str:
+    """A style fragment colouring text with ``color`` in dark mode and its
+    darker shade in light mode (the .wd-ink rule)."""
+    return f"--ink:{color};--ink-l:{_LIGHT.get(color, color)}"
+
+
 def _tint(color: str, pct: int = 16) -> str:
     return f"color-mix(in srgb, {color} {pct}%, transparent)"
 
@@ -206,8 +220,8 @@ def _zones_card(plan: dict, sport: str, steps, primary_zone) -> str:
                  f'opacity:{1 if on else .28}"></span>')
         if on:
             labels += f'<span style="left:{b["left"] + b["width"] / 2:.1f}%">Z{_e(b["code"])}</span>'
-        rows += (f'<div class="wd-zrow{" on" if on else ""}"><span class="wd-zk" style="background:{_tint(color, 20)};'
-                 f'color:{color}">{_e(b["code"])}</span><span class="wd-zn">{_e(b["name"])}<small>{_e(b["text"])}</small></span>'
+        rows += (f'<div class="wd-zrow{" on" if on else ""}"><span class="wd-zk wd-ink" style="background:{_tint(color, 20)};'
+                 f'{_ink(color)}">{_e(b["code"])}</span><span class="wd-zn">{_e(b["name"])}<small>{_e(b["text"])}</small></span>'
                  f'<span class="wd-zt"><span style="left:{b["left"]:.1f}%;width:{b["width"]:.1f}%;background:{color}"></span></span></div>')
     used_txt = ", ".join(f"Z{c}" for c in [b["code"] for b in z["bands"]] if c in used)
     label = f"{sport.capitalize()} zones" + (f"; this workout uses {used_txt}" if used_txt else "")
@@ -383,7 +397,7 @@ def _done_card(w: dict, act: dict, token) -> str:
     return f"""
         <a class="wd-card wd-done" href="{_e(_activity_link(act['garmin_id'], token))}" data-wd-activity="{int(act['garmin_id'])}">
           <div class="wd-done-top"><span class="wd-bar-c" style="background:{color}"></span>
-            <div style="flex:1;min-width:0"><div class="wd-kick" style="color:{_DONE}">Done with</div>
+            <div style="flex:1;min-width:0"><div class="wd-kick wd-ink" style="{_ink(_DONE)}">Done with</div>
               <div class="wd-done-n">{_e(act.get('name') or 'Garmin activity')}{f' · {_e(when)}' if when else ''}</div></div>
             <span class="wd-link">Open activity {_icon(_I_NEXT, 14)}</span></div>
           {f'<div class="wd-stats">{cells}</div>' if cells else ''}
@@ -445,18 +459,18 @@ def render(row: dict, workout_id: str, token: str | None = None) -> dict:
     phase = _phase_for_week(plan, week)
     kick = " · ".join(p for p in (_day_label(w["_date"], w.get("startTime")),
                                   f"Week {week.get('weekNumber')}" if week.get("weekNumber") else "", phase or "") if p)
-    chips = [f'<span class="wd-chip" style="background:{_tint(color)};color:{color};box-shadow:none">{_e(sport.capitalize())}</span>']
+    chips = [f'<span class="wd-chip wd-ink" style="background:{_tint(color)};{_ink(color)};box-shadow:none">{_e(sport.capitalize())}</span>']
     chips += [f'<span class="wd-chip">{_e(x)}</span>' for x in (
         (w.get("type") or "").capitalize(), _dur(w.get("durationMinutes")), _distance(w), w.get("terrain")) if x]
     if w.get("primaryZone"):
         zc = _ZONE_COLORS.get((re.findall(r"[1-5][abc]?", str(w["primaryZone"]).lower()) or ["?"])[0], "#7c8194")
-        chips.append(f'<span class="wd-chip" style="background:{_tint(zc)};color:{zc};box-shadow:none">{_e(w["primaryZone"])}</span>')
+        chips.append(f'<span class="wd-chip wd-ink" style="background:{_tint(zc)};{_ink(zc)};box-shadow:none">{_e(w["primaryZone"])}</span>')
     if w.get("difficulty"):
         dc = _DIFFICULTY.get(str(w["difficulty"]).lower(), "#7c8194")
-        chips.append(f'<span class="wd-chip" style="background:{_tint(dc)};color:{dc};box-shadow:none">{_e(str(w["difficulty"]).capitalize())}</span>')
+        chips.append(f'<span class="wd-chip wd-ink" style="background:{_tint(dc)};{_ink(dc)};box-shadow:none">{_e(str(w["difficulty"]).capitalize())}</span>')
     if w.get("trainingEffect"):
         chips.append(f'<span class="wd-chip">{_e(w["trainingEffect"])}</span>')
-    badge = (f'<span class="wd-badge" style="background:{_tint(_DONE)};color:{_DONE}">{_icon(_I_CHECK, 14, 2.4)}Done</span>' if done
+    badge = (f'<span class="wd-badge wd-ink" style="background:{_tint(_DONE)};{_ink(_DONE)}">{_icon(_I_CHECK, 14, 2.4)}Done</span>' if done
              else '<span class="wd-badge wd-badge-skip">Skipped</span>' if skipped else "")
 
     # Actions — the same set in the header (desktop) and the pinned bar (phone).
@@ -559,6 +573,20 @@ def render(row: dict, workout_id: str, token: str | None = None) -> dict:
             "title": w.get("name") or "Workout"}
 
 
+def preview(plan: dict, sport: str | None, steps) -> dict:
+    """The plan editor's live preview of steps being typed: the graph (or the
+    exercise cards) exactly as the workout view will draw them, with their
+    total time. PlanError, naming the step, if they don't validate."""
+    cleaned = workout_steps.clean_steps(sport, steps)
+    if not cleaned:
+        return {"html": "", "totalMinutes": None, "count": 0}
+    if sport == "strength":
+        return {"html": _strength(cleaned), "totalMinutes": None, "count": len(cleaned)}
+    resolved = workout_steps.resolve(plan, sport, cleaned)
+    return {"html": _structure(resolved, sport, plan), "totalMinutes": round(resolved["total_s"] / 60),
+            "estimated": bool(resolved.get("estimated")), "count": len(resolved["bars"])}
+
+
 # ── the shared overlay (both pages) ───────────────────────────────────────────
 # Uses the pages' own colour tokens (both define the same names, dark and
 # light); --color-inset and --color-divider-soft exist only on the dashboard,
@@ -570,6 +598,9 @@ WD_CSS = r"""
   --wd-line:var(--color-divider-soft, color-mix(in srgb, var(--color-text) 8%, transparent));
   color:var(--color-text); font-size:15px; line-height:1.5; }
 .wd-overlay[hidden] { display:none; }
+.wd-ink { color:var(--ink); }
+html[data-theme=light] .wd-ink { color:var(--ink-l); }
+html[data-theme=light] .wd-gsend.sent, html[data-theme=light] .wd-watch svg { color:#3f7a3a; }
 html.wd-lock, html.wd-lock body { overflow:hidden; }
 .wd-scrim { position:absolute; inset:0; background:var(--color-backdrop, rgba(10,11,16,.7)); }
 .wd-panel { position:absolute; display:flex; flex-direction:column; background:var(--wd-panel); overflow:hidden;
@@ -631,7 +662,7 @@ html.wd-lock, html.wd-lock body { overflow:hidden; }
 /* body */
 .wd-body { display:grid; gap:20px; align-content:start; }
 .wd-main, .wd-side { display:flex; flex-direction:column; gap:16px; min-width:0; }
-.wd-text { font-size:13px; line-height:1.7; white-space:pre-wrap; color:var(--color-neutral-200); }
+.wd-text { font-size:13px; line-height:1.7; white-space:pre-wrap; color:var(--color-text); }
 .wd-msg { font-size:13px; color:var(--color-danger, #e0736f); }
 .wd-msg:empty { display:none; }
 .wd-msg.ok { color:var(--color-neutral-300); }
@@ -647,7 +678,7 @@ html.wd-lock, html.wd-lock body { overflow:hidden; }
 .wd-stat small { font-size:12px; color:var(--color-neutral-500); }
 /* skip */
 .wd-skipnote { display:flex; gap:10px; padding:12px 14px; border-radius:10px; font-size:14px;
-  background:color-mix(in srgb, var(--color-skip, #d9a441) 10%, transparent); color:var(--color-neutral-200); }
+  background:color-mix(in srgb, var(--color-skip, #d9a441) 10%, transparent); color:var(--color-text); }
 .wd-skipnote svg { color:var(--color-skip, #d9a441); flex:0 0 auto; margin-top:2px; }
 .wd-reason { font-style:italic; color:var(--color-neutral-300); }
 .wd-skipform { display:flex; flex-direction:column; gap:8px; }
@@ -673,6 +704,7 @@ html.wd-lock, html.wd-lock body { overflow:hidden; }
 .wd-bars { position:absolute; inset:0; display:flex; align-items:flex-end; gap:3px; }
 .wd-bar { flex-basis:0; min-width:5px; padding:0; border:0; border-radius:4px 4px 0 0; cursor:pointer; opacity:.55; transition:opacity .12s ease; }
 .wd-bar:hover { opacity:.8; }
+html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
 .wd-bar.on { opacity:1; box-shadow:0 0 0 2px var(--color-text); }
 .wd-bar:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
 .wd-line { position:absolute; left:0; right:0; border-top:1px dashed var(--color-neutral-600); pointer-events:none; }
@@ -714,8 +746,8 @@ html.wd-lock, html.wd-lock body { overflow:hidden; }
 .wd-set small { font-size:11px; font-weight:400; color:var(--color-neutral-500); }
 /* side */
 .wd-notes { display:flex; flex-direction:column; gap:8px; }
-.wd-notes p { margin:0; font-size:14px; color:var(--color-neutral-200); }
-.wd-notes ul { margin:0; padding-left:18px; font-size:13px; color:var(--color-neutral-200); display:flex; flex-direction:column; gap:3px; }
+.wd-notes p { margin:0; font-size:14px; color:var(--color-text); }
+.wd-notes ul { margin:0; padding-left:18px; font-size:13px; color:var(--color-text); display:flex; flex-direction:column; gap:3px; }
 .wd-orig summary { cursor:pointer; list-style:none; }
 .wd-orig .wd-text { margin-top:10px; }
 .wd-watch { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--color-neutral-400); padding:12px 16px; }

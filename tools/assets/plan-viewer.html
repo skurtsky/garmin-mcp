@@ -299,6 +299,8 @@ const PHASE_COLORS = { 'Prep':'#6c93b0','Base 1':'#5ea0b8','Base 2':'#5eb0a3','B
   'Build 1':'#b8b05e','Build 2':'#d9a05a','Build':'#b8b05e','Peak':'#d97a5e','Taper':'#9184d9','Race':'#d9506a' };
 
 const ICONS = {
+  caretUp:'<path d="M213.7 165.7a8 8 0 0 1-11.4 0L128 91.3l-74.3 74.4a8 8 0 0 1-11.4-11.4l80-80a8 8 0 0 1 11.4 0l80 80a8 8 0 0 1 0 11.4Z"/>',
+  caretDown:'<path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80a8 8 0 0 1 11.4-11.4L128 164.7l74.3-74.4a8 8 0 0 1 11.4 11.4Z"/>',
   gauge:'<path d="M128 40a96 96 0 1 0 96 96 96.1 96.1 0 0 0-96-96Zm0 176a80 80 0 1 1 80-80 80.1 80.1 0 0 1-80 80Zm45.7-125.7a8 8 0 0 1 0 11.4L139.3 136a16 16 0 1 1-11.3-11.3l34.3-34.4a8 8 0 0 1 11.4 0Z"/>',
   calendar:'<path d="M208 32h-24v-8a8 8 0 0 0-16 0v8H88v-8a8 8 0 0 0-16 0v8H48a16 16 0 0 0-16 16v160a16 16 0 0 0 16 16h160a16 16 0 0 0 16-16V48a16 16 0 0 0-16-16Zm0 176H48V96h160v112Zm0-128H48V48h24v8a8 8 0 0 0 16 0v-8h80v8a8 8 0 0 0 16 0v-8h24Z"/>',
   gear:'<path d="M128 80a48 48 0 1 0 48 48 48.1 48.1 0 0 0-48-48Zm0 80a32 32 0 1 1 32-32 32 32 0 0 1-32 32Zm88-29.8v-4.4l14-17.5a8 8 0 0 0 1.5-7.1 104 104 0 0 0-10.5-25.3 8 8 0 0 0-6-3.9l-22.2-2.5q-1.5-1.6-3.1-3.1L187.2 44a8 8 0 0 0-3.9-6 104 104 0 0 0-25.3-10.5 8 8 0 0 0-7.1 1.5l-17.5 14h-4.4l-17.5-14a8 8 0 0 0-7.1-1.5A104 104 0 0 0 79.1 38a8 8 0 0 0-3.9 6l-2.5 22.2q-1.6 1.5-3.1 3.1L44 71.8a8 8 0 0 0-6 3.9 104 104 0 0 0-10.5 25.3 8 8 0 0 0 1.5 7.1l14 17.5v4.4l-14 17.5a8 8 0 0 0-1.5 7.1A104 104 0 0 0 38 179.9a8 8 0 0 0 6 3.9l22.2 2.5q1.5 1.6 3.1 3.1l2.5 22.2a8 8 0 0 0 3.9 6 104 104 0 0 0 25.3 10.5 8 8 0 0 0 7.1-1.5l17.5-14h4.4l17.5 14a8 8 0 0 0 7.1 1.5 104 104 0 0 0 25.3-10.5 8 8 0 0 0 3.9-6l2.5-22.2q1.6-1.5 3.1-3.1l22.2-2.5a8 8 0 0 0 6-3.9 104 104 0 0 0 10.5-25.3 8 8 0 0 0-1.5-7.1Z"/>',
@@ -1552,7 +1554,167 @@ function workoutDistance(w, sport) {
   if (w.distanceKm != null) return w.distanceKm;
   return w.distanceMeters != null ? +(w.distanceMeters / 1000).toFixed(2) : '';
 }
-const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable','startTime'];
+const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable','startTime','steps'];
+const STEP_SPORTS = ['run', 'bike', 'swim', 'strength'];
+
+/* ── Structured steps in the editor ──
+   The draft keeps steps in a form-friendly shape (times as "m:ss" text,
+   targets as a type + a value); stepsFromUI turns them back into the plan's
+   `steps` (tools/workout_steps.py), which the server validates and the live
+   preview draws exactly as the workout view will. */
+function clockText(s) {
+  if (s == null || s === '') return '';
+  s = Math.round(Number(s));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+  return h ? h + ':' + String(m).padStart(2, '0') + ':' + String(x).padStart(2, '0') : m + ':' + String(x).padStart(2, '0');
+}
+/* "1:30" or "1:02:00" → seconds; a bare number is minutes ('min') or seconds ('sec'). */
+function clockSeconds(text, bare) {
+  const t = String(text || '').trim();
+  if (!t) return null;
+  if (t.includes(':')) {
+    const parts = t.split(':').map(Number);
+    if (parts.some(isNaN)) return null;
+    return parts.reduce((acc, v) => acc * 60 + v, 0);
+  }
+  const n = Number(t);
+  return isNaN(n) ? null : Math.round(n * (bare === 'min' ? 60 : 1));
+}
+function stepToUI(s, sport) {
+  if (s.kind === 'repeat') return { kind: 'repeat', count: String(s.count || 2), note: s.note || '', steps: (s.steps || []).map(c => stepToUI(c, sport)) };
+  if (s.kind === 'exercise') {
+    const wave = s.setWeightsKg || s.setWeightsLb;
+    return { kind: 'exercise', exercise: (s.exercise || '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()),
+      sets: String(s.sets || 1), mode: s.durationS ? 'time' : 'reps', reps: s.reps != null ? String(s.reps) : '',
+      time: s.durationS ? clockText(s.durationS) : '', unit: (s.weightLb != null || s.setWeightsLb) ? 'lb' : 'kg',
+      load: wave ? wave.join(', ') : (s.weightKg != null ? String(s.weightKg) : s.weightLb != null ? String(s.weightLb) : ''),
+      rest: s.restS != null ? clockText(s.restS) : '', warmup: !!s.warmup, note: s.note || '' };
+  }
+  if (sport === 'strength') return { kind: 'rest', time: s.durationS ? clockText(s.durationS) : '', note: s.note || '' };
+  const t = s.target || {};
+  const tgt = ['zone', 'hrZone', 'pctFtp', 'rpe'].find(k => t[k] != null) || 'none';
+  const tv = tgt === 'none' ? '' : (Array.isArray(t[tgt]) ? t[tgt].join('-') : String(t[tgt]));
+  return { kind: s.kind || 'work', amt: s.durationS != null ? 'time' : s.distanceM != null ? 'distance' : 'lap',
+    time: s.durationS != null ? clockText(s.durationS) : '',
+    dist: s.distanceM != null ? String(sport === 'swim' ? s.distanceM : +(s.distanceM / 1000).toFixed(3)) : '',
+    tgt, tv, note: s.note || '', stroke: s.stroke || '', equip: (s.equipment || []).join(', ') };
+}
+function stepFromUI(u, sport) {
+  if (u.kind === 'repeat') {
+    const out = { kind: 'repeat', count: parseInt(u.count, 10) || 1, steps: u.steps.map(c => stepFromUI(c, sport)) };
+    if (u.note && u.note.trim()) out.note = u.note.trim();
+    return out;
+  }
+  if (u.kind === 'exercise') {
+    const out = { kind: 'exercise', exercise: (u.exercise || '').trim().toUpperCase().replace(/[\s-]+/g, '_'), sets: parseInt(u.sets, 10) || 1 };
+    if (u.mode === 'time') { const s = clockSeconds(u.time, 'sec'); if (s) out.durationS = s; }
+    else if (u.reps !== '' && !isNaN(Number(u.reps))) out.reps = Number(u.reps);
+    const loads = String(u.load || '').split(',').map(x => x.trim()).filter(Boolean).map(Number);
+    if (loads.length > 1) out[u.unit === 'lb' ? 'setWeightsLb' : 'setWeightsKg'] = loads;
+    else if (loads.length === 1 && !isNaN(loads[0])) out[u.unit === 'lb' ? 'weightLb' : 'weightKg'] = loads[0];
+    const rest = clockSeconds(u.rest, 'sec');
+    if (rest != null) out.restS = rest;
+    if (u.warmup) out.warmup = true;
+    if (u.note && u.note.trim()) out.note = u.note.trim();
+    return out;
+  }
+  if (sport === 'strength') {
+    const out = { kind: 'rest' };
+    const s = clockSeconds(u.time, 'sec');
+    if (s) out.durationS = s;
+    return out;
+  }
+  const out = { kind: u.kind };
+  if (u.amt === 'time') { const s = clockSeconds(u.time, 'min'); if (s) out.durationS = s; }
+  if (u.amt === 'distance' && u.dist !== '' && !isNaN(Number(u.dist))) out.distanceM = Math.round(Number(u.dist) * (sport === 'swim' ? 1 : 1000));
+  if (u.tgt !== 'none' && String(u.tv).trim()) {
+    const v = String(u.tv).trim();
+    if (u.tgt === 'pctFtp') { const p = v.split(/[-–]/).map(x => Number(x.trim())); out.target = { pctFtp: p.length > 1 ? p : p[0] }; }
+    else if (u.tgt === 'rpe') out.target = { rpe: Number(v) };
+    else out.target = { [u.tgt]: v.replace(/^z/i, '') };
+  }
+  if (u.note && u.note.trim()) out.note = u.note.trim();
+  if (sport === 'swim') {
+    if (u.stroke) out.stroke = u.stroke;
+    const gear = String(u.equip || '').split(',').map(x => x.trim().toLowerCase().replace(/\s+/g, '')).filter(Boolean);
+    if (gear.length) out.equipment = gear;
+  }
+  return out;
+}
+function stepsFromDraft(d) {
+  return STEP_SPORTS.includes(d.sport) ? d.steps.map(u => stepFromUI(u, d.sport)) : [];
+}
+function newStep(sport, what) {
+  if (what === 'exercise') return { kind: 'exercise', exercise: '', sets: '3', mode: 'reps', reps: '10', time: '', unit: 'kg', load: '', rest: '1:30', warmup: false, note: '' };
+  if (what === 'rest') return { kind: 'rest', time: '2:00', note: '' };
+  const tgt = sport === 'bike' ? 'zone' : 'zone';
+  if (what === 'repeat') return { kind: 'repeat', count: '3', note: '', steps: [
+    { kind: 'work', amt: 'time', time: '3:00', dist: '', tgt, tv: '4', note: '', stroke: '', equip: '' },
+    { kind: 'recovery', amt: 'time', time: '2:00', dist: '', tgt, tv: '1', note: '', stroke: '', equip: '' }] };
+  return { kind: 'work', amt: sport === 'swim' ? 'distance' : 'time', time: '5:00', dist: sport === 'swim' ? '100' : '', tgt, tv: '2', note: '', stroke: '', equip: '' };
+}
+/* The list a step path ("2" or "1.0") lives in, and its index there. */
+function stepSlot(d, path) {
+  const parts = String(path).split('.').map(Number);
+  if (parts.length === 1) return { list: d.steps, i: parts[0] };
+  return { list: d.steps[parts[0]].steps, i: parts[1] };
+}
+function stepAt(d, path) { const s = stepSlot(d, path); return s.list[s.i]; }
+
+let previewTimer = null, previewSeq = 0;
+function schedulePreview(now) {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(runPreview, now ? 0 : 350);
+}
+function runPreview() {
+  const d = state.editDraft;
+  if (!d) return;
+  const steps = stepsFromDraft(d);
+  const seq = ++previewSeq;
+  if (!steps.length) { d.preview = { html: '', error: '', totalMinutes: null }; return paintPreview(); }
+  api('steps/preview', { sport: d.sport, steps })
+    .then(r => { if (seq === previewSeq) { d.preview = { html: r.html, error: '', totalMinutes: r.totalMinutes, estimated: r.estimated }; paintPreview(); } })
+    .catch(err => { if (seq === previewSeq) { d.preview = Object.assign({}, d.preview, { error: stepError(err.message) }); paintPreview(); } });
+}
+/* The server names a bad step by its path ("steps[1].steps[0].target.pctFtp");
+   say it the way the builder shows it ("Step 2: % FTP …"). */
+const STEP_FIELD_WORDS = { 'target.pctFtp': '% FTP', 'target.zone': 'Zone', 'target.hrZone': 'HR zone', 'target.rpe': 'RPE',
+  target: 'Target', durationS: 'Time', distanceM: 'Distance', count: 'Repeat count', exercise: 'Exercise', sets: 'Sets', reps: 'Reps',
+  weightKg: 'Load', weightLb: 'Load', setWeightsKg: 'Loads', setWeightsLb: 'Loads', restS: 'Rest', kind: 'Step type' };
+function stepError(msg) {
+  const d = state.editDraft;
+  const m = /^steps\[(\d+)\](?:\.steps\[(\d+)\])?\.?([\w.]*)\s*(.*)$/.exec(msg);
+  if (!m || !d) return msg;
+  const top = Number(m[1]), child = m[2] == null ? null : Number(m[2]);
+  // The builder numbers rows straight through, repeats' rows included.
+  let n = 0;
+  for (let i = 0; i < top; i++) n += d.steps[i] && d.steps[i].kind === 'repeat' ? d.steps[i].steps.length : 1;
+  const isRepeat = d.steps[top] && d.steps[top].kind === 'repeat';
+  const where = isRepeat && child == null ? 'Repeat' : (d.sport === 'strength' ? 'Row ' : 'Step ') + (n + (child == null ? 1 : child + 1));
+  const field = STEP_FIELD_WORDS[m[3]] || m[3];
+  return (where + ': ' + (field ? field + ' ' : '') + m[4].replace(/^:\s*/, '')).trim()
+    .replace(/durationS/g, 'time').replace(/distanceM/g, 'distance');
+}
+function paintPreview() {
+  const box = document.querySelector('[data-we-preview]');
+  if (box) box.innerHTML = previewHtml(state.editDraft);
+  const sum = document.querySelector('[data-we-total]');
+  if (sum) sum.innerHTML = totalHtml(state.editDraft);
+}
+function previewHtml(d) {
+  const p = d.preview || {};
+  return (p.error ? '<div class="we-err" role="alert">' + esc(p.error) + '</div>' : '')
+    + (p.html ? '<div class="we-graph' + (p.error ? ' stale' : '') + '">' + p.html + '</div>'
+      : (d.steps.length ? '' : '<div class="we-empty">No steps yet. Add them to see the workout\'s shape here, on Today and in its detail view, and to send it to Garmin.</div>'));
+}
+function totalHtml(d) {
+  const p = d.preview || {};
+  if (!p.totalMinutes) return '';
+  const same = String(d.durationMinutes) === String(p.totalMinutes);
+  return '<span>' + (p.estimated ? '~' : '') + fmtDuration(p.totalMinutes) + ' in steps</span>'
+    + (same ? '' : ' <button type="button" class="link-btn" data-we-act="use-total">Set duration to ' + p.totalMinutes + ' min</button>');
+}
+
 function draftFor(w, date, mode) {
   const sport = w.sport || 'run';
   const dist = workoutDistance(w, sport);
@@ -1562,37 +1724,148 @@ function draftFor(w, date, mode) {
   if (mode === 'duplicate') Object.keys(w).forEach(k => { if (!FORM_FIELDS.includes(k)) extra[k] = w[k]; });
   return { mode, date, name: w.name || '', sport, type: w.type || '', durationMinutes: w.durationMinutes ?? '',
     distance: dist, distanceOrig: dist, sportOrig: sport, primaryZone: w.primaryZone || '', startTime: w.startTime || '',
-    description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '', extra };
+    description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '', extra,
+    steps: (w.steps || []).map(s => stepToUI(s, sport)), preview: null };
 }
 const EDIT_TITLES = { add:'Add workout', duplicate:'Duplicate workout', edit:'Edit workout' };
-const EDIT_SAVE_LABELS = { add:'Add', duplicate:'Create', edit:'Save' };
+const EDIT_SAVE_LABELS = { add:'Add workout', duplicate:'Create copy', edit:'Save' };
+const STEP_KINDS = [['warmup', 'Warm-up'], ['work', 'Work'], ['recovery', 'Recovery'], ['rest', 'Rest'], ['cooldown', 'Cool-down']];
+const TARGETS = {
+  bike: [['none', 'No target'], ['zone', 'Power zone'], ['pctFtp', '% FTP'], ['hrZone', 'HR zone'], ['rpe', 'RPE']],
+  run: [['none', 'No target'], ['zone', 'Pace zone'], ['hrZone', 'HR zone'], ['rpe', 'RPE']],
+  swim: [['none', 'No target'], ['zone', 'CSS zone'], ['rpe', 'RPE']],
+};
+const ZONE_HINTS = {
+  bike: { zone: '1–4, 5a–5c, ss, or 1-2', pctFtp: '88-92 or 90', hrZone: '1–4, 5a–5c', rpe: '1–10' },
+  run: { zone: '1–4, 5a–5c, strides', hrZone: '1–4, 5a–5c', rpe: '1–10' },
+  swim: { zone: '1–5 or 1-2', rpe: '1–10' },
+};
+const STROKES = [['', 'Any stroke'], ['free', 'Free'], ['back', 'Back'], ['breast', 'Breast'], ['fly', 'Fly'], ['im', 'IM'],
+  ['drill', 'Drill'], ['kick', 'Kick'], ['pull', 'Pull'], ['choice', 'Choice']];
+function opts(list, cur) { return list.map(([v, l]) => '<option value="' + v + '"' + (String(cur) === v ? ' selected' : '') + '>' + l + '</option>').join(''); }
+function stepBtns(path, label) {
+  return '<span class="we-btns">'
+    + '<button type="button" class="btn btn-icon" data-step-act="up" data-path="' + path + '" aria-label="Move ' + label + ' up" title="Move up">' + icon('caretUp', 14) + '</button>'
+    + '<button type="button" class="btn btn-icon" data-step-act="down" data-path="' + path + '" aria-label="Move ' + label + ' down" title="Move down">' + icon('caretDown', 14) + '</button>'
+    + '<button type="button" class="btn btn-icon" data-step-act="del" data-path="' + path + '" aria-label="Remove ' + label + '" title="Remove">' + icon('x', 14) + '</button></span>';
+}
+function enduranceRow(u, path, n, sport) {
+  const f = (key, attrs) => ' data-step="' + path + '" data-sk="' + key + '" ' + (attrs || '');
+  const label = 'step ' + n;
+  const amount = u.amt === 'time' ? '<input class="input we-num" value="' + esc(u.time) + '"' + f('time', 'inputmode="numeric" placeholder="m:ss" aria-label="Duration (m:ss, or minutes)"') + '>'
+    : u.amt === 'distance' ? '<span class="we-unit"><input class="input we-num" value="' + esc(u.dist) + '"' + f('dist', 'inputmode="decimal" aria-label="Distance"') + '><span>' + (sport === 'swim' ? 'm' : 'km') + '</span></span>'
+    : '<span class="we-lap">Until lap</span>';
+  const tgt = (TARGETS[sport] || TARGETS.run);
+  const hint = (ZONE_HINTS[sport] || {})[u.tgt] || '';
+  return '<div class="we-row" data-path="' + path + '">'
+    + '<span class="we-n">' + n + '</span>'
+    + '<select class="input we-kind"' + f('kind', 'aria-label="Step type"') + '>' + opts(STEP_KINDS, u.kind) + '</select>'
+    + '<span class="we-pair"><select class="input"' + f('amt', 'aria-label="Ends by"') + '>' + opts([['time', 'Time'], ['distance', 'Distance'], ['lap', 'Lap']], u.amt) + '</select>' + amount + '</span>'
+    + '<span class="we-pair"><select class="input"' + f('tgt', 'aria-label="Target"') + '>' + opts(tgt, u.tgt) + '</select>'
+      + (u.tgt === 'none' ? '' : '<input class="input we-num" value="' + esc(u.tv) + '"' + f('tv', 'placeholder="' + esc(hint) + '" title="' + esc(hint) + '" aria-label="Target value"') + '>') + '</span>'
+    + (sport === 'swim' ? '<span class="we-pair"><select class="input"' + f('stroke', 'aria-label="Stroke"') + '>' + opts(STROKES, u.stroke) + '</select>'
+      + '<input class="input" value="' + esc(u.equip) + '"' + f('equip', 'placeholder="Gear: pullbuoy, fins" aria-label="Equipment"') + '></span>' : '')
+    + '<input class="input we-note" value="' + esc(u.note) + '"' + f('note', 'placeholder="Cue (optional)" aria-label="Cue"') + '>'
+    + stepBtns(path, label)
+  + '</div>';
+}
+function strengthRow(u, path, n) {
+  const f = (key, attrs) => ' data-step="' + path + '" data-sk="' + key + '" ' + (attrs || '');
+  if (u.kind === 'rest') {
+    return '<div class="we-row we-srow" data-path="' + path + '"><span class="we-n">' + n + '</span><span class="we-rest">Rest</span>'
+      + '<input class="input we-num" value="' + esc(u.time) + '"' + f('time', 'placeholder="m:ss" aria-label="Rest (m:ss, or seconds)"') + '>'
+      + '<span class="we-grow"></span>' + stepBtns(path, 'rest ' + n) + '</div>';
+  }
+  return '<div class="we-row we-srow" data-path="' + path + '">'
+    + '<span class="we-n">' + n + '</span>'
+    + '<input class="input we-ex" value="' + esc(u.exercise) + '"' + f('exercise', 'placeholder="Exercise, e.g. Barbell Back Squat" aria-label="Exercise" list="we-exercises" autocomplete="off"') + '>'
+    + '<span class="we-pair"><input class="input we-tiny" value="' + esc(u.sets) + '"' + f('sets', 'inputmode="numeric" aria-label="Sets"') + '><span>×</span>'
+      + (u.mode === 'time' ? '<input class="input we-num" value="' + esc(u.time) + '"' + f('time', 'placeholder="0:45" aria-label="Hold (m:ss, or seconds)"') + '>'
+        : '<input class="input we-tiny" value="' + esc(u.reps) + '"' + f('reps', 'inputmode="numeric" aria-label="Reps"') + '>')
+      + '<select class="input"' + f('mode', 'aria-label="Reps or time"') + '>' + opts([['reps', 'reps'], ['time', 'hold']], u.mode) + '</select></span>'
+    + '<span class="we-pair"><input class="input we-load" value="' + esc(u.load) + '"' + f('load', 'placeholder="60 or 60, 65, 70" aria-label="Load, or one per set" title="One load, or one per set separated by commas"') + '>'
+      + '<select class="input"' + f('unit', 'aria-label="Unit"') + '>' + opts([['kg', 'kg'], ['lb', 'lb']], u.unit) + '</select></span>'
+    + '<span class="we-pair"><span class="we-lbl">Rest</span><input class="input we-num" value="' + esc(u.rest) + '"' + f('rest', 'placeholder="1:30" aria-label="Rest between sets (m:ss, or seconds)"') + '></span>'
+    + '<label class="we-check"><input type="checkbox"' + f('warmup') + (u.warmup ? ' checked' : '') + '> Warm-up</label>'
+    + '<input class="input we-note" value="' + esc(u.note) + '"' + f('note', 'placeholder="Cue (optional)" aria-label="Cue"') + '>'
+    + stepBtns(path, 'exercise ' + n)
+  + '</div>';
+}
+function stepsBuilder(d) {
+  if (!STEP_SPORTS.includes(d.sport)) {
+    return '<div class="we-empty">Steps are for run, bike, swim and strength workouts. Use the text version for this one.</div>';
+  }
+  let n = 0, rows = '';
+  d.steps.forEach((u, i) => {
+    if (u.kind === 'repeat') {
+      rows += '<div class="we-rep" data-path="' + i + '"><div class="we-rephead"><span class="we-replbl">Repeat</span>'
+        + '<input class="input we-tiny" type="number" min="1" max="50" value="' + esc(u.count) + '" data-step="' + i + '" data-sk="count" aria-label="Repeat count"><span>×</span>'
+        + '<span class="we-grow"></span>' + stepBtns(String(i), 'repeat') + '</div>'
+        + u.steps.map((c, j) => enduranceRow(c, i + '.' + j, ++n, d.sport)).join('')
+        + '<button type="button" class="link-btn we-addin" data-step-act="add-in" data-path="' + i + '">+ Step in this repeat</button></div>';
+    } else {
+      rows += d.sport === 'strength' ? strengthRow(u, String(i), ++n) : enduranceRow(u, String(i), ++n, d.sport);
+    }
+  });
+  const add = d.sport === 'strength'
+    ? '<button type="button" class="btn btn-secondary" data-we-act="add-exercise">+ Exercise</button><button type="button" class="btn btn-secondary" data-we-act="add-rest">+ Rest</button>'
+    : '<button type="button" class="btn btn-secondary" data-we-act="add-step">+ Step</button><button type="button" class="btn btn-secondary" data-we-act="add-repeat">+ Repeat</button>';
+  return '<div class="we-steps">' + rows + '</div><div class="we-add">' + add + '</div>';
+}
 function editModal() {
   if (!state.editId || !state.editDraft) return '';
   const d = state.editDraft;
-  const field = (label, key, attrs) => '<div class="field"><label>' + label + '</label><input class="input" data-edit-field="' + key + '" value="' + esc(d[key]) + '" ' + (attrs || 'type="text"') + '></div>';
-  const area = (label, key, rows, attrs) => '<div class="field"><label>' + label + '</label><textarea class="input" rows="' + rows + '" data-edit-field="' + key + '" ' + (attrs || '') + '>' + esc(d[key]) + '</textarea></div>';
-  const sportSel = '<div class="field"><label>Sport</label><select class="input" data-edit-field="sport">'
+  const field = (label, key, attrs) => '<div class="field"><label for="we-' + key + '">' + label + '</label><input class="input" id="we-' + key + '" data-edit-field="' + key + '" value="' + esc(d[key]) + '" ' + (attrs || 'type="text"') + '></div>';
+  const area = (label, key, rows, attrs) => '<div class="field"><label for="we-' + key + '">' + label + '</label><textarea class="input" id="we-' + key + '" rows="' + rows + '" data-edit-field="' + key + '" ' + (attrs || '') + '>' + esc(d[key]) + '</textarea></div>';
+  const sportSel = '<div class="field"><label for="we-sport">Sport</label><select class="input" id="we-sport" data-edit-field="sport">'
     + EDIT_SPORTS.map(s => '<option value="' + s + '"' + (d.sport === s ? ' selected' : '') + '>' + s[0].toUpperCase() + s.slice(1) + '</option>').join('') + '</select></div>';
-  const grid = (a, b) => '<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">' + a + b + '</div>';
-  return '<div class="dialog-backdrop" data-act="backdrop"><div class="dialog">'
-    + '<div class="dialog-title" style="display:flex; justify-content:space-between; align-items:flex-start; gap:10px;">'
-      + '<span>' + EDIT_TITLES[d.mode] + '</span>'
-      + '<button type="button" class="btn btn-icon" data-act="cancel-edit">' + icon('x') + '</button></div>'
-    + '<div class="dialog-body" style="display:flex; flex-direction:column; gap:10px;">'
-      + field('Name', 'name', 'type="text" maxlength="80" required')
-      + grid(sportSel, field('Type', 'type', 'type="text" placeholder="e.g. endurance, threshold"'))
-      + grid(field('Date', 'date', 'type="date"'), field('Start time (optional)', 'startTime', 'type="time" title="Blank uses the weekly schedule in Settings"'))
-      + grid(field('Duration (min)', 'durationMinutes', 'type="number" min="0" step="1"'), field('Distance (' + distanceUnit(d.sport) + ')', 'distance', 'type="number" min="0" step="any"'))
-      + field('Primary zone', 'primaryZone', 'type="text" placeholder="e.g. Zone 2"')
-      + area('Description', 'description', 2, 'maxlength="120"')
-      + area('Key targets', 'keyTargets', 2, 'maxlength="120"')
-      + area('Details', 'humanReadable', 7)
+  const grid = (a, b) => '<div class="we-2">' + a + b + '</div>';
+  const color = SPORT_COLORS[d.sport] || SPORT_COLORS.rest;
+  const save = '<button type="button" class="wd-btn wd-primary" data-act="save-edit"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? 'Saving…' : EDIT_SAVE_LABELS[d.mode]) + '</button>';
+  const cancel = '<button type="button" class="wd-btn" data-act="cancel-edit">Cancel</button>';
+  const stepSport = STEP_SPORTS.includes(d.sport);
+  const exercises = d.sport === 'strength' ? '<datalist id="we-exercises">' + COMMON_EXERCISES.map(x => '<option value="' + x + '">').join('') + '</datalist>' : '';
+  return '<div class="wd-overlay we-overlay"><div class="wd-scrim" data-act="cancel-edit"></div>'
+    + '<div class="wd-panel" role="dialog" aria-modal="true" aria-labelledby="we-title"><div class="wd we">'
+    + '<div class="wd-grab" aria-hidden="true"><span></span></div>'
+    + '<header class="wd-head"><span class="wd-bar-c" style="background:' + color + '"></span>'
+      + '<div class="wd-titles"><div class="wd-kick">' + esc(EDIT_TITLES[d.mode]) + (d.date ? ' · ' + esc(dayMonth(d.date)) : '') + '</div>'
+        + '<h2 class="wd-title" id="we-title">' + esc(d.name || 'New workout') + '</h2></div>'
+      + '<div class="wd-headacts">' + cancel + save + '</div>'
+      + '<button type="button" class="wd-btn wd-ib wd-plain wd-close" data-act="cancel-edit" aria-label="Close">' + icon('x') + '</button></header>'
+    + '<div class="wd-body">'
+      + '<div class="wd-main">'
+        + '<section class="wd-card we-struct" aria-label="Structure"><div class="wd-cardhead"><h3 class="wd-h">' + (d.sport === 'strength' ? 'Exercises' : 'Structure') + '</h3>'
+          + '<span class="wd-muted we-total" data-we-total>' + totalHtml(d) + '</span></div>'
+          + (stepSport ? '<div data-we-preview>' + previewHtml(d) + '</div>' : '')
+          + stepsBuilder(d) + exercises + '</section>'
+        + (stepSport ? '' : '<section class="wd-card">' + area('Workout (text)', 'humanReadable', 10) + '</section>')
+      + '</div>'
+      + '<aside class="wd-side">'
+        + '<section class="wd-card we-form" aria-label="Details">'
+          + field('Name', 'name', 'type="text" maxlength="80" required')
+          + grid(sportSel, field('Type', 'type', 'type="text" placeholder="e.g. endurance"'))
+          + grid(field('Date', 'date', 'type="date"'), field('Start time', 'startTime', 'type="time" title="Blank uses the weekly schedule in Settings"'))
+          + grid(field('Duration (min)', 'durationMinutes', 'type="number" min="0" step="1"'), field('Distance (' + distanceUnit(d.sport) + ')', 'distance', 'type="number" min="0" step="any"'))
+          + field('Primary zone', 'primaryZone', 'type="text" placeholder="e.g. Zone 2"')
+        + '</section>'
+        + '<section class="wd-card we-form" aria-label="Coach notes">'
+          + area('Description', 'description', 2, 'maxlength="120"')
+          + area('Key targets', 'keyTargets', 2, 'maxlength="120" placeholder="Separate with ; for a list"')
+        + '</section>'
+        + (stepSport ? '<details class="wd-card wd-orig we-text"' + (d.steps.length ? '' : ' open') + '><summary class="wd-h">Text version</summary>'
+          + '<div class="we-hint">Shown in the calendar, the PDF and anywhere steps aren\'t. Zone tokens like {{bike-ftp:88-92}} follow your thresholds.</div>'
+          + area('', 'humanReadable', 7, 'aria-label="Text version"') + '</details>' : '')
+      + '</aside>'
     + '</div>'
-    + '<div class="dialog-actions">'
-      + '<button type="button" class="btn btn-secondary" data-act="cancel-edit">Cancel</button>'
-      + '<button type="button" class="btn btn-primary" data-act="save-edit"' + (state.saving ? ' disabled' : '') + '>' + (state.saving ? 'Saving…' : EDIT_SAVE_LABELS[d.mode]) + '</button></div>'
-  + '</div></div>';
+    + '<div class="wd-actbar">' + cancel.replace('wd-btn', 'wd-btn wd-big') + save.replace('wd-btn wd-primary', 'wd-btn wd-big wd-grow wd-primary') + '</div>'
+  + '</div></div></div>';
 }
+/* Suggestions for the exercise field (any Garmin exercise name works; the
+   server checks it, and the preview says if it isn't one). */
+const COMMON_EXERCISES = ['Barbell Back Squat', 'Goblet Squat', 'Romanian Deadlift', 'Barbell Deadlift', 'Bulgarian Split Squat',
+  'Walking Lunge', 'Barbell Bench Press', 'Dumbbell Bench Press', 'Push Up', 'Pull Up', 'Bent Over Row', 'Dumbbell Row',
+  'Overhead Press', 'Hip Thrust', 'Glute Bridge', 'Calf Raise', 'Step Up', 'Plank', 'Side Plank', 'Dead Bug', 'Bird Dog'];
 function draftToFields(d) {
   const num = v => (v === '' || v == null) ? null : Number(v);
   const fields = { name: d.name.trim(), sport: d.sport, type: d.type.trim(), durationMinutes: num(d.durationMinutes),
@@ -1603,14 +1876,67 @@ function draftToFields(d) {
     if (d.sport === 'swim') { fields.distanceMeters = dist; fields.distanceKm = null; }
     else { fields.distanceKm = dist; fields.distanceMeters = null; }
   }
+  const steps = stepsFromDraft(d);
+  fields.steps = steps.length ? steps : null;
   return d.mode === 'duplicate' ? Object.assign({}, d.extra, fields) : fields;
+}
+/* Editing a step: typing updates the draft and the preview; a select that
+   changes the row's shape re-renders it; the buttons add, move and remove. */
+const STEP_SHAPE_KEYS = ['kind', 'amt', 'tgt', 'mode', 'unit', 'stroke', 'warmup'];
+function editStepField(el, rerender) {
+  const d = state.editDraft;
+  const u = d && stepAt(d, el.getAttribute('data-step'));
+  if (!u) return;
+  const key = el.getAttribute('data-sk');
+  u[key] = el.type === 'checkbox' ? el.checked : el.value;
+  if (key === 'tgt') u.tv = u.tgt === 'pctFtp' ? '75' : u.tgt === 'rpe' ? '5' : u.tgt === 'none' ? '' : '2';
+  if (rerender && STEP_SHAPE_KEYS.includes(key)) render();
+  schedulePreview(rerender);
+}
+function stepAction(act, path) {
+  const d = state.editDraft;
+  if (act === 'add-in') { d.steps[Number(path)].steps.push(newStep(d.sport, 'step')); }
+  else {
+    const { list, i } = stepSlot(d, path);
+    if (act === 'del') list.splice(i, 1);
+    if (act === 'up' && i > 0) list.splice(i - 1, 0, list.splice(i, 1)[0]);
+    if (act === 'down' && i < list.length - 1) list.splice(i + 1, 0, list.splice(i, 1)[0]);
+    const parts = String(path).split('.');
+    if (parts.length > 1 && !d.steps[Number(parts[0])].steps.length) d.steps.splice(Number(parts[0]), 1);
+  }
+  render();
+  schedulePreview(true);
+}
+function editorAction(act) {
+  const d = state.editDraft;
+  if (act === 'use-total') { d.durationMinutes = String(d.preview.totalMinutes); render(); return; }
+  d.steps.push(newStep(d.sport, act.replace('add-', '')));
+  render();
+  schedulePreview(true);
+  const rows = document.querySelectorAll('.we-steps .we-row');
+  const last = rows[rows.length - 1];
+  if (last) { const first = last.querySelector('input, select'); if (first) first.focus(); }
 }
 
 function render() {
   const body = state.tab === 'settings' ? settingsTab() : planTab();
+  // The editor re-renders as steps are added or reshaped: keep its scroll and
+  // the field being edited.
+  const scroller = document.querySelector('.we .wd-body');
+  const sheet = document.querySelector('.we');
+  const keep = { body: scroller ? scroller.scrollTop : 0, sheet: sheet ? sheet.scrollTop : 0 };
+  const a = document.activeElement;
+  const focusSel = a && a.getAttribute && (a.getAttribute('data-sk') ? '[data-step="' + a.getAttribute('data-step') + '"][data-sk="' + a.getAttribute('data-sk') + '"]'
+    : a.getAttribute('data-edit-field') ? '[data-edit-field="' + a.getAttribute('data-edit-field') + '"]' : null);
   document.getElementById('app').innerHTML =
     '<div class="scroller"><div class="content-wrap">' + body + '</div></div>' + editModal()
     + (state.saving ? '<div class="saving-pill">Saving…</div>' : '');
+  const scroller2 = document.querySelector('.we .wd-body');
+  if (scroller2) scroller2.scrollTop = keep.body;
+  const sheet2 = document.querySelector('.we');
+  if (sheet2) sheet2.scrollTop = keep.sheet;
+  document.documentElement.classList.toggle('wd-lock', !!state.editId);
+  if (focusSel && state.editId) { const el = document.querySelector(focusSel); if (el) el.focus({ preventScroll: true }); }
   pinSyncLog();
 }
 
@@ -1673,6 +1999,11 @@ document.getElementById('app').addEventListener('click', e => {
     state.unit = value;
     return saveOps([{ op: 'set_unit', unit: value }]);
   }
+
+  const stepBtn = e.target.closest('[data-step-act]');
+  if (stepBtn && state.editDraft) return stepAction(stepBtn.getAttribute('data-step-act'), stepBtn.getAttribute('data-path'));
+  const weBtn = e.target.closest('[data-we-act]');
+  if (weBtn && state.editDraft) return editorAction(weBtn.getAttribute('data-we-act'));
 
   const act = e.target.closest('[data-act]');
   const a = act ? act.getAttribute('data-act') : null;
@@ -1814,8 +2145,8 @@ function workoutAction(what, id) {
   if (READ_ONLY) return;
   const hit = workoutById(id);
   if (!hit) return;
-  if (what === 'edit') { state.editId = id; state.editDraft = draftFor(hit.wo, hit.date, 'edit'); return render(); }
-  if (what === 'duplicate') { state.editId = '__new__'; state.editDraft = draftFor(hit.wo, hit.date, 'duplicate'); return render(); }
+  if (what === 'edit') { state.editId = id; state.editDraft = draftFor(hit.wo, hit.date, 'edit'); render(); return schedulePreview(true); }
+  if (what === 'duplicate') { state.editId = '__new__'; state.editDraft = draftFor(hit.wo, hit.date, 'duplicate'); render(); return schedulePreview(true); }
   if (what === 'delete') {
     if (confirm('Delete this workout from the plan? It can be restored from Settings → History.')) {
       return saveOps([{ op: 'remove_workout', workout_id: id }]);
@@ -1835,7 +2166,12 @@ document.getElementById('app').addEventListener('scroll', e => {
 
 document.getElementById('app').addEventListener('input', e => {
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
-  if (editField && state.editDraft) state.editDraft[editField] = e.target.value;
+  if (editField && state.editDraft) {
+    state.editDraft[editField] = e.target.value;
+    if (editField === 'name') { const t = document.getElementById('we-title'); if (t) t.textContent = e.target.value || 'New workout'; }
+  }
+  if (e.target.hasAttribute && e.target.hasAttribute('data-step') && state.editDraft
+      && !STEP_SHAPE_KEYS.includes(e.target.getAttribute('data-sk'))) editStepField(e.target, false);
   const syncField = e.target.getAttribute && e.target.getAttribute('data-sync-field');
   if (syncField) {
     state.syncForm[syncField] = e.target.value;
@@ -1867,10 +2203,26 @@ document.getElementById('app').addEventListener('change', e => {
     }
     return;
   }
+  if (e.target.hasAttribute && e.target.hasAttribute('data-step') && state.editDraft) {
+    if (STEP_SHAPE_KEYS.includes(e.target.getAttribute('data-sk'))) editStepField(e.target, true);
+    return;
+  }
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) {
-    state.editDraft[editField] = e.target.value;
-    if (editField === 'sport') render();
+    const d = state.editDraft;
+    if (editField === 'sport') {
+      // Strength steps and run/bike/swim steps don't carry over to each other.
+      const was = d.sport, next = e.target.value;
+      if (d.steps.length && ((was === 'strength') !== (next === 'strength') || !STEP_SPORTS.includes(next))) {
+        if (!confirm('Changing to ' + next + ' clears this workout\'s steps. Continue?')) { e.target.value = was; return; }
+        d.steps = []; d.preview = null;
+      }
+      d.sport = next;
+      render();
+      schedulePreview(true);
+      return;
+    }
+    d[editField] = e.target.value;
     return;
   }
   if (state.calendar && state.saving && e.target.closest && e.target.closest('[data-cal-default], [data-cal-field]')) return;
@@ -2217,6 +2569,67 @@ html { -webkit-tap-highlight-color: transparent; }
 .btn, .seg-opt, .wcard { transition: transform .12s ease, opacity .12s ease; }
 .btn:not(:disabled):active, .seg-opt:active { transform: scale(.94); opacity:.75; }
 .wcard:active { transform: scale(.985); }
-@media (prefers-reduced-motion: reduce) { .slide-from-left, .slide-from-right { animation: none; } }</style>
+@media (prefers-reduced-motion: reduce) { .slide-from-left, .slide-from-right { animation: none; } }
+/* The workout editor: the shared workout view's shell (WD_CSS) with a form
+   and a step builder; its graph is the server's preview of the steps. */
+.we .wd-head { align-items:center; }
+.we .wd-titles { gap:2px; }
+.we-form { display:flex; flex-direction:column; gap:10px; }
+.we-form .field { margin:0; }
+.we-2 { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px; }
+.we-struct { display:flex; flex-direction:column; gap:12px; }
+.we-struct > .wd-cardhead { margin:0; }
+.we-total { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; font-size:13px; }
+.we-graph .wd-struct { padding:0; box-shadow:none; background:none; }
+.we-graph .wd-cardhead, .we-graph .wd-strip { display:none; }
+.we-graph .wd-plot { height:120px; }
+.we-graph .wd-bar { pointer-events:none; opacity:.85; }
+.we-graph .wd-strength { padding:0; box-shadow:none; background:none; }
+.we-graph .wd-strength .wd-cardhead { display:none; }
+.we-graph.stale { opacity:.45; }
+.we-err { padding:10px 12px; border-radius:8px; font-size:13px; color:var(--color-danger);
+  background:color-mix(in srgb, var(--color-danger) 10%, transparent); }
+.we-empty { padding:16px; border-radius:10px; font-size:13px; color:var(--color-neutral-500); text-align:center;
+  border:1px dashed var(--color-neutral-700); }
+.we-steps { display:flex; flex-direction:column; gap:6px; }
+.we-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px; border-radius:10px;
+  background:color-mix(in srgb, var(--color-bg) 55%, var(--color-surface)); }
+.we-row .input { min-height:34px; height:34px; padding:4px 8px; font-size:13px; width:auto; }
+.we-n { width:20px; text-align:center; font-size:12px; color:var(--color-neutral-500); font-variant-numeric:tabular-nums; }
+.we-kind { width:112px !important; }
+.we-pair { display:inline-flex; align-items:center; gap:4px; }
+.we-pair > span { font-size:13px; color:var(--color-neutral-500); }
+.we-unit { display:inline-flex; align-items:center; gap:4px; }
+.we-num { width:78px !important; }
+.we-tiny { width:52px !important; }
+.we-load { width:128px !important; }
+.we-ex { flex:1 1 220px; min-width:180px; width:auto !important; }
+.we-note { flex:1 1 140px; min-width:120px; }
+.we-lap, .we-rest, .we-lbl { font-size:13px; color:var(--color-neutral-500); }
+.we-lap { width:78px; }
+.we-check { display:inline-flex; align-items:center; gap:6px; font-size:13px; }
+.we-grow { flex:1; }
+.we-btns { display:inline-flex; gap:2px; margin-left:auto; }
+.we-btns .btn-icon { width:30px; height:30px; min-height:30px; padding:0; display:grid; place-items:center; }
+.we-rep { display:flex; flex-direction:column; gap:6px; padding:8px 8px 10px; border-radius:12px;
+  box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 35%, transparent); }
+.we-rep .we-row { margin-left:12px; }
+.we-rephead { display:flex; align-items:center; gap:8px; padding:0 4px; }
+.we-rephead .input { height:32px; min-height:32px; }
+.we-replbl { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-accent-400); }
+.we-addin { align-self:flex-start; margin-left:16px; font-size:13px; color:var(--color-accent-400); }
+.we-add { display:flex; gap:8px; flex-wrap:wrap; }
+.we-text .field label:empty { display:none; }
+.we-text textarea { font-family:inherit; font-size:13px; line-height:1.6; margin-top:8px; }
+.we-hint { margin-top:8px; font-size:12px; color:var(--color-neutral-500); }
+.we textarea.input { resize:vertical; }
+@media (max-width: 899px) {
+  .we .wd-side { order:-1; }
+  .we-row { gap:6px; }
+  .we-kind { width:100px !important; }
+  .we-note, .we-ex { flex-basis:100%; }
+  .we-rep .we-row { margin-left:6px; }
+}
+</style>
 </body>
 </html>

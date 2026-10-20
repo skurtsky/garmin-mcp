@@ -126,3 +126,40 @@ def test_both_pages_load_the_shared_view(plan):
     # Today's plan cards open it, the dialog in the page standing in offline.
     assert "return window.WD.open(id, {" in dashboard._ACTIVITY_MODAL_JS
     assert "fallback: function (wid) { return openPlanTemplate(wid); }" in dashboard._ACTIVITY_MODAL_JS
+
+
+# ── the editor ────────────────────────────────────────────────────────────────
+
+def test_steps_preview_draws_what_the_view_will(plan):
+    client = TestClient(training_plan.create_app())
+    r = client.post("/training-plan/api/steps/preview", json={"sport": "bike", "steps": BIKE})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["totalMinutes"] == 15 + 36 + 10 and body["count"] == 8
+    assert 'class="wd-bars"' in body["html"] and "FTP 250 W" in body["html"]
+    strength = client.post("/training-plan/api/steps/preview", json={"sport": "strength", "steps": STRENGTH}).json()
+    assert "Barbell Back Squat" in strength["html"] and strength["totalMinutes"] is None
+    assert client.post("/training-plan/api/steps/preview", json={"sport": "run", "steps": []}).json()["count"] == 0
+
+
+def test_steps_preview_names_a_bad_step(plan):
+    r = TestClient(training_plan.create_app()).post("/training-plan/api/steps/preview", json={
+        "sport": "bike", "steps": [{"kind": "repeat", "count": 2, "steps": [{"kind": "work", "target": {"pctFtp": 300}}]}]})
+    assert r.status_code == 400 and r.json()["error"].startswith("steps[0].steps[0].target.pctFtp must be")
+
+
+def test_the_editor_builds_steps(plan):
+    viewer = TestClient(training_plan.create_app()).get("/training-plan").text
+    # Same shell as the workout view, a step builder and the live preview.
+    assert "'<div class=\"wd-overlay we-overlay\">" in viewer and "function stepsBuilder(d)" in viewer
+    assert "api('steps/preview', { sport: d.sport, steps })" in viewer
+    assert "fields.steps = steps.length ? steps : null;" in viewer
+    assert "'steps'];" in viewer       # FORM_FIELDS: a duplicate copies them through the form
+
+
+def test_coloured_text_has_a_light_mode_shade(plan):
+    html = _view("w1-thu-bike")["html"]
+    assert 'class="wd-chip wd-ink" style="background:color-mix(in srgb, #7fb87a 16%, transparent);--ink:#7fb87a;--ink-l:#3f7a3a' in html
+    assert "html[data-theme=light] .wd-ink { color:var(--ink-l); }" in workout_detail.WD_CSS
+    # Body text is the page's text colour, never a light grey.
+    assert "neutral-200" not in workout_detail.WD_CSS and "neutral-100" not in workout_detail.WD_CSS

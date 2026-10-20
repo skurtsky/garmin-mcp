@@ -895,6 +895,19 @@ async def api_workout(request):
     return JSONResponse(result, headers=_NO_STORE)
 
 
+async def api_steps_preview(request):
+    """The workout editor's live preview of the steps being typed
+    (tools/workout_detail.py preview); a 400 names the step at fault."""
+    from tools import workout_detail
+    try:
+        body = await _json_body(request)
+        row = plan_service.require_plan(_plan_param(request))
+        result = workout_detail.preview(row["plan"], body.get("sport"), body.get("steps"))
+    except (PlanStorageUnavailable, LookupError, PlanError) as e:
+        return _api_error(e)
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 async def api_garmin_send(request):
     """Today's "Send to Garmin": build the workout from its steps, put it on
     its day in Garmin Connect, and link it to the plan."""
@@ -1126,6 +1139,7 @@ ROUTES = [
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
     Route("/training-plan/api/skip", api_skip, methods=["POST"]),
     Route("/training-plan/api/workout", api_workout, methods=["GET"]),
+    Route("/training-plan/api/steps/preview", api_steps_preview, methods=["POST"]),
     Route("/training-plan/api/garmin/send", api_garmin_send, methods=["POST"]),
     Route("/training-plan/api/carryover", api_carryover, methods=["POST"]),
     Route("/training-plan/api/carryover/dismiss", api_carryover_dismiss, methods=["POST"]),
