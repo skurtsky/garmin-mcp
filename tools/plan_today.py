@@ -125,8 +125,13 @@ def _week_strip(plan_week: dict | None, monday: date, today: date, views_by_day:
             state = ("done" if all(v["completed"] for v in views)
                      else "skipped" if all(v["completed"] or v["skipped"] for v in views) else "planned")
             color = SPORT_COLORS.get(views[0]["sport"], SPORT_COLORS["other"])
+        # The day's sessions by name, for the desktop Today's week timeline
+        # (the phone strip only uses state and colour).
+        sessions = [{"id": v["id"], "name": v["name"], "sport": v["sport"], "durationMinutes": v["durationMinutes"],
+                     "startTime": v["startTime"], "completed": v["completed"], "skipped": v["skipped"]}
+                    for v in views]
         strip.append({"date": day, "letter": _WEEKDAY_LETTERS[i], "is_today": day == today.isoformat(),
-                      "state": state, "color": color})
+                      "state": state, "color": color, "sessions": sessions})
     return strip
 
 

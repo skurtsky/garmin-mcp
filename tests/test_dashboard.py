@@ -1666,3 +1666,80 @@ def test_a_past_day_reads_that_days_metrics_and_plan(monkeypatch):
     assert asked["plan"] == asked["redesign"] == date(2026, 10, 7)
     assert asked["weeks"][0] == "2026-10-05"                        # the Today week widget: that day's week
     assert "2026-10-19" in asked["weeks"]                           # the Activity tab stays on the current week
+
+
+# ── Today on a desktop (_desk_today) ─────────────────────────────────────────
+
+def _desk(html):
+    return html.split('<div class="today-desk"', 1)[1].split("</section>\n", 1)[0]
+
+
+def _areas(html):
+    """The (narrow, wide) grid-template-areas the desktop grid was given."""
+    m = re.search(r'--td-wide:([^;]*);--td-narrow:([^"]*)"', html)
+    return m.group(2), m.group(1)
+
+
+def test_desktop_today_is_its_own_layout_beside_the_unchanged_phone_one():
+    html = dashboard._panel_today(_with_plan())
+    # The phone's column is still there, wrapped so it can be swapped out at 900px.
+    assert '<div class="today-mob"' in html and '<div class="today-grid">' in html
+    narrow, wide = _areas(html)
+    assert wide.startswith("'hero hero hero hero ready ready'") and "'week week week week week week'" in wide
+    assert narrow.startswith("'hero hero hero hero hero hero'")
+    desk = _desk(html)
+    # Training status shows four weeks of history on a desktop, one on a phone.
+    assert desk.count('class="js-bar" data-date=') > html.split('<div class="today-desk"')[0].count('class="js-bar" data-date=')
+    css = dashboard._STYLE
+    assert ".tp-today .today-mob { display:none !important; }" in css
+    assert "grid-template-areas:var(--td-wide)" in css
+
+
+def test_desktop_session_hero_opens_its_workout_and_the_plan():
+    data = _with_plan()
+    data["plan"]["today"][0].update(details="WU 20 min\nMain: 20 min @ 250W")
+    desk = _desk(dashboard._panel_today(data, token="t0k"))
+    hero = desk.split('class="t-card td-pad td-hero"', 1)[1]
+    assert "FTP Field Test" in hero and "Main: 20 min @ 250W" in hero
+    assert 'data-plan-workout="w2-fri-bike">Workout details' in hero
+    assert 'href="/training-plan?workout=w2-fri-bike&amp;token=t0k"' in hero
+
+
+def test_desktop_week_names_each_days_sessions():
+    data = _with_plan()
+    days = data["plan"]["week"]["days"]
+    days[4]["sessions"] = [{"id": "w2-fri-bike", "name": "FTP Field Test", "sport": "bike", "durationMinutes": 40,
+                            "startTime": None, "completed": True, "skipped": False}]
+    days[5]["sessions"] = [{"id": "w2-sat-bike", "name": "Plantagenet Ride w/ Cam", "sport": "bike",
+                            "durationMinutes": 285, "startTime": None, "completed": False, "skipped": False}]
+    week = _desk(dashboard._panel_today(data, token="t0k")).split('aria-label="This week"', 1)[1]
+    assert "FTP Field Test" in week and "40 min · done" in week
+    # Today's session opens its dialog; the rest of the week opens in the plan.
+    assert 'data-plan-workout="w2-fri-bike"' in week
+    assert 'href="/training-plan?workout=w2-sat-bike&amp;token=t0k"' in week
+    assert '<span class="td-when">Tomorrow</span>' in week
+
+
+def test_desktop_rest_day_promotes_recovery_and_shows_tomorrow():
+    html = dashboard._panel_today(_with_plan(today=[]))
+    narrow, wide = _areas(html)
+    assert wide.startswith("'rest rest rest rest rest rest'") and "'rec rec rec rec ready ready'" in wide
+    assert "hero" not in wide
+    rest = _desk(html).split('class="t-card td-rest"', 1)[1]
+    assert "Rest day" in rest and "Plantagenet Ride w/ Cam" in rest and 'data-plan-workout="w2-sat-bike"' in rest
+
+
+def test_desktop_without_a_plan_puts_the_body_first():
+    html = dashboard._panel_today({**SAMPLE, "plan": None})
+    narrow, wide = _areas(html)
+    assert wide == "'ready ready rec rec ts ts' 'noplan noplan noplan noplan noplan noplan'"
+    assert "No active plan" in _desk(html)
+
+
+def test_desktop_header_sums_up_the_day():
+    assert dashboard._today_summary(_with_plan()["plan"]).startswith("1 session · 40 min planned")
+    assert dashboard._today_summary(_with_plan(today=[])["plan"]) == "Rest day"
+    assert dashboard._today_summary(None) == ""
+    html = dashboard.render_dashboard_html(_with_plan())
+    assert '<span class="tb-today-desk">1 session · 40 min planned' in html
+    assert 'id="dash-date"' in html   # the date picker stays

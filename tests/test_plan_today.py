@@ -128,6 +128,10 @@ def test_context_for_a_session_day(plan):
     # Monday and Tuesday went by undone, so they were skipped.
     assert [d["state"] for d in week["days"]] == ["skipped", "skipped", "rest", "done", "rest", "rest", "rest"]
     assert week["days"][3]["is_today"]
+    # Each day also names its sessions, for the desktop Today's week timeline.
+    [ride] = week["days"][3]["sessions"]
+    assert ride["name"] == "Endurance ride" and ride["completed"] and ride["sport"] == "bike"
+    assert week["days"][2]["sessions"] == []
 
 
 def test_context_lists_todays_unlinked_activities(plan):
