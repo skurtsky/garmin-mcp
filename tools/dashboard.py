@@ -36,6 +36,7 @@ from urllib.parse import urlencode
 
 from tools.local_time import local_now, to_local, utc_offset_hours
 from tools.navbar import ICON_LINKS, THEME_BOOT, render_nav_html
+from tools.workout_detail import WD_CSS, WD_JS
 
 # Coming back to the app once the page is this old (seconds) refreshes it
 # (see _APP_JS). 0 disables refreshing.
@@ -3881,9 +3882,21 @@ _ACTIVITY_MODAL_JS = """
 
   // A plan session from Today / Tomorrow: its dialog (pre-rendered in a
   // <template> on the Today panel) opens in the same sheet, right here.
+  // A planned workout opens the shared workout view (tools/workout_detail.py),
+  // the same one the plan page shows; a change made there reloads the page on
+  // close. Offline, the dialog rendered into the page stands in.
   window.openPlanWorkout = function (id) {
+    if (window.WD) {
+      return window.WD.open(id, {
+        fallback: function (wid) { return openPlanTemplate(wid); },
+        onClose: function (changed) { if (changed) location.reload(); }
+      });
+    }
+    openPlanTemplate(id);
+  };
+  function openPlanTemplate(id) {
     var tpl = document.getElementById('plan-workout-' + id);
-    if (!tpl) return;
+    if (!tpl) return false;
     destroyMap();
     openId = null;
     modal.classList.remove('as-panel');
@@ -3894,7 +3907,8 @@ _ACTIVITY_MODAL_JS = """
     body.scrollTop = 0;
     modal.classList.add('open');
     document.body.style.overflow = 'hidden';
-  };
+    return true;
+  }
   function planWorkoutTarget(e) {
     var t = e.target;
     if (!t.closest) return null;
@@ -4528,7 +4542,7 @@ def _dashboard_head(token: str | None) -> str:
         f'<link rel="manifest" href="{_e(_pwa_asset_url("/manifest.webmanifest", token))}">'
         f"{THEME_BOOT}{ICON_LINKS}"
         "<title>Ridgeline</title>"
-        f"<style>{_STYLE}{_activity_css()}</style>"
+        f"<style>{_STYLE}{_activity_css()}{WD_CSS}</style>"
         f'</head><body data-token="{html.escape(token, quote=True) if token else ""}">'
     )
 
@@ -4694,6 +4708,7 @@ def render_dashboard_body(data: dict, token: str | None = None,
         f"<script>{_TZ_JS}</script>"
         f"<script>{_GEAR_MODAL_JS}</script>"
         f"<script>{_ACTIVITY_MODAL_JS}</script>"
+        f"<script>{WD_JS}</script>"
         f"<script>{_APP_JS}</script>"
         f"<script>{_activity_js()}</script>"
         f"<script>{_TODAY_JS}</script>"
