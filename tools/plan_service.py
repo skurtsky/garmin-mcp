@@ -914,6 +914,36 @@ def link_garmin_workout(plan_id: str | None, workout_id: str, garmin_workout_id:
     return {"plan_id": row["id"], "workout_id": workout_id, **_state_dict(state)}
 
 
+def send_to_garmin(plan_id: str | None, workout_id: str) -> dict:
+    """Create a planned workout in Garmin Connect from its structured steps,
+    schedule it on its plan day, and record the link (as
+    :func:`link_garmin_workout` does). Refuses a workout already linked, so a
+    second tap can't make a duplicate."""
+    from tools import workout_steps
+    from tools.workout import create_workout
+    row = require_editable(plan_id)
+    hit = plan_doc.find_workout(row["plan"], workout_id)
+    if hit is None:
+        raise PlanError(f"No workout with id {workout_id!r} in this plan.")
+    _, day, workout = hit
+    state = db.get_workout_states(row["id"]).get(workout_id) or {}
+    if state.get("garmin_workout_id"):
+        raise PlanError(f"Already on Garmin (workout {state['garmin_workout_id']}).")
+    sport = workout.get("sport")
+    steps = workout_steps.clean_steps(sport, workout.get("steps")) if workout.get("steps") else None
+    sport_type, garmin_steps = workout_steps.to_garmin(row["plan"], sport, steps)
+    on = str(day.get("date"))[:10]
+    try:
+        result = create_workout(name=workout.get("name") or "Workout", sport_type=sport_type,
+                                steps=garmin_steps, schedule_date=on)
+    except ValueError as e:     # the builder's own checks
+        raise PlanError(f"Garmin workout not built: {e}") from None
+    if result.get("workout_id"):
+        link_garmin_workout(row["id"], workout_id, result["workout_id"], on)
+    return {"workout_id": workout_id, "garmin_workout_id": result.get("workout_id"),
+            "scheduled_date": result.get("scheduled_date"), "warnings": result.get("warnings") or []}
+
+
 # ── MCP READ VIEW ─────────────────────────────────────────────────────────────
 
 def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) -> dict:
@@ -921,7 +951,7 @@ def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) 
             "distanceKmRange", "primaryZone", "keyTargets", "terrain", "difficulty", "trainingEffect",
             "startTime"]
     if include_details:
-        keys += ["description", "humanReadable"]
+        keys += ["description", "humanReadable", "steps"]
     out = {k: workout[k] for k in keys if workout.get(k) not in (None, "")}
     out["date"] = day.get("date")
     out.update(_state_dict(state))

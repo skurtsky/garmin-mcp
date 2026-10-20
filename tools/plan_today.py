@@ -13,7 +13,7 @@ import logging
 from datetime import date, timedelta
 
 import db
-from tools import plan_doc
+from tools import plan_doc, workout_steps
 from tools.best_efforts import best_rolling_power
 from tools.plan_service import activity_day
 
@@ -87,6 +87,7 @@ def _workout_view(w: dict, d: dict, state: dict | None, activities: dict) -> dic
         "completed": bool(state.get("completed")),
         "skipped": bool(state.get("skipped")) and not state.get("completed"),
         "is_test": plan_doc.is_test_workout(w),
+        "garmin_workout_id": state.get("garmin_workout_id"),
         "activity": _activity_view(activities.get(state.get("activity_id"))) if state.get("completed") else None,
     }
 
@@ -95,7 +96,11 @@ def _with_details(plan: dict, view: dict, w: dict) -> dict:
     """A Today / Tomorrow session plus what its dialog shows: the coach's
     description and the step-by-step detail with its zone tokens written out."""
     return {**view, "description": w.get("description"),
-            "details": plan_doc.resolve_tokens(plan, w.get("humanReadable")) if w.get("humanReadable") else None}
+            "details": plan_doc.resolve_tokens(plan, w.get("humanReadable")) if w.get("humanReadable") else None,
+            # Structured steps, resolved for the graph and step list (None
+            # without them), and why it can't go to Garmin (None if it can).
+            "steps": workout_steps.resolve(plan, view["sport"], w.get("steps")),
+            "garmin_blocker": workout_steps.garmin_blocker(view["sport"], w.get("steps"))}
 
 
 def _unplanned_today(today: date, linked_ids: set) -> list[dict]:
