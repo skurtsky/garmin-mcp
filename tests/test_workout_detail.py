@@ -163,3 +163,21 @@ def test_coloured_text_has_a_light_mode_shade(plan):
     assert "html[data-theme=light] .wd-ink { color:var(--ink-l); }" in workout_detail.WD_CSS
     # Body text is the page's text colour, never a light grey.
     assert "neutral-200" not in workout_detail.WD_CSS and "neutral-100" not in workout_detail.WD_CSS
+
+
+def test_ramps_in_the_view_and_the_editor(plan):
+    plan_service.apply_operations(PLAN_ID, [{"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"steps": [
+        {"kind": "warmup", "durationS": 120, "target": {"pctFtp": [66, 75]}, "ramp": "build"},
+        {"kind": "work", "durationS": 600, "target": {"pctFtp": 90}},
+        {"kind": "cooldown", "durationS": 300, "target": {"pctFtp": [45, 55]}, "ramp": "recover"}]}}], "test", "ramps")
+    html = _view("w1-thu-bike")["html"]
+    # A ramp is one sloped shape with a fade; its row swatch and strip colour fade too.
+    assert html.count('class="wd-bar ramp') == 2 and html.count("<polygon") == 2
+    assert 'data-c="linear-gradient(180deg, #5eb8ad, #5eb8ad)"' in html
+    assert "165 → 188 W · 66 → 75% FTP" in html and "138 → 113 W · 55 → 45% FTP" in html
+    assert ".wd-bar.ramp.on { box-shadow:none; filter:drop-shadow(" in workout_detail.WD_CSS
+    # The editor: a shape dropdown for % FTP ranges, and bars and rows that select each other.
+    viewer = TestClient(training_plan.create_app()).get("/training-plan").text
+    assert "function shapePicker(u, path, last)" in viewer and "data-we-ramp" in viewer
+    assert "if (isRange(u) && (u.ramp === 'build' || u.ramp === 'recover')) out.ramp = u.ramp;" in viewer
+    assert "function weDecorate()" in viewer and "function weSelect(path, fromBar)" in viewer

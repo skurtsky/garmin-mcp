@@ -522,6 +522,11 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
         swim CSS-pace zone: 1-4, 5a, 5b, 5c ("ss" bike sweet spot, "strides"
         run; swim 1-5) or a range "1-2"; {"hrZone": …} (run/bike);
         {"pctFtp": 75 or [88, 92]} (bike); {"rpe": 1-10}.
+      ramp (bike, with a pctFtp range only): "build" climbs through the range,
+        "recover" comes down through it; leave it out to hold the range
+        (sustain). E.g. {"kind": "warmup", "durationS": 120,
+        "target": {"pctFtp": [66, 75]}, "ramp": "build"}. It only shapes the
+        graph: Garmin gets the range as the step's target either way.
       note (shown with the step); swim only: stroke (free, back, breast, fly,
         im, drill, kick, pull, choice) and equipment (pullbuoy, paddles, fins,
         snorkel, kickboard).

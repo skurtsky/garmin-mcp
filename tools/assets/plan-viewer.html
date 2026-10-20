@@ -1597,7 +1597,7 @@ function stepToUI(s, sport) {
   return { kind: s.kind || 'work', amt: s.durationS != null ? 'time' : s.distanceM != null ? 'distance' : 'lap',
     time: s.durationS != null ? clockText(s.durationS) : '',
     dist: s.distanceM != null ? String(sport === 'swim' ? s.distanceM : +(s.distanceM / 1000).toFixed(3)) : '',
-    tgt, tv, note: s.note || '', stroke: s.stroke || '', equip: (s.equipment || []).join(', ') };
+    tgt, tv, ramp: s.ramp || 'sustain', note: s.note || '', stroke: s.stroke || '', equip: (s.equipment || []).join(', ') };
 }
 function stepFromUI(u, sport) {
   if (u.kind === 'repeat') {
@@ -1629,7 +1629,12 @@ function stepFromUI(u, sport) {
   if (u.amt === 'distance' && u.dist !== '' && !isNaN(Number(u.dist))) out.distanceM = Math.round(Number(u.dist) * (sport === 'swim' ? 1 : 1000));
   if (u.tgt !== 'none' && String(u.tv).trim()) {
     const v = String(u.tv).trim();
-    if (u.tgt === 'pctFtp') { const p = v.split(/[-–]/).map(x => Number(x.trim())); out.target = { pctFtp: p.length > 1 ? p : p[0] }; }
+    if (u.tgt === 'pctFtp') {
+      const p = v.split(/[-–]/).map(x => Number(x.trim()));
+      out.target = { pctFtp: p.length > 1 ? p : p[0] };
+      // Build / recover only shape the graph; Garmin gets the range either way.
+      if (isRange(u) && (u.ramp === 'build' || u.ramp === 'recover')) out.ramp = u.ramp;
+    }
     else if (u.tgt === 'rpe') out.target = { rpe: Number(v) };
     else out.target = { [u.tgt]: v.replace(/^z/i, '') };
   }
@@ -1641,6 +1646,12 @@ function stepFromUI(u, sport) {
   }
   return out;
 }
+/* A % FTP range ("66-83") is what a step can ramp through. */
+function isRange(u) {
+  if (!u || u.tgt !== 'pctFtp') return false;
+  const p = String(u.tv || '').split(/[-–]/).map(x => x.trim());
+  return p.length === 2 && p[0] !== '' && p[1] !== '' && Number(p[0]) < Number(p[1]);
+}
 function stepsFromDraft(d) {
   return STEP_SPORTS.includes(d.sport) ? d.steps.map(u => stepFromUI(u, d.sport)) : [];
 }
@@ -1649,9 +1660,9 @@ function newStep(sport, what) {
   if (what === 'rest') return { kind: 'rest', time: '2:00', note: '' };
   const tgt = sport === 'bike' ? 'zone' : 'zone';
   if (what === 'repeat') return { kind: 'repeat', count: '3', note: '', steps: [
-    { kind: 'work', amt: 'time', time: '3:00', dist: '', tgt, tv: '4', note: '', stroke: '', equip: '' },
-    { kind: 'recovery', amt: 'time', time: '2:00', dist: '', tgt, tv: '1', note: '', stroke: '', equip: '' }] };
-  return { kind: 'work', amt: sport === 'swim' ? 'distance' : 'time', time: '5:00', dist: sport === 'swim' ? '100' : '', tgt, tv: '2', note: '', stroke: '', equip: '' };
+    { kind: 'work', amt: 'time', time: '3:00', dist: '', tgt, tv: '4', ramp: 'sustain', note: '', stroke: '', equip: '' },
+    { kind: 'recovery', amt: 'time', time: '2:00', dist: '', tgt, tv: '1', ramp: 'sustain', note: '', stroke: '', equip: '' }] };
+  return { kind: 'work', amt: sport === 'swim' ? 'distance' : 'time', time: '5:00', dist: sport === 'swim' ? '100' : '', tgt, tv: '2', ramp: 'sustain', note: '', stroke: '', equip: '' };
 }
 /* The list a step path ("2" or "1.0") lives in, and its index there. */
 function stepSlot(d, path) {
@@ -1680,7 +1691,7 @@ function runPreview() {
    say it the way the builder shows it ("Step 2: % FTP …"). */
 const STEP_FIELD_WORDS = { 'target.pctFtp': '% FTP', 'target.zone': 'Zone', 'target.hrZone': 'HR zone', 'target.rpe': 'RPE',
   target: 'Target', durationS: 'Time', distanceM: 'Distance', count: 'Repeat count', exercise: 'Exercise', sets: 'Sets', reps: 'Reps',
-  weightKg: 'Load', weightLb: 'Load', setWeightsKg: 'Loads', setWeightsLb: 'Loads', restS: 'Rest', kind: 'Step type' };
+  weightKg: 'Load', weightLb: 'Load', setWeightsKg: 'Loads', setWeightsLb: 'Loads', restS: 'Rest', kind: 'Step type', ramp: 'Shape' };
 function stepError(msg) {
   const d = state.editDraft;
   const m = /^steps\[(\d+)\](?:\.steps\[(\d+)\])?\.?([\w.]*)\s*(.*)$/.exec(msg);
@@ -1698,6 +1709,7 @@ function stepError(msg) {
 function paintPreview() {
   const box = document.querySelector('[data-we-preview]');
   if (box) box.innerHTML = previewHtml(state.editDraft);
+  weDecorate();
   const sum = document.querySelector('[data-we-total]');
   if (sum) sum.innerHTML = totalHtml(state.editDraft);
 }
@@ -1749,7 +1761,31 @@ function stepBtns(path, label) {
     + '<button type="button" class="btn btn-icon" data-step-act="down" data-path="' + path + '" aria-label="Move ' + label + ' down" title="Move down">' + icon('caretDown', 14) + '</button>'
     + '<button type="button" class="btn btn-icon" data-step-act="del" data-path="' + path + '" aria-label="Remove ' + label + '" title="Remove">' + icon('x', 14) + '</button></span>';
 }
-function enduranceRow(u, path, n, sport) {
+/* Build / Sustain / Recover: a dropdown with each shape's icon. A shape
+   needs a % FTP range to ramp through, so without one it's greyed out. */
+const SHAPES = [['build', 'Build', 'M3 19 L21 5 L21 19 Z', 'Ramp up'], ['sustain', 'Sustain', 'M3 9 H21 V19 H3 Z', 'Hold'],
+  ['recover', 'Recover', 'M3 5 L21 19 L3 19 Z', 'Ramp down']];
+function shapeIcon(d) { return '<svg class="we-shic" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="' + d + '"/></svg>'; }
+function shapeNow(u) { return SHAPES.find(x => x[0] === (isRange(u) ? u.ramp || 'sustain' : 'sustain')) || SHAPES[1]; }
+function shapeRange(u, key) {
+  const p = String(u.tv || '').split(/[-–]/).map(x => x.trim());
+  return key === 'sustain' ? p[0] + '–' + p[1] + '%' : key === 'build' ? p[0] + ' → ' + p[1] + '%' : p[1] + ' → ' + p[0] + '%';
+}
+function shapeButtonInner(u) {
+  const cur = shapeNow(u);
+  return shapeIcon(cur[2]) + '<span class="we-ddl">' + cur[1] + '</span>' + icon('caretDown', 12);
+}
+function shapePicker(u, path, last) {
+  const range = isRange(u), open = range && state.weShape === path, cur = shapeNow(u);
+  const menu = open ? '<div class="we-menu' + (last ? ' up' : '') + '" role="listbox" aria-label="Shape">'
+    + SHAPES.map(x => '<button type="button" role="option" class="we-opt' + (x[0] === cur[0] ? ' sel' : '') + '" aria-selected="' + (x[0] === cur[0]) + '"'
+      + ' data-we-ramp="' + x[0] + '" data-path="' + path + '">' + shapeIcon(x[2])
+      + '<span><span class="we-optn">' + x[1] + '</span><small>' + x[3] + ' · ' + esc(shapeRange(u, x[0])) + '</small></span></button>').join('') + '</div>' : '';
+  return '<span class="we-dd"><button type="button" class="input we-ddb' + (range ? '' : ' off') + (open ? ' open' : '') + '" data-we-shape="' + path + '"'
+    + ' aria-haspopup="listbox" aria-expanded="' + open + '" aria-disabled="' + !range + '" aria-label="Shape"'
+    + ' title="' + (range ? 'Shape of this step on the graph' : 'Give a range, like 66-83, to ramp') + '">' + shapeButtonInner(u) + '</button>' + menu + '</span>';
+}
+function enduranceRow(u, path, n, sport, last) {
   const f = (key, attrs) => ' data-step="' + path + '" data-sk="' + key + '" ' + (attrs || '');
   const label = 'step ' + n;
   const amount = u.amt === 'time' ? '<input class="input we-num" value="' + esc(u.time) + '"' + f('time', 'inputmode="numeric" placeholder="m:ss" aria-label="Duration (m:ss, or minutes)"') + '>'
@@ -1757,12 +1793,14 @@ function enduranceRow(u, path, n, sport) {
     : '<span class="we-lap">Until lap</span>';
   const tgt = (TARGETS[sport] || TARGETS.run);
   const hint = (ZONE_HINTS[sport] || {})[u.tgt] || '';
-  return '<div class="we-row" data-path="' + path + '">'
+  return '<div class="we-row' + (state.weSel === path ? ' on' : '') + (state.weShape === path ? ' lift' : '') + '" data-path="' + path + '" data-we-row="' + path + '">'
+    + '<span class="we-stripe" aria-hidden="true"></span>'
     + '<span class="we-n">' + n + '</span>'
     + '<select class="input we-kind"' + f('kind', 'aria-label="Step type"') + '>' + opts(STEP_KINDS, u.kind) + '</select>'
     + '<span class="we-pair"><select class="input"' + f('amt', 'aria-label="Ends by"') + '>' + opts([['time', 'Time'], ['distance', 'Distance'], ['lap', 'Lap']], u.amt) + '</select>' + amount + '</span>'
     + '<span class="we-pair"><select class="input"' + f('tgt', 'aria-label="Target"') + '>' + opts(tgt, u.tgt) + '</select>'
       + (u.tgt === 'none' ? '' : '<input class="input we-num" value="' + esc(u.tv) + '"' + f('tv', 'placeholder="' + esc(hint) + '" title="' + esc(hint) + '" aria-label="Target value"') + '>') + '</span>'
+    + (sport === 'bike' && u.tgt === 'pctFtp' ? shapePicker(u, path, last) : '')
     + (sport === 'swim' ? '<span class="we-pair"><select class="input"' + f('stroke', 'aria-label="Stroke"') + '>' + opts(STROKES, u.stroke) + '</select>'
       + '<input class="input" value="' + esc(u.equip) + '"' + f('equip', 'placeholder="Gear: pullbuoy, fins" aria-label="Equipment"') + '></span>' : '')
     + '<input class="input we-note" value="' + esc(u.note) + '"' + f('note', 'placeholder="Cue (optional)" aria-label="Cue"') + '>'
@@ -1796,15 +1834,16 @@ function stepsBuilder(d) {
     return '<div class="we-empty">Steps are for run, bike, swim and strength workouts. Use the text version for this one.</div>';
   }
   let n = 0, rows = '';
+  const total = d.steps.reduce((t, u) => t + (u.kind === 'repeat' ? u.steps.length : 1), 0);
   d.steps.forEach((u, i) => {
     if (u.kind === 'repeat') {
       rows += '<div class="we-rep" data-path="' + i + '"><div class="we-rephead"><span class="we-replbl">Repeat</span>'
         + '<input class="input we-tiny" type="number" min="1" max="50" value="' + esc(u.count) + '" data-step="' + i + '" data-sk="count" aria-label="Repeat count"><span>×</span>'
         + '<span class="we-grow"></span>' + stepBtns(String(i), 'repeat') + '</div>'
-        + u.steps.map((c, j) => enduranceRow(c, i + '.' + j, ++n, d.sport)).join('')
+        + u.steps.map((c, j) => enduranceRow(c, i + '.' + j, ++n, d.sport, n >= total - 1)).join('')
         + '<button type="button" class="link-btn we-addin" data-step-act="add-in" data-path="' + i + '">+ Step in this repeat</button></div>';
     } else {
-      rows += d.sport === 'strength' ? strengthRow(u, String(i), ++n) : enduranceRow(u, String(i), ++n, d.sport);
+      rows += d.sport === 'strength' ? strengthRow(u, String(i), ++n) : enduranceRow(u, String(i), ++n, d.sport, n >= total - 1);
     }
   });
   const add = d.sport === 'strength'
@@ -1815,6 +1854,7 @@ function stepsBuilder(d) {
 function editModal() {
   if (!state.editId || !state.editDraft) return '';
   const d = state.editDraft;
+  if (state.weFor !== d) { state.weFor = d; state.weSel = null; state.weShape = null; }   // a new editor starts unselected
   const field = (label, key, attrs) => '<div class="field"><label for="we-' + key + '">' + label + '</label><input class="input" id="we-' + key + '" data-edit-field="' + key + '" value="' + esc(d[key]) + '" ' + (attrs || 'type="text"') + '></div>';
   const area = (label, key, rows, attrs) => '<div class="field"><label for="we-' + key + '">' + label + '</label><textarea class="input" id="we-' + key + '" rows="' + rows + '" data-edit-field="' + key + '" ' + (attrs || '') + '>' + esc(d[key]) + '</textarea></div>';
   const sportSel = '<div class="field"><label for="we-sport">Sport</label><select class="input" id="we-sport" data-edit-field="sport">'
@@ -1890,8 +1930,59 @@ function editStepField(el, rerender) {
   const key = el.getAttribute('data-sk');
   u[key] = el.type === 'checkbox' ? el.checked : el.value;
   if (key === 'tgt') u.tv = u.tgt === 'pctFtp' ? '75' : u.tgt === 'rpe' ? '5' : u.tgt === 'none' ? '' : '2';
+  if (key === 'tv') {
+    const b = document.querySelector('[data-we-shape="' + el.getAttribute('data-step') + '"]');
+    if (b) {
+      b.classList.toggle('off', !isRange(u));
+      b.setAttribute('aria-disabled', String(!isRange(u)));
+      b.title = isRange(u) ? 'Shape of this step on the graph' : 'Give a range, like 66-83, to ramp';
+      b.innerHTML = shapeButtonInner(u);
+    }
+  }
   if (rerender && STEP_SHAPE_KEYS.includes(key)) render();
   schedulePreview(rerender);
+}
+/* The preview's bars and the builder's rows point at each other: each row's
+   stripe is its bar's zone colour, and picking either one selects both. A
+   repeat's row stands for its step in every rep. */
+function barPaths(d) {
+  const out = [];
+  d.steps.forEach((u, i) => {
+    if (u.kind !== 'repeat') return out.push(String(i));
+    const count = Math.max(1, parseInt(u.count, 10) || 1);
+    for (let r = 0; r < count; r++) u.steps.forEach((_, j) => out.push(i + '.' + j));
+  });
+  return out;
+}
+function weDecorate() {
+  const d = state.editDraft;
+  if (!d || d.sport === 'strength') return;
+  const paths = barPaths(d);
+  const bars = document.querySelectorAll('.we-graph .wd-bar');
+  const fill = {};
+  bars.forEach((b, i) => {
+    const path = paths[i];
+    b.setAttribute('data-we-bar', path == null ? '' : path);
+    if (path != null && !(path in fill)) fill[path] = b.getAttribute('data-c');
+    const on = path != null && path === state.weSel;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+  });
+  document.querySelectorAll('[data-we-row]').forEach(r => {
+    const path = r.getAttribute('data-we-row');
+    r.classList.toggle('on', path === state.weSel);
+    const stripe = r.querySelector('.we-stripe');
+    if (stripe && fill[path]) stripe.style.background = fill[path];
+  });
+}
+function weSelect(path, fromBar) {
+  if (state.weSel === path) return;
+  state.weSel = path;
+  weDecorate();
+  if (fromBar) {
+    const row = document.querySelector('[data-we-row="' + path + '"]');
+    if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 }
 function stepAction(act, path) {
   const d = state.editDraft;
@@ -1903,6 +1994,8 @@ function stepAction(act, path) {
     if (act === 'down' && i < list.length - 1) list.splice(i + 1, 0, list.splice(i, 1)[0]);
     const parts = String(path).split('.');
     if (parts.length > 1 && !d.steps[Number(parts[0])].steps.length) d.steps.splice(Number(parts[0]), 1);
+    state.weSel = null;
+    state.weShape = null;
   }
   render();
   schedulePreview(true);
@@ -1937,6 +2030,7 @@ function render() {
   if (sheet2) sheet2.scrollTop = keep.sheet;
   document.documentElement.classList.toggle('wd-lock', !!state.editId);
   if (focusSel && state.editId) { const el = document.querySelector(focusSel); if (el) el.focus({ preventScroll: true }); }
+  if (state.editDraft) weDecorate();
   pinSyncLog();
 }
 
@@ -2000,6 +2094,28 @@ document.getElementById('app').addEventListener('click', e => {
     return saveOps([{ op: 'set_unit', unit: value }]);
   }
 
+  if (state.editDraft) {
+    const shapeBtn = e.target.closest('[data-we-shape]');
+    const opt = e.target.closest('[data-we-ramp]');
+    const bar = e.target.closest('.we-graph .wd-bar');
+    const row = e.target.closest('[data-we-row]');
+    if (row) weSelect(row.getAttribute('data-we-row'), false);
+    if (opt) {
+      const u = stepAt(state.editDraft, opt.getAttribute('data-path'));
+      if (u) u.ramp = opt.getAttribute('data-we-ramp');
+      state.weShape = null;
+      render();
+      return schedulePreview(true);
+    }
+    if (shapeBtn) {
+      const path = shapeBtn.getAttribute('data-we-shape');
+      if (!isRange(stepAt(state.editDraft, path))) return;
+      state.weShape = state.weShape === path ? null : path;
+      return render();
+    }
+    if (state.weShape) { state.weShape = null; render(); }
+    if (bar) { const path = bar.getAttribute('data-we-bar'); if (path) weSelect(path, true); return; }
+  }
   const stepBtn = e.target.closest('[data-step-act]');
   if (stepBtn && state.editDraft) return stepAction(stepBtn.getAttribute('data-step-act'), stepBtn.getAttribute('data-path'));
   const weBtn = e.target.closest('[data-we-act]');
@@ -2164,6 +2280,10 @@ document.getElementById('app').addEventListener('scroll', e => {
   syncLogTop = log.scrollTop + log.clientHeight >= log.scrollHeight - 8 ? null : log.scrollTop;
 }, true);
 
+document.getElementById('app').addEventListener('focusin', e => {
+  const row = state.editDraft && e.target.closest && e.target.closest('[data-we-row]');
+  if (row) weSelect(row.getAttribute('data-we-row'), false);
+});
 document.getElementById('app').addEventListener('input', e => {
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
   if (editField && state.editDraft) {
@@ -2323,6 +2443,7 @@ document.addEventListener('touchend', e => {
 
 document.addEventListener('keydown', e => {
   if (window.WD && window.WD.isOpen()) return;   // the workout view has the keys
+  if (e.key === 'Escape' && state.weShape) { state.weShape = null; return render(); }   // a shape menu closes first
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
   if (state.tab === 'plan' && !state.editId) {
     if (e.key === 'ArrowLeft') stepWeek(-1);
@@ -2583,7 +2704,7 @@ html { -webkit-tap-highlight-color: transparent; }
 .we-graph .wd-struct { padding:0; box-shadow:none; background:none; }
 .we-graph .wd-cardhead, .we-graph .wd-strip { display:none; }
 .we-graph .wd-plot { height:120px; }
-.we-graph .wd-bar { pointer-events:none; opacity:.85; }
+.we-graph .wd-bar:not(.on) { opacity:.7; }
 .we-graph .wd-strength { padding:0; box-shadow:none; background:none; }
 .we-graph .wd-strength .wd-cardhead { display:none; }
 .we-graph.stale { opacity:.45; }
@@ -2592,8 +2713,29 @@ html { -webkit-tap-highlight-color: transparent; }
 .we-empty { padding:16px; border-radius:10px; font-size:13px; color:var(--color-neutral-500); text-align:center;
   border:1px dashed var(--color-neutral-700); }
 .we-steps { display:flex; flex-direction:column; gap:6px; }
-.we-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px; border-radius:10px;
+.we-row { position:relative; display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px; border-radius:10px;
   background:color-mix(in srgb, var(--color-bg) 55%, var(--color-surface)); }
+.we-row[data-we-row] { padding-left:16px; cursor:pointer; }
+.we-row.on { background:color-mix(in srgb, var(--color-accent) 14%, var(--color-surface)); box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent); }
+.we-row.lift { z-index:5; }
+.we-stripe { position:absolute; left:0; top:0; bottom:0; width:6px; border-radius:10px 0 0 10px; background:var(--color-neutral-700); }
+.we-row.on .we-stripe { width:8px; }
+/* the shape dropdown */
+.we-dd { position:relative; display:inline-flex; }
+.we-ddb { display:inline-flex !important; align-items:center; gap:6px; width:112px !important; cursor:pointer; color:var(--color-text); text-align:left; }
+.we-ddb .we-ddl { flex:1; }
+.we-ddb.open { border-color:var(--color-accent); }
+.we-ddb.off { opacity:.45; cursor:not-allowed; }
+.we-shic { flex:0 0 auto; color:var(--color-accent-400); }
+.we-menu { position:absolute; left:0; top:calc(100% + 4px); z-index:20; width:210px; padding:4px; border-radius:10px;
+  background:var(--color-surface); box-shadow:0 0 0 1px var(--color-neutral-700), 0 14px 34px rgba(0,0,0,.35); display:flex; flex-direction:column; gap:2px; }
+.we-menu.up { top:auto; bottom:calc(100% + 4px); }
+.we-opt { display:flex; align-items:center; gap:10px; padding:7px 9px; border:0; border-radius:7px; background:none; color:var(--color-text);
+  font:inherit; font-size:13px; line-height:1.3; text-align:left; cursor:pointer; }
+.we-opt:hover { background:var(--color-inset, color-mix(in srgb, var(--color-text) 6%, transparent)); }
+.we-opt.sel { background:color-mix(in srgb, var(--color-accent) 18%, transparent); }
+.we-opt small { display:block; font-size:11px; color:var(--color-neutral-500); }
+.we-optn { display:block; }
 .we-row .input { min-height:34px; height:34px; padding:4px 8px; font-size:13px; width:auto; }
 .we-n { width:20px; text-align:center; font-size:12px; color:var(--color-neutral-500); font-variant-numeric:tabular-nums; }
 .we-kind { width:112px !important; }
@@ -2604,7 +2746,7 @@ html { -webkit-tap-highlight-color: transparent; }
 .we-tiny { width:52px !important; }
 .we-load { width:128px !important; }
 .we-ex { flex:1 1 220px; min-width:180px; width:auto !important; }
-.we-note { flex:1 1 140px; min-width:120px; }
+.we-note { flex:1 1 120px; min-width:90px; }
 .we-lap, .we-rest, .we-lbl { font-size:13px; color:var(--color-neutral-500); }
 .we-lap { width:78px; }
 .we-check { display:inline-flex; align-items:center; gap:6px; font-size:13px; }
@@ -2614,6 +2756,7 @@ html { -webkit-tap-highlight-color: transparent; }
 .we-rep { display:flex; flex-direction:column; gap:6px; padding:8px 8px 10px; border-radius:12px;
   box-shadow:inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 35%, transparent); }
 .we-rep .we-row { margin-left:12px; }
+.we-rep .we-note { min-width:60px; flex-basis:80px; }
 .we-rephead { display:flex; align-items:center; gap:8px; padding:0 4px; }
 .we-rephead .input { height:32px; min-height:32px; }
 .we-replbl { font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-accent-400); }
