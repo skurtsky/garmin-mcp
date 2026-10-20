@@ -1254,6 +1254,76 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
   .fit-col { display:flex; flex-direction:column; gap:12px; min-width:0; }
 }
 
+/* ── Desktop Today (_desk_today): its own layout, swapped in at 900px. ── */
+.today-desk, .tb-today-desk, .goal-pill { display:none; }
+.td-pad { padding:20px 22px; border-radius:12px; display:flex; flex-direction:column; gap:16px; }
+.td-hero { box-shadow:0 0 0 1px var(--color-neutral-700); }
+.td-hero-body { display:flex; flex-wrap:wrap; gap:24px; }
+.td-hero-main { flex:3 1 320px; min-width:0; display:flex; flex-direction:column; gap:12px; }
+.td-hero-side { flex:2 1 240px; min-width:0; display:flex; flex-direction:column; gap:10px; }
+.td-title { font-size:24px; font-weight:500; letter-spacing:-.01em; line-height:1.25; }
+.td-desc { margin:0; font-size:14px; color:var(--color-neutral-300); max-width:62ch; }
+.td-steps { font-size:13px; line-height:1.7; white-space:pre-wrap; padding:12px 14px; border-radius:8px;
+  background:var(--color-inset); color:var(--color-neutral-200); }
+.td-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:auto; }
+.td-actions .t-btn { padding:8px 14px; }
+.td-btn-primary { background:var(--color-accent); color:var(--color-bg); box-shadow:none; }
+.td-btn-primary:hover { background:var(--color-accent-400); }
+.td-tag { font-size:11px; padding:3px 10px; border-radius:6px; }
+.td-hero-body + .td-other { margin-top:auto; }
+.td-other { display:flex; flex-wrap:wrap; align-items:center; gap:12px 14px; padding:10px 14px; border-radius:10px;
+  background:var(--color-inset); }
+.td-chip { display:flex; align-items:center; gap:12px; padding:8px 12px; border-radius:10px; border:0; font:inherit;
+  color:inherit; background:var(--color-surface); box-shadow:0 0 0 1px var(--color-neutral-800); cursor:pointer; }
+.td-rest .td-chip { background:var(--color-inset); }
+.td-chip:hover { box-shadow:0 0 0 1px var(--color-accent-700); }
+.td-rest { display:flex; flex-wrap:wrap; align-items:center; gap:14px 24px; padding:16px 20px; border-radius:12px;
+  box-shadow:0 0 0 1px var(--color-neutral-700); border-left:4px solid #7c8194; }
+.td-ring { width:96px; height:96px; flex:0 0 auto; border-radius:50%; display:grid; place-items:center; }
+.td-ring-in { width:80px; height:80px; border-radius:50%; background:var(--color-surface); display:grid; place-items:center; text-align:center; }
+.td-metric { display:grid; grid-template-columns:minmax(0,1fr) 120px; gap:12px; align-items:center; padding:11px 0;
+  border-top:1px solid var(--color-divider-soft); }
+.td-metric-v { font-size:19px; font-weight:500; }
+.td-unit { font-size:12px; font-weight:400; color:var(--color-neutral-500); }
+.td-delta { font-size:12px; font-weight:400; }
+.td-spark { width:120px; height:32px; display:block; }
+.td-bar { height:6px; border-radius:999px; background:var(--color-neutral-800); overflow:hidden; }
+.td-bar > div { height:100%; border-radius:999px; }
+.td-week { padding:18px 22px; border-radius:12px; display:flex; flex-direction:column; gap:14px; }
+.td-days { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:8px; }
+.td-day { display:flex; flex-direction:column; gap:8px; min-width:0; min-height:108px; padding:10px; border-radius:10px;
+  background:var(--color-inset); }
+.td-day.today { background:color-mix(in srgb, var(--color-accent) 14%, var(--color-surface)); box-shadow:0 0 0 1px var(--color-accent); }
+.td-day-head { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:2px 4px; font-size:12px;
+  color:var(--color-neutral-500); white-space:nowrap; }
+.td-when { font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--color-accent-400); }
+.td-sess { display:flex; gap:8px; min-width:0; padding:2px; margin:-2px; border-radius:6px; color:inherit; text-decoration:none; }
+.td-sess.t-link:hover, a.td-sess:hover { box-shadow:none; }
+.td-sess.t-link:hover .td-sess-name, a.td-sess:hover .td-sess-name { color:var(--color-accent-300); }
+.td-faded { opacity:.65; }
+.td-sess-bar { width:3px; flex:0 0 3px; align-self:stretch; border-radius:2px; }
+.td-sess-name { display:block; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.td-sess-sub { display:block; font-size:11px; color:var(--color-neutral-500); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.td-rest-line { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--color-neutral-500); }
+.goal-pill { align-items:center; gap:10px; flex:0 1 auto; min-width:0; padding:5px 14px 5px 6px; border-radius:999px; font-size:13px;
+  background:var(--color-surface); box-shadow:0 0 0 1px var(--color-accent-700); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.goal-pill-n { display:grid; place-items:center; min-width:28px; height:28px; padding:0 6px; box-sizing:border-box; border-radius:999px;
+  background:var(--color-accent); color:var(--color-bg); font-size:12px; font-weight:600; }
+@media (min-width: 900px) {
+  .tp-today .today-mob { display:none !important; }
+  .today-desk { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:16px; align-items:stretch;
+    grid-template-areas:var(--td-narrow); }
+  .td-cell { display:flex; flex-direction:column; min-width:0; }
+  .td-cell > * { flex:1 1 auto; }
+  /* Stretched to its row, Recovery keeps its content together at the top. */
+  .td-cell .focus-card > div:last-child { margin-top:0 !important; }
+  #tab-today:checked ~ .topbar .tb-today-desk { display:inline; }
+  #tab-today:checked ~ .topbar .goal-pill { display:flex; }
+}
+@media (min-width: 1200px) {
+  .today-desk { gap:20px; grid-template-areas:var(--td-wide); }
+}
+
 /* ── Fitness (design 4a) ── */
 .f-row { display:grid; grid-template-columns:minmax(0,1fr) 64px 86px; gap:8px; align-items:center; padding:11px 14px; }
 .f-ellipsis { font-size:11px; color:var(--color-neutral-600); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -1723,6 +1793,23 @@ def _session_card(w: dict, ftp_test: dict | None, kick: str = "Today&rsquo;s ses
     status = (f'<div style="display:flex;align-items:center;gap:5px;font-size:11px;color:{_DONE_COLOR}">'
               f'{_ph("check-circle", 15)}Done</div>') if done else ""
     act = w.get("activity")
+    act_row = _session_activity_row(act)
+    ftp_row = _session_ftp_row(w, ftp_test)
+    open_attrs = _plan_workout_attrs(w)
+    desc_row = (f'<div class="t-desc">{_e(w["description"])}</div>' if w.get("description") else "")
+    return f"""
+    <div class="t-card t-session{' t-link' if open_attrs else ''}"{open_attrs} style="border-left:3px solid {color}">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div class="t-kick" style="color:var(--color-accent)">{kick}</div>{status}
+      </div>
+      <div><div style="font-size:17px;font-weight:500">{_e(w.get("name"))}</div>
+        <div class="t-sub">{_session_line(w, planned_prefix=bool(act))}</div></div>
+      {desc_row}{act_row}{ftp_row}
+    </div>"""
+
+
+def _session_activity_row(act: dict | None) -> str:
+    """The Garmin activity that completed a session, opening its sheet."""
     act_row = ""
     if act:
         icon, tint = _sport_style(act.get("type"))
@@ -1739,6 +1826,11 @@ def _session_card(w: dict, ftp_test: dict | None, kick: str = "Today&rsquo;s ses
           <div style="font-size:11px;color:var(--color-neutral-500)">{_e(facts)}</div>
         </div>
       </div>"""
+    return act_row
+
+
+def _session_ftp_row(w: dict, ftp_test: dict | None) -> str:
+    """On an FTP test session: the prompt to update FTP, or what it was set to."""
     ftp_row = ""
     if ftp_test and ftp_test.get("workout_id") == w.get("id"):
         if ftp_test.get("applied"):
@@ -1746,17 +1838,7 @@ def _session_card(w: dict, ftp_test: dict | None, kick: str = "Today&rsquo;s ses
                        f'{_ph("check-circle", 14, _DONE_COLOR)}Plan FTP set to {_e(ftp_test["estimate"])} W from this test</div>')
         else:
             ftp_row = (f'<button type="button" class="t-btn" data-ftp-open>{_ph("gauge", 15)}Update FTP from test</button>')
-    open_attrs = _plan_workout_attrs(w)
-    desc_row = (f'<div class="t-desc">{_e(w["description"])}</div>' if w.get("description") else "")
-    return f"""
-    <div class="t-card t-session{' t-link' if open_attrs else ''}"{open_attrs} style="border-left:3px solid {color}">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div class="t-kick" style="color:var(--color-accent)">{kick}</div>{status}
-      </div>
-      <div><div style="font-size:17px;font-weight:500">{_e(w.get("name"))}</div>
-        <div class="t-sub">{_session_line(w, planned_prefix=bool(act))}</div></div>
-      {desc_row}{act_row}{ftp_row}
-    </div>"""
+    return ftp_row
 
 
 def _rest_day_card() -> str:
@@ -1846,9 +1928,11 @@ def _focus_card(title: str, body: str, gap: int = 14, href: str | None = None) -
       </{tag}>"""
 
 
-def _focus_training_status(data: dict) -> str:
+def _focus_training_status(data: dict, days: int = 7) -> str:
+    """The Training status card: a week of daily status on a phone, the four
+    weeks the history holds on the desktop Today."""
     ts = data.get("training_status") or {}
-    history = (data.get("training_status_daily_history") or [])[-7:]
+    history = (data.get("training_status_daily_history") or [])[-days:]
     status_raw = ts.get("status")
     label, color = _training_status_info(status_raw)
     load_focus = _label(ts.get("load_balance")) if ts.get("load_balance") else None
@@ -2073,12 +2157,337 @@ def _goal_card(g: dict) -> str:
     </div>"""
 
 
-def _panel_today(data: dict, token: str | None = None) -> str:
-    """Two columns on a desktop (race + readiness | sessions, tomorrow, week)
-    with In focus as a full-width row beneath; one column on a phone."""
+# ── Today on a desktop (≥900px) ──────────────────────────────────────────────
+# Its own layout rather than the phone's cards in two columns: today's session
+# as a wide hero beside readiness, the week as a seven-day timeline (which
+# carries tomorrow), and Training status, Recovery and the goal race side by
+# side instead of a swipe. The phone markup is rendered too and the two are
+# swapped at 900px, so the phone layout is exactly what it was. Cards sit on a
+# six-column grid whose areas depend on the day (session / rest / no plan) and
+# on the width (900–1199px or ≥1200px) — see _desk_areas.
+
+_DESK_UP, _DESK_DOWN, _DESK_FLAT = "#4fae72", "#d9a441", "var(--color-neutral-500)"
+
+
+def _plan_link(token: str | None, workout_id=None) -> str:
+    query = {**({"workout": workout_id} if workout_id else {}), **({"token": token} if token else {})}
+    return "/training-plan" + ("?" + urlencode(query) if query else "")
+
+
+def _desk_trend_row(label: str, value, unit: str, series: dict | None, lower_better: bool, stroke: str) -> str:
+    """A readiness metric with its last 7 days drawn beside it and today
+    against that week's average."""
+    vals = [p.get("value") for p in ((series or {}).get("daily") or [])][-7:]
+    present = [v for v in vals if v is not None]
+    delta = ""
+    if value is not None and len(present) >= 3:
+        d = value - sum(present) / len(present)
+        if round(abs(d)) == 0:
+            delta = f'<span class="td-delta" style="color:{_DESK_FLAT}">at 7-day avg</span>'
+        else:
+            good = d < 0 if lower_better else d > 0
+            delta = (f'<span class="td-delta" style="color:{_DESK_UP if good else _DESK_DOWN}">'
+                     f'{"+" if d > 0 else "&minus;"}{abs(d):.0f} vs 7-day</span>')
+    s = _spark(vals, w=120, h=32, p=3)
+    spark = ""
+    if s:
+        x, y = s["points"][-1]
+        spark = (f'<svg viewBox="0 0 120 32" preserveAspectRatio="none" class="td-spark" aria-hidden="true">'
+                 f'<line x1="0" x2="120" y1="{s["avgY"]}" y2="{s["avgY"]}" stroke="var(--color-neutral-700)" stroke-width="1" '
+                 f'stroke-dasharray="3 4" vector-effect="non-scaling-stroke"></line>'
+                 f'<path d="{s["line"]}" fill="none" stroke="{stroke}" stroke-width="1.8" stroke-linejoin="round" '
+                 f'vector-effect="non-scaling-stroke"></path>'
+                 f'<circle cx="{x}" cy="{y}" r="2.5" fill="{stroke}"></circle></svg>')
+    shown = f'{_num(value)}<span class="td-unit"> {unit}</span>' if value is not None else "&mdash;"
+    return (f'<div class="td-metric"><div><div class="t-kick">{label}</div>'
+            f'<div class="td-metric-v">{shown} {delta}</div></div>{spark}</div>')
+
+
+def _desk_readiness(data: dict) -> str:
+    training = (data.get("training") or {}).get("readiness") or {}
+    readiness = data.get("readiness") or {}
+    if not training and data.get("training_err"):
+        return f'<div class="card err">Training readiness unavailable — {_e(data.get("training_err"))}</div>'
+    level, score = training.get("level"), training.get("score")
+    color = _readiness_color(level)
+    hrv = readiness.get("hrv") or {}
+    stats = readiness.get("daily_stats") or {}
+    sleep_h, sleep_m = _fmt_hm_clock((data.get("sleep") or {}).get("total_sleep_hrs"))
+    sub = " · ".join(p for p in (
+        f"HRV {_label(hrv.get('status')).lower()}" if hrv.get("status") else None,
+        f"slept {sleep_h}h{sleep_m:02d}" if sleep_h is not None else None) if p)
+    title = _label(training.get("feedback_short")) if training.get("feedback_short") else _label(level)
+    resting = stats.get("resting_hr")
+    if resting is None:
+        resting = ((data.get("health") or {}).get("heart_rate") or {}).get("resting_hr")
+    metrics = (data.get("trends") or {}).get("metrics") or {}
+    pct = max(0, min(100, score)) if isinstance(score, (int, float)) else 0
+    bb = readiness.get("body_battery") or {}
+    bb_now = bb.get("current_level")
+    battery = ""
+    if bb_now is not None:
+        peak = f' <span class="td-delta" style="color:{_DESK_FLAT}">peak {_num(bb.get("highest"))}</span>' if bb.get("highest") else ""
+        battery = (f'<div class="td-metric"><div><div class="t-kick">Body battery</div>'
+                   f'<div class="td-metric-v">{_num(bb_now)}<span class="td-unit"> / 100</span>{peak}</div></div>'
+                   f'<div class="td-bar" role="img" aria-label="Body battery {_e(bb_now)} of 100">'
+                   f'<div style="width:{max(0, min(100, bb_now))}%;background:#5b8fd8"></div></div></div>')
+    return f"""
+    <section class="t-card td-pad td-ready" aria-label="Readiness">
+      <div class="t-kick">Readiness</div>
+      <div style="display:flex;align-items:center;gap:18px">
+        <div class="td-ring" role="img" aria-label="Training readiness {_e(score)}"
+            style="background:conic-gradient({color} 0 {pct}%, var(--color-neutral-800) {pct}% 100%)">
+          <div class="td-ring-in"><div><div style="font-size:30px;font-weight:500;line-height:1">{_num(score)}</div>
+            <div style="font-size:11px;color:var(--color-neutral-500);margin-top:3px">{_label(level) or ""}</div></div></div>
+        </div>
+        <div style="min-width:0"><div style="font-size:19px;font-weight:500;line-height:1.25">{title or "&mdash;"}</div>
+          <div class="t-sub" style="font-size:13px;margin-top:4px">{sub or "&mdash;"}</div></div>
+      </div>
+      <div>
+        {_desk_trend_row("HRV · overnight", hrv.get("last_night_avg"), "ms", metrics.get("hrv"), False, "#7fc9b0")}
+        {_desk_trend_row("Resting HR", resting, "bpm", metrics.get("rhr"), True, "#e0736f")}
+        {battery}
+      </div>
+    </section>"""
+
+
+def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: str) -> str:
+    color = _plan_color(w["sport"])
+    act = w.get("activity")
+    done = (f'<span style="display:flex;align-items:center;gap:5px;font-size:12px;color:{_DONE_COLOR}">'
+            f'{_ph("check-circle", 15)}Done</span>') if w.get("completed") else ""
+    desc = f'<p class="td-desc">{_e(w["description"])}</p>' if w.get("description") else ""
+    actions = ""
+    if w.get("id"):
+        actions = (f'<div class="td-actions">'
+                   f'<button type="button" class="t-btn td-btn-primary" data-plan-workout="{_e(w["id"])}">Workout details</button>'
+                   f'<a class="t-btn" href="{_e(_plan_link(token, w["id"]))}">Open in plan</a></div>')
+    steps = (f'<div class="t-kick">Steps</div><div class="td-steps">{_e(w["details"])}</div>'
+             if w.get("details") else "")
+    side = f'<div class="td-hero-side">{steps}{actions}</div>' if steps else ""
+    main_actions = "" if steps else actions
+    return f"""
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+        <div class="t-kick" style="color:var(--color-accent-400)">{kick}</div>
+        <div style="display:flex;align-items:center;gap:10px">{done}<span class="td-tag"
+            style="background:color-mix(in srgb, {color} 16%, transparent);color:{color}">{_e(w["sport"])}</span></div>
+      </div>
+      <div class="td-hero-body">
+        <div class="td-hero-main">
+          <div><h2 class="td-title">{_e(w.get("name"))}</h2>
+            <div class="t-sub" style="font-size:13px;margin-top:2px">{_session_line(w, planned_prefix=bool(act))}</div></div>
+          {desc}{_session_activity_row(act)}{_session_ftp_row(w, ftp_test)}{main_actions}
+        </div>
+        {side}
+      </div>"""
+
+
+def _desk_other_session(w: dict, label: str) -> str:
+    """Another of today's sessions, as a line under the hero."""
+    act = w.get("activity")
+    mark = _ph("check-circle", 20, _DONE_COLOR) if w.get("completed") else _ph("circle", 20, _plan_color(w["sport"]))
+    line = " · ".join(p for p in (_e(w["sport"]).capitalize(), _workout_line(w, planned_prefix=bool(act))) if p)
+    chip = ""
+    if act:
+        facts = " · ".join(p for p in (f"{_trim(act['distance_km'], 2)} km" if act.get("distance_km") else None,
+                                       _fmt_session_dur(act.get("duration_min")), "from Garmin") if p)
+        chip = (f'<button type="button" class="td-chip" onclick="openActivityModal({int(act["id"])})">'
+                f'<span class="td-sess-bar" style="background:{_plan_color(w["sport"])}"></span>'
+                f'<span style="text-align:left"><span style="display:block;font-size:13px">{_e(act.get("name"))}</span>'
+                f'<span class="td-sess-sub" style="display:block">{_e(facts)}</span></span>'
+                f'{_ph("caret-right", 14, "var(--color-neutral-500)")}</button>')
+    attrs = "" if act else _plan_workout_attrs(w)
+    return f"""
+      <div class="td-other{' t-link' if attrs else ''}"{attrs}>
+        {mark}
+        <div style="flex:1 1 200px;min-width:0"><div class="t-kick">{label}</div>
+          <div style="font-size:14px"><span style="font-weight:500">{_e(w.get("name"))}</span>
+            <span style="color:var(--color-neutral-400)"> · {line}</span></div></div>
+        {chip}
+      </div>"""
+
+
+def _desk_sessions(workouts: list[dict], ftp_test: dict | None, token: str | None) -> str:
+    """The next unfinished session as the hero (the last one once all are
+    done); the rest of today's sessions as lines beneath it."""
+    ordered = [w for _, w in sorted(enumerate(workouts), key=lambda iw: (iw[1].get("startTime") or "99:99", iw[0]))]
+    n = len(ordered)
+    nxt = next((i for i, w in enumerate(ordered) if not w.get("completed")), n - 1)
+    hero_w = ordered[nxt]
+    if n == 1:
+        kick = "Today&rsquo;s session"
+    else:
+        kick = f"{'Next up &middot; ' if not hero_w.get('completed') else ''}Session {nxt + 1} of {n}"
+    others = "".join(
+        _desk_other_session(w, f"{'Earlier today' if i < nxt else 'Later today'} &middot; Session {i + 1}")
+        for i, w in enumerate(ordered) if i != nxt)
+    return f"""
+    <section class="t-card td-pad td-hero" aria-label="Today&rsquo;s session" style="border-left:4px solid {_plan_color(hero_w["sport"])}">
+      {_desk_session_hero(hero_w, ftp_test, token, kick)}{others}
+    </section>"""
+
+
+def _desk_rest(tomorrow: list[dict]) -> str:
+    """A rest day is a slim strip, with tomorrow's session at its end."""
+    chip = ""
+    if tomorrow:
+        w = tomorrow[0]
+        extra = f" · +{len(tomorrow) - 1} more" if len(tomorrow) > 1 else ""
+        attrs = _plan_workout_attrs(w)
+        chip = (f'<div class="td-chip{" t-link" if attrs else ""}"{attrs}>'
+                f'<span class="td-sess-bar" style="background:{_plan_color(w["sport"])}"></span>'
+                f'<span><span class="t-kick" style="display:block">Tomorrow</span>'
+                f'<span style="display:block;font-size:14px;font-weight:500">{_e(w.get("name"))}</span>'
+                f'<span class="td-sess-sub" style="display:block">{_workout_line(w)}{extra}</span></span>'
+                f'{_ph("caret-right", 14, "var(--color-neutral-500)") if attrs else ""}</div>')
+    else:
+        chip = ('<div class="td-chip"><span><span class="t-kick" style="display:block">Tomorrow</span>'
+                '<span style="display:block;font-size:14px;font-weight:500">Rest day</span></span></div>')
+    return f"""
+    <section class="t-card td-rest" aria-label="Today">
+      <div class="t-tile" style="background:rgba(124,129,148,.18);color:var(--color-neutral-300)">{_ph("moon", 20)}</div>
+      <div style="flex:1 1 280px;min-width:0">
+        <div class="t-kick" style="color:var(--color-accent)">Today</div>
+        <div style="font-size:20px;font-weight:500;line-height:1.3">Rest day</div>
+        <div class="t-sub" style="font-size:13px">Nothing planned. Easy walk if you feel like moving.</div>
+      </div>
+      {chip}
+    </section>"""
+
+
+def _desk_week(week: dict, token: str | None) -> str:
+    """The plan week as seven days, each naming its sessions. Today's
+    sessions open their dialog; the others open in the plan."""
+    done, total = week.get("done_hours") or 0, week.get("plan_hours") or 0
+    pct = min(100, round(done / total * 100)) if total else 0
+    days, prev_today = "", False
+    for d in week.get("days") or []:
+        is_tomorrow, prev_today = prev_today, d.get("is_today")
+        try:
+            dt = date.fromisoformat(str(d.get("date"))[:10])
+            label = f"{dt:%a} {dt.day}"
+        except ValueError:
+            label = d.get("letter") or ""
+        mark = ""
+        if d["state"] == "done":
+            mark = _ph("check-circle", 15, _DONE_COLOR)
+        elif d["state"] == "skipped":
+            mark = _ph("minus-circle", 15, _SKIPPED_COLOR)
+        if d.get("is_today"):
+            head = f'<span style="color:var(--color-accent-300);font-weight:500">{label}</span><span class="td-when">Today</span>'
+        elif is_tomorrow:
+            head = f'<span>{label}</span><span class="td-when">Tomorrow</span>'
+        else:
+            head = f"<span>{label}</span>"
+        sessions = d.get("sessions")
+        body = ""
+        if d["state"] == "rest":
+            body = f'<div class="td-rest-line">{_ph("moon", 14, "currentColor")}Rest</div>'
+        for s in sessions or []:
+            status = " · done" if s.get("completed") else " · skipped" if s.get("skipped") else ""
+            sub = " · ".join(p for p in (_fmt_session_dur(s.get("durationMinutes")),
+                                         None if s.get("completed") else s.get("startTime")) if p) + status
+            inner = (f'<span class="td-sess-bar" style="background:{_plan_color(s.get("sport"))}"></span>'
+                     f'<span style="min-width:0"><span class="td-sess-name">{_e(s.get("name"))}</span>'
+                     f'<span class="td-sess-sub">{_e(sub)}</span></span>')
+            faded = " td-faded" if (s.get("completed") or s.get("skipped")) and not d.get("is_today") else ""
+            if not s.get("id"):
+                body += f'<div class="td-sess{faded}">{inner}</div>'
+            elif d.get("is_today"):
+                body += f'<div class="td-sess t-link{faded}"{_plan_workout_attrs(s)}>{inner}</div>'
+            else:
+                body += f'<a class="td-sess{faded}" href="{_e(_plan_link(token, s["id"]))}">{inner}</a>'
+        days += (f'<div class="td-day{" today" if d.get("is_today") else ""}">'
+                 f'<div class="td-day-head">{head}{mark}</div>{body}</div>')
+    return f"""
+    <section class="t-card td-week" aria-label="This week">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px 24px">
+        <h2 style="font-size:16px">This week</h2>
+        <div style="flex:1 1 240px;display:flex;align-items:center;gap:12px">
+          <div class="td-bar" style="max-width:360px;flex:1" role="img" aria-label="{_trim(done, 1)} of {_trim(total, 1)} hours done">
+            <div style="width:{pct}%;background:var(--color-accent)"></div></div>
+          <span style="font-size:13px;color:var(--color-neutral-300)">{_trim(done, 1)} of {_trim(total, 1)} h</span>
+        </div>
+        <a href="{_e(_plan_link(token))}" style="font-size:13px;color:var(--color-accent-400);text-decoration:none">Open plan &rarr;</a>
+      </div>
+      <div class="td-days">{days}</div>
+    </section>"""
+
+
+def _desk_areas(rows: list[list[str]]) -> str:
+    """A grid-template-areas value from rows of six cell names."""
+    return " ".join("'" + " ".join(r) + "'" for r in rows)
+
+
+def _desk_today(data: dict, token: str | None, goal: dict | None) -> str:
     plan = data.get("plan")
+    cells = {"ready": _desk_readiness(data), "ts": _focus_training_status(data, days=28),
+             "rec": _focus_recovery(data, token)}
+    if goal:
+        cells["goal"] = _goal_card(goal)
+    in_plan = bool(plan and plan.get("in_plan"))
+    sessions = in_plan and bool(plan.get("today"))
+    if in_plan and plan.get("today_activities"):
+        cells["acts"] = _today_activities_card(plan["today_activities"], not sessions)
+    acts = [["acts"] * 6] if "acts" in cells else []
+    bottom_wide = [["ts"] * 3 + ["goal"] * 3] if goal else [["ts"] * 6]
+    if sessions:
+        cells["hero"] = _desk_sessions(plan["today"], plan.get("ftp_test"), token)
+        cells["week"] = _desk_week(plan.get("week") or {}, token)
+        acts_w = [["acts"] * 4 + ["ready"] * 2] if acts else []
+        wide = ([["hero"] * 4 + ["ready"] * 2] + acts_w + [["week"] * 6]
+                + [["ts", "ts", "rec", "rec", "goal", "goal"] if goal else ["ts"] * 3 + ["rec"] * 3])
+        narrow = ([["hero"] * 6] + acts + [["ready"] * 3 + ["goal"] * 3 if goal else ["ready"] * 6]
+                  + [["week"] * 6, ["ts"] * 3 + ["rec"] * 3])
+    elif in_plan:
+        cells["rest"] = _desk_rest(plan.get("tomorrow") or [])
+        cells["week"] = _desk_week(plan.get("week") or {}, token)
+        wide = [["rest"] * 6] + acts + [["rec"] * 4 + ["ready"] * 2, ["week"] * 6] + bottom_wide
+        narrow = [["rest"] * 6] + acts + [["rec"] * 3 + ["ready"] * 3, ["week"] * 6] + bottom_wide
+    else:
+        lower = []
+        if not plan:
+            cells["noplan"] = _no_plan_card(token)
+            lower = [["noplan"] * 4 + ["goal"] * 2] if goal else [["noplan"] * 6]
+        elif goal:
+            lower = [["goal"] * 3 + ["."] * 3]
+        wide = [["ready", "ready", "rec", "rec", "ts", "ts"]] + lower
+        narrow = ([["ready"] * 3 + ["rec"] * 3]
+                  + [["ts"] * 3 + ["goal"] * 3 if goal else ["ts"] * 6]
+                  + ([["noplan"] * 6] if not plan else []))
+    body = "".join(f'<div class="td-cell" style="grid-area:{k}">{v}</div>' for k, v in cells.items())
+    return (f'<div class="today-desk" style="--td-wide:{_desk_areas(wide)};--td-narrow:{_desk_areas(narrow)}">'
+            f"{body}</div>")
+
+
+def _today_summary(plan: dict | None) -> str:
+    """The desktop header's line about the day: "2 sessions · 2h planned · 45 min done"."""
+    if not plan or not plan.get("in_plan"):
+        return ""
+    today = plan.get("today") or []
+    if not today:
+        return "Rest day"
+    planned = sum(w.get("durationMinutes") or 0 for w in today)
+    done = sum(w.get("durationMinutes") or 0 for w in today if w.get("completed"))
+    parts = [f"{len(today)} session{'' if len(today) == 1 else 's'}"]
+    if planned:
+        parts.append(f"{_fmt_session_dur(planned)} planned")
+    if done:
+        parts.append(f"{_fmt_session_dur(done)} done")
+    return " · ".join(parts)
+
+
+def _today_goal(data: dict) -> dict | None:
     goal = (data.get("redesign") or {}).get("goal")
-    left = [_goal_card(goal)] if goal and goal.get("show_on_today") else []
+    return goal if goal and goal.get("show_on_today") else None
+
+
+def _panel_today(data: dict, token: str | None = None) -> str:
+    """The phone's single column (two on a tablet-width desktop before this
+    layout existed) and, swapped in at 900px, the desktop layout."""
+    plan = data.get("plan")
+    goal = _today_goal(data)
+    left = [_goal_card(goal)] if goal else []
     left.append(_readiness_card(data))
     right, templates = [], []
     rest_day = False
@@ -2101,9 +2510,10 @@ def _panel_today(data: dict, token: str | None = None) -> str:
     focus = _in_focus(data, 1 if rest_day else 0, token)
     return (
         '<section class="panel tabpanel tp-today" style="flex-direction:column;gap:12px">'
+        '<div class="today-mob" style="display:flex;flex-direction:column;gap:12px">'
         f'<div class="today-grid"><div class="today-col">{"".join(left)}</div>'
         f'<div class="today-col">{"".join(right)}</div></div>'
-        + "".join(templates) + focus + "</section>"
+        + focus + "</div>" + "".join(templates) + _desk_today(data, token, goal) + "</section>"
     )
 
 
@@ -3945,6 +4355,16 @@ def render_dashboard_body(data: dict, token: str | None = None,
         week_pill = (f'<a class="week-pill" href="{_e(_pwa_asset_url("/training-plan", token))}">'
                      f'<span style="width:7px;height:7px;border-radius:50%;background:{plan["phase_color"]}"></span>'
                      f'{_e(label)}</a>')
+    # Desktop Today only (CSS): the day in a line, and the goal-race countdown.
+    summary = _today_summary(plan)
+    today_summary = f'<span class="tb-today-desk">{_e(summary)} &middot; </span>' if summary else ""
+    goal = _today_goal(data)
+    goal_pill = ""
+    if goal and goal.get("days_left", -1) >= 0:
+        n = goal["days_left"]
+        when = "Race day:" if n == 0 else f'{"day" if n == 1 else "days"} to'
+        goal_pill = (f'<span class="goal-pill">{"" if n == 0 else f"<span class=goal-pill-n>{n}</span>"}'
+                     f'<span>{when} <b style="font-weight:500">{_e(goal["name"])}</b></span></span>')
     fitness_sub = f"Garmin + {plan['title']}" if plan else "Garmin"
     nav = render_nav_html(None, token, tabs=_NAV_TABS, title=(plan or {}).get("athlete") or "Ridgeline")
 
@@ -3967,10 +4387,10 @@ def render_dashboard_body(data: dict, token: str | None = None,
       {date_picker}
       <div style="flex:1;min-width:0">
         <div class="topbar-title">{_e(weekday_line)}</div>
-        <div style="font-size:12px;color:var(--color-neutral-500)">{sync_line}</div>
+        <div style="font-size:12px;color:var(--color-neutral-500)">{today_summary}{sync_line}</div>
       </div>
       <span id="dash-updating" class="dash-updating" hidden><span class="dash-spin"></span>Updating</span>
-      {week_pill}
+      {goal_pill}{week_pill}
     </div>
     <div class="topbar-fitness topbar-inner">
       <label for="tab-today" class="topbar-back" aria-label="Back to Today">{_ph("caret-left", 20)}</label>
