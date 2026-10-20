@@ -1357,9 +1357,20 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .wg-row-a { color:var(--color-neutral-300); font-variant-numeric:tabular-nums; white-space:nowrap; }
 .td-actions-wrap { display:flex; flex-direction:column; gap:6px; margin-top:auto; }
 .td-actions-wrap .td-actions { margin-top:0; }
-.td-gsend[disabled] { opacity:.45; cursor:not-allowed; box-shadow:inset 0 0 0 1px var(--color-neutral-700); color:var(--color-neutral-400); }
+.td-gsend { width:38px; height:38px; flex:0 0 auto; display:grid; place-items:center; padding:0; border:0; border-radius:8px;
+  background:transparent; color:var(--color-accent); box-shadow:inset 0 0 0 1px var(--color-accent); cursor:pointer; }
+.td-gsend:hover { background:color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.td-gsend:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
+.td-gsend .gs-tick { display:none; }
+.td-gsend.sent .gs-tick { display:inline; }
+.td-gsend.sent .gs-arrow { display:none; }
+.td-gsend.sending .gs-arrow { animation:gs-push .9s ease-in-out infinite; }
+@keyframes gs-push { 0%, 100% { transform:translateX(-2px); opacity:.5; } 50% { transform:translateX(1px); opacity:1; } }
+@media (prefers-reduced-motion: reduce) { .td-gsend.sending .gs-arrow { animation:none; } }
+.td-gsend[disabled] { cursor:not-allowed; }
+.td-gsend[disabled]:not(.sent):not(.sending) { opacity:.4; color:var(--color-neutral-400); box-shadow:inset 0 0 0 1px var(--color-neutral-700); }
 .td-gsend[disabled]:hover { background:transparent; }
-.td-gsend.sent { opacity:1; color:#7fb87a; box-shadow:inset 0 0 0 1px color-mix(in srgb, #7fb87a 45%, transparent); }
+.td-gsend.sent { color:#7fb87a; box-shadow:inset 0 0 0 1px color-mix(in srgb, #7fb87a 45%, transparent); }
 .td-send-msg { font-size:12px; color:var(--color-neutral-400); min-height:0; }
 .td-send-msg:empty { display:none; }
 .td-send-msg.err { color:var(--color-danger); }
@@ -2352,7 +2363,8 @@ def _step_rows(steps: dict) -> str:
     out = ""
     for g in steps["groups"]:
         if "repeat" in g:
-            out += f'<li class="wg-rep">{g["repeat"]} &times;{f" · {_e(g["note"])}" if g["note"] else ""}</li>'
+            note = f" · {_e(g['note'])}" if g["note"] else ""
+            out += f'<li class="wg-rep">{g["repeat"]} &times;{note}</li>'
             out += "".join(row(c, indent=True) for c in g["children"])
         else:
             out += row(g)
@@ -2369,20 +2381,40 @@ def _strength_rows(steps: dict) -> str:
     return f'<ol class="wg-list">{out}</ol>'
 
 
+# The Send to Garmin icon: an arrow going into a watch; once sent, a tick on
+# the watch face instead. Stroke icons drawn on a 24px grid.
+_WATCH = ('<rect x="10" y="6" width="12" height="12" rx="3"></rect>'
+          '<path d="M12.5 6l.7-3.5h5.6l.7 3.5M12.5 18l.7 3.5h5.6l.7-3.5"></path>')
+_GSEND_ICON = ('<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
+               'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + _WATCH +
+               '<path class="gs-arrow" d="M1.5 12h6.5M5.5 9l3 3-3 3"></path>'
+               '<path class="gs-tick" d="M13.2 12.2l2 2 3.6-3.8"></path></svg>')
+
+
 def _garmin_button(w: dict) -> str:
-    """Send to Garmin: live when the steps can go, greyed out (with why) when
-    not, and a tick once it's on Garmin. Nothing for a finished session."""
+    """Send to Garmin, as an icon: live when the steps can go, greyed out
+    (saying why) when not, a tick once it's on Garmin. It creates the workout
+    in Garmin Connect and schedules it on the workout's own plan day. Nothing
+    for a finished session."""
     if w.get("completed") or not w.get("id"):
         return ""
     if w.get("garmin_workout_id"):
-        return (f'<button type="button" class="t-btn td-gsend sent" disabled>'
-                f'{_ph("check-circle", 15)}<span class="gs-label">On Garmin</span></button>')
+        label = "On Garmin — scheduled on its plan day"
+        return (f'<button type="button" class="td-gsend sent" disabled aria-label="{label}" title="{label}">'
+                f'{_GSEND_ICON}</button>')
     blocker = w.get("garmin_blocker")
     if blocker:
-        return (f'<button type="button" class="t-btn td-gsend" disabled title="{_e(blocker)}">'
-                f'<span class="gs-label">Send to Garmin</span></button>')
-    return (f'<button type="button" class="t-btn td-gsend" data-garmin-send="{_e(w["id"])}">'
-            f'<span class="gs-label">Send to Garmin</span></button>')
+        return (f'<button type="button" class="td-gsend" disabled aria-label="Send to Garmin — {_e(blocker)}" '
+                f'title="{_e(blocker)}">{_GSEND_ICON}</button>')
+    day = ""
+    try:
+        d = date.fromisoformat(str(w.get("date"))[:10])
+        day = f" for {d:%a} {d.day} {d:%b}"
+    except ValueError:
+        pass
+    label = f"Send to Garmin — create and schedule it{day}"
+    return (f'<button type="button" class="td-gsend" data-garmin-send="{_e(w["id"])}" aria-label="{label}" '
+            f'title="{label}">{_GSEND_ICON}</button>')
 
 
 def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: str) -> str:
@@ -3919,11 +3951,13 @@ _ACTIVITY_MODAL_JS = """
   document.addEventListener('click', function (e) {
     var btn = e.target.closest && e.target.closest('[data-garmin-send]');
     if (!btn || btn.disabled) return;
-    var label = btn.querySelector('.gs-label');
     var wrap = btn.closest('.td-actions-wrap');
     var msg = wrap && wrap.querySelector('.td-send-msg');
+    var idle = btn.getAttribute('aria-label');
+    function says(text) { btn.setAttribute('aria-label', text); btn.title = text; }
     btn.disabled = true;
-    label.textContent = 'Sending…';
+    btn.classList.add('sending');
+    says('Sending to Garmin…');
     if (msg) { msg.textContent = ''; msg.classList.remove('err'); }
     var t = token();
     fetch('/training-plan/api/garmin/send' + (t ? '?token=' + encodeURIComponent(t) : ''), {
@@ -3932,20 +3966,22 @@ _ACTIVITY_MODAL_JS = """
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, j: j }; });
     }).then(function (res) {
+      btn.classList.remove('sending');
       if (res.ok) {
         btn.classList.add('sent');
         btn.removeAttribute('data-garmin-send');
-        label.textContent = 'On Garmin';
+        says('On Garmin — scheduled for ' + (res.j.scheduled_date || 'its plan day'));
         if (msg) msg.textContent = 'Scheduled on Garmin for ' + (res.j.scheduled_date || 'its day') +
           ((res.j.warnings || []).length ? ' — Garmin changed: ' + res.j.warnings.join('; ') : '.');
       } else {
         btn.disabled = false;
-        label.textContent = 'Send to Garmin';
+        says(idle);
         if (msg) { msg.textContent = res.j.error || 'Couldn’t send it to Garmin.'; msg.classList.add('err'); }
       }
     }).catch(function () {
+      btn.classList.remove('sending');
       btn.disabled = false;
-      label.textContent = 'Send to Garmin';
+      says(idle);
       if (msg) { msg.textContent = 'Couldn’t reach the server.'; msg.classList.add('err'); }
     });
   });

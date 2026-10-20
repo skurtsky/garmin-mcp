@@ -292,9 +292,12 @@ def test_hero_draws_the_graph_with_a_detail_strip_on_the_first_work_step():
 def test_hero_send_button_states():
     swim = workout_steps.resolve(PLAN, "swim", workout_steps.clean_steps("swim", SWIM))
     greyed = _hero(sport="swim", steps=swim, garmin_blocker="Swim workouts can't be sent to Garmin yet.")
-    assert 'class="t-btn td-gsend" disabled title="Swim workouts' in greyed and "data-garmin-send" not in greyed
-    assert '>On Garmin</span>' in _hero(garmin_workout_id=42)
+    assert 'class="td-gsend" disabled aria-label="Send to Garmin — Swim workouts' in greyed
+    assert "data-garmin-send" not in greyed
+    assert 'class="td-gsend sent" disabled aria-label="On Garmin' in _hero(garmin_workout_id=42)
     assert "td-gsend" not in _hero(completed=True)
+    # The live button says it schedules on the workout's own day.
+    assert 'aria-label="Send to Garmin — create and schedule it for Thu 17 Sep"' in _hero(date="2026-09-17")
 
 
 def test_hero_lists_strength_without_a_graph_and_falls_back_to_text():
