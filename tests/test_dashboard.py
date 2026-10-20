@@ -1630,9 +1630,9 @@ def test_week_offset_of_the_week_holding_a_day():
 def test_date_picker_sits_before_the_title_and_marks_a_past_day():
     now = dashboard.render_dashboard_html({**SAMPLE, "date": "2026-10-20", "today": "2026-10-20"})
     assert now.index('id="dash-date"') < now.index('class="topbar-title"')
-    assert 'value="2026-10-20"' in now and 'max="2026-10-20"' in now and 'class="dash-date"' in now
+    assert 'id="dp-cal"' in now and "&quot;date&quot;: &quot;2026-10-20&quot;" in now and 'class="dash-date"' in now
     past = dashboard.render_dashboard_html({**SAMPLE, "date": "2026-10-12", "today": "2026-10-20"})
-    assert 'class="dash-date past"' in past and 'value="2026-10-12"' in past
+    assert 'class="dash-date past"' in past and "&quot;date&quot;: &quot;2026-10-12&quot;" in past
     assert "Monday 12 October" in past
     assert "/recovery?date=2026-10-12" in past                      # Recovery opens on the same day
 
@@ -1714,8 +1714,9 @@ def test_desktop_week_names_each_days_sessions():
                             "durationMinutes": 285, "startTime": None, "completed": False, "skipped": False}]
     week = _desk(dashboard._panel_today(data, token="t0k")).split('aria-label="This week"', 1)[1]
     assert "FTP Field Test" in week and "40 min · done" in week
-    # Today's session opens its dialog; the rest of the week opens in the plan.
+    # Every session opens its dialog in place; the href is the no-JS fallback.
     assert 'data-plan-workout="w2-fri-bike"' in week
+    assert 'data-plan-workout="w2-sat-bike"' in week
     assert 'href="/training-plan?workout=w2-sat-bike&amp;token=t0k"' in week
     assert '<span class="td-when">Tomorrow</span>' in week
 
