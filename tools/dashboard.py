@@ -2385,10 +2385,13 @@ def _strength_rows(steps: dict) -> str:
 # the watch face instead. Stroke icons drawn on a 24px grid.
 _WATCH = ('<rect x="10" y="6" width="12" height="12" rx="3"></rect>'
           '<path d="M12.5 6l.7-3.5h5.6l.7 3.5M12.5 18l.7 3.5h5.6l.7-3.5"></path>')
+# Optically centred: the watch carries most of the weight, so the drawing
+# sits left of its geometric centre.
 _GSEND_ICON = ('<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" '
-               'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + _WATCH +
-               '<path class="gs-arrow" d="M1.5 12h6.5M5.5 9l3 3-3 3"></path>'
-               '<path class="gs-tick" d="M13.2 12.2l2 2 3.6-3.8"></path></svg>')
+               'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><g transform="translate(-1.6 0)">'
+               + _WATCH +
+               '<path class="gs-arrow" d="M2.5 12h5.5M5.5 9.5 8 12l-2.5 2.5"></path>'
+               '<path class="gs-tick" d="M13.2 12.2l2 2 3.6-3.8"></path></g></svg>')
 
 
 def _garmin_button(w: dict) -> str:
