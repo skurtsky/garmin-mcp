@@ -599,7 +599,8 @@ def _garmin_step(sport: str, step: dict, t: dict, where: str) -> dict:
 def to_garmin(plan: dict, sport: str, steps: list[dict]) -> tuple[str, list[dict]]:
     """(sport_type, steps) for ``tools.workout.create_workout``. A repeat of
     one work step (optionally followed by an untargeted timed recovery/rest)
-    becomes a Garmin repeat group; any other repeat is written out in full.
+    becomes a Garmin repeat group with its simple form; any other repeat becomes
+    a repeat group holding its steps, each with its own end and target.
     Raises PlanError when something can't be sent."""
     blocker = garmin_blocker(sport, steps)
     if blocker:
@@ -625,8 +626,8 @@ def to_garmin(plan: dict, sport: str, steps: list[dict]) -> tuple[str, list[dict
                 work["rest_duration_s"] = int(round(rest["durationS"]))
             out.append(work)
         else:
-            for _ in range(step["count"]):
-                out += [_garmin_step(sport, s, t, f"{where} (repeat)") for s in inner]
+            out.append({"type": "repeat", "sets": step["count"],
+                        "steps": [_garmin_step(sport, s, t, f"{where} (repeat)") for s in inner]})
     return GARMIN_SPORT[sport], out
 
 

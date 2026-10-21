@@ -113,17 +113,35 @@ def test_to_garmin_bike_collapses_a_simple_repeat_and_builds():
     assert len(payload["workoutSegments"][0]["workoutSteps"]) == 4
 
 
-def test_to_garmin_run_pace_is_slow_then_fast_and_unrolls_other_repeats():
+def test_to_garmin_run_pace_is_slow_then_fast_and_keeps_other_repeats_as_groups():
     steps = workout_steps.clean_steps("run", [
         {"kind": "repeat", "count": 2, "steps": [
             {"kind": "work", "distanceM": 400, "target": {"zone": "3"}},
             {"kind": "recovery", "durationS": 60, "target": {"hrZone": "1"}},
             {"kind": "work", "durationS": 30, "target": {"hrZone": "4"}}]}])
     sport, out = workout_steps.to_garmin(PLAN, "run", steps)
-    assert sport == "running" and len(out) == 6
-    assert out[0] == {"type": "interval", "distance_m": 400, "pace_min_per_km": "4:42", "pace_max_per_km": "4:32"}
-    assert out[2]["hr_min"] == 160 and out[2]["hr_max"] == 168
-    build_workout_payload("Hills", sport, out)
+    assert sport == "running" and len(out) == 1 and out[0]["type"] == "repeat" and out[0]["sets"] == 2
+    inner = out[0]["steps"]
+    assert inner[0] == {"type": "interval", "distance_m": 400, "pace_min_per_km": "4:42", "pace_max_per_km": "4:32"}
+    assert inner[2]["hr_min"] == 160 and inner[2]["hr_max"] == 168
+    payload = build_workout_payload("Hills", sport, out)
+    group = payload["workoutSegments"][0]["workoutSteps"][0]
+    assert group["type"] == "RepeatGroupDTO" and group["numberOfIterations"] == 2 and len(group["workoutSteps"]) == 3
+    assert {c["childStepId"] for c in group["workoutSteps"]} == {group["childStepId"]}
+    assert [c["stepOrder"] for c in group["workoutSteps"]] == [2, 3, 4]
+
+
+def test_a_repeat_with_a_targeted_recovery_is_one_garmin_repeat_group():
+    steps = workout_steps.clean_steps("run", [
+        {"kind": "repeat", "count": 3, "steps": [
+            {"kind": "work", "durationS": 240, "target": {"zone": "4"}},
+            {"kind": "recovery", "durationS": 120, "target": {"zone": "1"}}]},
+        {"kind": "cooldown", "durationS": 300}])
+    _, out = workout_steps.to_garmin(PLAN, "run", steps)
+    payload = build_workout_payload("Intervals", "running", out)
+    top = payload["workoutSegments"][0]["workoutSteps"]
+    assert [x["type"] for x in top] == ["RepeatGroupDTO", "ExecutableStepDTO"]
+    assert top[0]["numberOfIterations"] == 3 and top[1]["stepOrder"] == 4
 
 
 @pytest.mark.parametrize("sport, steps, message", [
