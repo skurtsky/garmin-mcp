@@ -11,7 +11,7 @@ from tools.local_time import local_today
 
 from fastmcp.exceptions import ToolError
 
-from tools import plan_service
+from tools import plan_service, season_tools
 from tools.plan_doc import PlanError
 from tools.plan_service import PlanStorageUnavailable
 
@@ -31,8 +31,11 @@ def _tool_errors(fn):
 @_tool_errors
 def get_training_plan(plan_id=None, week_number=None, start_date=None, end_date=None,
                       include_details=True, sections=None, include_weeks=True) -> dict:
-    return plan_service.plan_overview(plan_id, week_number, start_date, end_date, include_details,
-                                      sections=sections, include_weeks=include_weeks)
+    overview = plan_service.plan_overview(plan_id, week_number, start_date, end_date, include_details,
+                                          sections=sections, include_weeks=include_weeks)
+    if season := season_tools.season_summary(overview["id"]):
+        overview["season"] = season   # name, dates, goals and this plan's goal race
+    return overview
 
 
 @_tool_errors

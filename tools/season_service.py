@@ -260,6 +260,24 @@ def set_plan_goal_race(plan_id: str, race_id: str | None) -> dict:
     return _save(season)
 
 
+def plan_summary(plan_id: str) -> dict | None:
+    """A linked plan's season in brief — name, dates, goals and the plan's goal
+    race — for get_training_plan; None when the plan is in no season."""
+    _require_db()
+    season_id = db.get_plan_seasons().get(plan_id)
+    row = db.get_season(season_id) if season_id else None
+    if row is None:
+        return None
+    race_id = (row["plan_goal_races"] or {}).get(plan_id)
+    race = next((race_payload(r) for r in row["races"] if r["id"] == race_id), None)
+    return {
+        "id": row["id"], "name": row["name"], "startDate": str(row["start_date"])[:10],
+        "endDate": str(row["end_date"])[:10], "status": row["status"],
+        "goals": [{k: v for k, v in g.items() if k != "id"} for g in row["goals"] or []],
+        "goalRace": {k: race[k] for k in ("id", "name", "date", "priority", "type", "goal")} if race else None,
+    }
+
+
 # ── GOAL RACE ─────────────────────────────────────────────────────────────────
 
 def active_goal_race() -> dict | None:

@@ -109,7 +109,10 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 `delete_training_plan`, `amend_training_plan`, `complete_plan_workout`, `skip_plan_workout`, `link_plan_workout_to_garmin`,
 `get_training_plan_revisions` and `restore_training_plan_revision` read and
 edit the Claude Coach plan stored in PostgreSQL — see
-[Training Plan](#training-plan).
+[Training Plan](#training-plan). `list_seasons`, `get_season`, `create_season`,
+`update_season`, `link_plan_to_season`, `add_race`, `update_race`, `delete_race`,
+`set_season_goals` and `set_season_objectives` manage seasons — see
+[Season MCP tools](#season-mcp-tools).
 
 ### Reports
 
@@ -412,7 +415,7 @@ to, so plan edits show up in the calendar without re-importing anything.
 
 | Tool | Description |
 |---|---|
-| `get_training_plan` | Plan meta, current thresholds, phases, a one-line summary per week, and workout detail for the current + next week (or a given week / date range), with completion and Garmin-link state. `include_weeks: false` with `sections` is a cheap plan-level read; skeleton weeks, target drift and provisional zones are flagged |
+| `get_training_plan` | Plan meta, current thresholds, phases, a one-line summary per week, and workout detail for the current + next week (or a given week / date range), with completion and Garmin-link state. `include_weeks: false` with `sections` is a cheap plan-level read; skeleton weeks, target drift and provisional zones are flagged. A plan linked to a season also carries a short `season` block (name, dates, goals, this plan's goal race) |
 | `list_training_plans` | Every stored plan and its status |
 | `create_training_plan` | Create a plan from its JSON (or an https `plan_url`) with no manual upload: validates everything first (Monday–Sunday weeks, contiguous, `dayOfWeek`, totals, phases, zone tokens, enums — each issue with a JSON path like `weeks[3].startDate`), then writes atomically as revision 1. Always a future plan; never activates or touches the active plan; nothing goes to Garmin. `validate_only`, `on_conflict` (`reject` / `replace`) and `idempotency_key` are supported. Weeks flagged `"status": "skeleton"` may be empty; the server computes each filled week's `summary` and warns when it strays >10% from `targetHours` / `targetRunKm`; zones can be `provisional` with a `reanchorBy` date |
 | `delete_training_plan` | Permanently delete a future or archived plan (needs `confirm` = the plan id). Archive via `set_training_plan_status` to keep the history |
@@ -422,6 +425,23 @@ to, so plan edits show up in the calendar without re-importing anything.
 | `skip_plan_workout` | Mark a planned workout skipped (or un-skip it), with an optional reason. Workouts whose day passes undone are skipped automatically |
 | `link_plan_workout_to_garmin` | Record the Garmin Connect workout scheduled for a planned workout, so it isn't scheduled twice |
 | `get_training_plan_revisions` / `restore_training_plan_revision` | History and undo |
+
+### Season MCP tools
+
+A season groups plans, races, goals and objectives (see **Seasons** above). Every
+write returns the whole season with its soft `warnings` — Friel's limits (3 A
+races, 5 B races, 3 goals, 4 objectives) and plans or races outside the season's
+dates are flagged, never refused. Dates, priorities, race types and objective
+statuses are validated; the errors come back as tool errors naming the problem.
+
+| Tool | Description |
+|---|---|
+| `list_seasons` | Every season: id, name, dates, status, linked plan ids, counts, warnings (`include_archived: false` hides archived ones) |
+| `get_season` | One season in full (goals, objectives and their statuses, races, linked plans, each plan's goal race, warnings) plus its `totals` (planned hours, average per week, `includesTargets`) and `nextARace`. A week with workouts counts their planned hours; a skeleton week with none counts its `targetHours`; `include_weeks: true` adds the week-by-week timeline (planned / target / empty / unplanned). Omit `season_id` for the active plan's season |
+| `create_season` / `update_season` | Create a season (name, start and end date, optional goals and objectives); change its name, dates or status (`active` / `archived`) — only the fields passed change |
+| `link_plan_to_season` | Put a plan in a season (it leaves any other; the plan's JSON is untouched), or unlink it by omitting `season_id`. Optional `goal_race_id` also picks that plan's goal race from the season's races |
+| `add_race` / `update_race` / `delete_race` | Races: name, date, priority A / B / C, type (`sprint`, `olympic`, `70.3`, `140.6`, `5k`, `10k`, `half`, `marathon`, `ride`, `other`), goal (target time or text), location, URL, notes. A race's week in a plan is found by its date. Deleting a race keeps goals' text and drops only their link; the deleted race is returned |
+| `set_season_goals` / `set_season_objectives` | Replace the whole list. Each item is text or `{text, target_date?, race_id?}`; objectives add `status` (`not_started` / `on_track` / `met`), which the athlete sets by hand — keep existing statuses when rewriting |
 
 Optional environment variables:
 
