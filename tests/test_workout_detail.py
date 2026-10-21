@@ -174,7 +174,7 @@ def test_ramps_in_the_view_and_the_editor(plan):
     html = _view("w1-thu-bike")["html"]
     # A ramp is one sloped shape with a fade; its row swatch and strip colour fade too.
     assert html.count('class="wd-bar ramp') == 2 and html.count("<polygon") == 2
-    assert 'data-c="linear-gradient(180deg, #5eb8ad, #5eb8ad)"' in html
+    assert 'data-c="linear-gradient(180deg, #4a90dd, #4a90dd)"' in html
     assert "165 → 188 W · 66 → 75% FTP" in html and "138 → 113 W · 55 → 45% FTP" in html
     assert ".wd-bar.ramp.on { box-shadow:none; filter:drop-shadow(" in workout_detail.WD_CSS
     # The editor: a shape dropdown for % FTP ranges, and bars and rows that select each other.

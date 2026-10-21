@@ -285,9 +285,12 @@ _KIND_DEFAULT = {"warmup": .6, "work": .8, "recovery": .5, "rest": .3, "cooldown
 # Fallback speeds when a distance step's pace can't be worked out.
 _DEFAULT_SEC_PER_KM = {"run": 360, "bike": 120, "swim": 1200}
 
-# Bar colours by intensity band, the Fitness tab's zone palette.
-_BANDS = ((.56, "#6c93b0", "Z1"), (.76, "#5eb8ad", "Z2"), (.91, "#8fb85e", "Z3"),
-          (1.0, "#d9b35a", "Z4"), (9.9, "#d9705e", "Z5"))
+# Bar colours by intensity band; Z5–Z7 are zones 5a–5c.
+ZONE_PALETTE = {"1": "#636073", "2": "#4a90dd", "3": "#2db585", "4": "#ffd200",
+                "5": "#e8731a", "6": "#d41a3a", "7": "#8c10a0"}
+_BANDS = ((.56, ZONE_PALETTE["1"], "Z1"), (.76, ZONE_PALETTE["2"], "Z2"), (.91, ZONE_PALETTE["3"], "Z3"),
+          (1.0, ZONE_PALETTE["4"], "Z4"), (1.04, ZONE_PALETTE["5"], "Z5"), (1.13, ZONE_PALETTE["6"], "Z6"),
+          (9.9, ZONE_PALETTE["7"], "Z7"))
 REST_COLOR = "#7c8194"
 
 

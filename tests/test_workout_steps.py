@@ -347,14 +347,14 @@ def test_resolve_draws_a_ramp_from_one_end_of_the_range_to_the_other():
     bars = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", RAMPS))["bars"]
     up, hold, down = bars
     assert up["target"] == "165 → 188 W · 66 → 75% FTP"
-    assert up["ramp"] == {"shape": "build", "from": .66, "to": .75, "c1": "#5eb8ad", "c2": "#5eb8ad"}
+    assert up["ramp"] == {"shape": "build", "from": .66, "to": .75, "c1": "#4a90dd", "c2": "#4a90dd"}
     assert hold["ramp"] is None and hold["target"] == "220–230 W · 88–92% FTP" and hold["fill"] == hold["color"]
     assert down["target"] == "138 → 113 W · 55 → 45% FTP"
     assert down["ramp"]["from"] == .55 and down["ramp"]["to"] == .45
     # Crossing a zone fades from one zone's colour to the next.
     cross = workout_steps.resolve(PLAN, "bike", [{"kind": "warmup", "durationS": 60, "target": {"pctFtp": [50, 70]}, "ramp": "build"}])["bars"][0]
-    assert (cross["ramp"]["c1"], cross["ramp"]["c2"]) == ("#6c93b0", "#5eb8ad")
-    assert cross["fill"] == "linear-gradient(180deg, #5eb8ad, #6c93b0)"
+    assert (cross["ramp"]["c1"], cross["ramp"]["c2"]) == ("#636073", "#4a90dd")
+    assert cross["fill"] == "linear-gradient(180deg, #4a90dd, #636073)"
     # Its height is the range's high end.
     assert cross["intensity"] == .7
 

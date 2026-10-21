@@ -27,8 +27,9 @@ _SPORT_COLORS = {"swim": "#5eb8c9", "bike": "#7fb87a", "run": "#d99a5e", "streng
                  "brick": "#c97fa0", "race": "#d9b35a", "rest": "#7c8194", "other": "#7c8194"}
 _DONE = "#7fb87a"
 _DIFFICULTY = {"easy": "#7fb87a", "moderate": "#d9b35a", "hard": "#d9705e", "very hard": "#c9506a"}
-_ZONE_COLORS = {"1": "#6c93b0", "2": "#5eb8ad", "3": "#8fb85e", "4": "#d9b35a", "5": "#d9705e",
-                "5a": "#d9705e", "5b": "#d9705e", "5c": "#c9506a"}
+_ZP = workout_steps.ZONE_PALETTE
+_ZONE_COLORS = {"1": _ZP["1"], "2": _ZP["2"], "3": _ZP["3"], "4": _ZP["4"], "5": _ZP["5"],
+                "5a": _ZP["5"], "5b": _ZP["6"], "5c": _ZP["7"]}
 _THRESHOLD_NAME = {"bike": "FTP", "run": "Threshold", "swim": "CSS"}
 
 
@@ -104,7 +105,9 @@ _WATCH = ('<g transform="translate(-1.6 0)"><rect x="10" y="6" width="12" height
 _LIGHT = {"#7fb87a": "#3f7a3a", "#5eb8c9": "#24707f", "#d99a5e": "#9a5a1f", "#9184d9": "#5d51b0",
           "#c97fa0": "#94416a", "#d9b35a": "#7d6210", "#7c8194": "#5d6275", "#6c93b0": "#355f7e",
           "#5eb8ad": "#24716a", "#8fb85e": "#4c6c24", "#d9705e": "#a5402e", "#c9506a": "#9c2f48",
-          "#d98a5e": "#9f5126"}
+          "#d98a5e": "#9f5126",
+          "#636073": "#52506a", "#4a90dd": "#1f5fa8", "#2db585": "#17785a", "#ffd200": "#7d6210",
+          "#e8731a": "#a34d0a", "#d41a3a": "#b01530", "#8c10a0": "#8c10a0"}
 
 
 def _ink(color: str) -> str:
