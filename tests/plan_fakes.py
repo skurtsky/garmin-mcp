@@ -204,12 +204,11 @@ class FakePlanDB:
         rev = next((r for r in self.revisions.get(plan_id, []) if r["version"] == version), None)
         return copy.deepcopy(rev)
 
-    def get_season_plans(self, archived_since):
-        rows = [copy.deepcopy(r) for r in self.plans.values()
-                if r["status"] != "archived" or (r["plan"]["meta"].get("planEndDate") or "") >= archived_since]
+    def get_plans_with_completion(self, plan_ids):
+        rows = [copy.deepcopy(self.plans[i]) for i in plan_ids if i in self.plans]
         done = {}
-        for (pid, wid), s in self.states.items():
-            if s.get("completed"):
+        for (pid, wid), st in self.states.items():
+            if st.get("completed") and pid in plan_ids:
                 done.setdefault(pid, set()).add(wid)
         return rows, done
 
@@ -352,7 +351,7 @@ PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
     "update_training_plan", "create_training_plan", "get_idempotent_result", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
-    "get_workout_states", "get_season_plans", "upsert_workout_state", "auto_skip_workouts", "get_activity_brief",
+    "get_workout_states", "get_plans_with_completion", "upsert_workout_state", "auto_skip_workouts", "get_activity_brief",
     "get_activities_by_ids", "get_activities_in_range", "delete_activities_not_in", "get_setting", "set_setting",
     "get_calendar_settings", "save_calendar_schedule", "set_calendar_token",
     "list_seasons", "get_season", "save_season", "save_season_race", "delete_season_race",

@@ -13,7 +13,8 @@ Routes (all behind the same ``?token=`` bearer auth as ``/mcp`` and
 a plan; without it the active plan is used.
 
     GET  /training-plan                  — the viewer, or a "No plan active" page
-    GET  /training-plan/season           — every plan on one timeline: weekly hours, phases, races
+    GET  /training-plan/season           — the active plan's season view (tools/season_view.py)
+    GET  /training-plan/seasons/{id}     — one season on one timeline: weekly hours, phases, races
     GET  /training-plan/plans            — every plan: view / activate / future / archive / delete
     GET  /training-plan/seasons          — seasons: create, edit, archive; races, goals, objectives,
                                            linked plans (tools/seasons_page.py has the sub-routes)
@@ -61,7 +62,6 @@ import json
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, timedelta
 from urllib.parse import urlencode
 
 from starlette.applications import Starlette
@@ -422,239 +422,6 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
     return inject_pdf_links(_page("Training plans", body, token, active="settings"))
 
 
-# ── SEASON ────────────────────────────────────────────────────────────────────
-# Every plan on one horizontal timeline, a row per plan: weekly columns of
-# planned hours (with the completed part filled in), the phase band, race
-# markers, month gridlines and a today line. One week is a fixed width, so a
-# long season scrolls sideways inside its frame (it opens at today). A table
-# under the chart carries the same numbers.
-
-# The viewer's phase colours (tools/assets/plan-viewer.html PHASE_COLORS).
-PHASE_COLORS = {
-    "Prep": "#6c93b0", "Base 1": "#5ea0b8", "Base 2": "#5eb0a3", "Base 3": "#7fb87a", "Base": "#5eb0a3",
-    "Build 1": "#b8b05e", "Build 2": "#d9a05a", "Build": "#b8b05e", "Peak": "#d97a5e", "Taper": "#9184d9",
-    "Race": "#d9506a",
-}
-_PHASE_DEFAULT = "#7c8194"
-
-_SEASON_STYLE = """
-main { max-width:1180px; }
-.season-head { display:flex; align-items:flex-start; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
-.view-switch { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; font-size:.85rem; }
-.view-switch a, .view-switch span { padding:.4rem .85rem; color:var(--fg); text-decoration:none; }
-.view-switch a + a, .view-switch a + span { border-left:1px solid var(--line); }
-.view-switch a:hover { background:color-mix(in srgb, var(--fg) 7%, transparent); }
-.view-switch span { color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent); }
-@media (max-width: 899px) { .view-switch .month-only { display:none; } }
-.legend { display:flex; gap:1rem; flex-wrap:wrap; font-size:.8rem; color:var(--muted); margin:0 0 .6rem; }
-.legend span { display:inline-flex; align-items:center; gap:.4rem; }
-.legend i { display:inline-block; width:12px; height:12px; border-radius:3px; }
-.season { position:relative; overflow-x:auto; background:var(--surface); box-shadow:0 0 0 1px var(--line);
-  border-radius:10px; -webkit-overflow-scrolling:touch; }
-.season svg { display:block; }
-.season text { font-family:inherit; }
-.s-grid { stroke:var(--line); stroke-width:1; }
-.s-axis { fill:var(--muted); font-size:11px; }
-.s-name { fill:var(--fg); font-size:13px; font-weight:500; }
-.s-sub { fill:var(--muted); font-size:11px; }
-.s-phase { fill:var(--fg); font-size:10.5px; }
-.s-plan { fill:color-mix(in srgb, var(--accent) 34%, var(--surface)); }
-.s-done { fill:var(--accent); }
-.s-today { stroke:var(--accent); stroke-width:1.5; }
-.s-today-l { fill:var(--accent); font-size:11px; font-weight:600; }
-.s-race { stroke:var(--warn); stroke-width:1; }
-.s-race-m { fill:var(--warn); stroke:var(--surface); stroke-width:2; }
-.s-race-l { fill:var(--fg); font-size:11px; }
-.s-row.archived { opacity:.55; }
-.s-wk { cursor:pointer; }
-.s-wk rect.hit { fill:transparent; }
-.s-wk:hover rect.hit, .s-wk:focus rect.hit { fill:color-mix(in srgb, var(--fg) 7%, transparent); }
-.s-wk:focus { outline:none; }
-.tip { position:absolute; pointer-events:none; z-index:2; background:var(--bg); color:var(--fg);
-  box-shadow:0 0 0 1px var(--line), 0 6px 18px rgba(0,0,0,.25); border-radius:8px; padding:.45rem .6rem;
-  font-size:.78rem; line-height:1.45; white-space:nowrap; display:none; }
-.tip b { font-weight:600; }
-table { width:100%; border-collapse:collapse; font-size:.84rem; }
-th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:500; font-size:.76rem; }
-td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
-.table-wrap { overflow-x:auto; }
-table a { color:var(--accent); }
-"""
-
-_SEASON_SCRIPT = """
-(function () {
-  var box = document.querySelector('.season'), tip = document.querySelector('.season .tip');
-  if (!box) return;
-  var today = box.querySelector('[data-today-x]');
-  if (today) box.scrollLeft = Math.max(0, +today.getAttribute('data-today-x') - box.clientWidth / 3);
-  function show(el) {
-    tip.innerHTML = el.getAttribute('data-tip');
-    tip.style.display = 'block';
-    var r = el.getBoundingClientRect(), b = box.getBoundingClientRect();
-    var x = r.left - b.left + box.scrollLeft + r.width / 2 - tip.offsetWidth / 2;
-    x = Math.max(box.scrollLeft + 4, Math.min(x, box.scrollLeft + box.clientWidth - tip.offsetWidth - 4));
-    tip.style.left = x + 'px';
-    tip.style.top = Math.max(4, r.top - b.top - tip.offsetHeight - 6) + 'px';
-  }
-  function hide() { tip.style.display = 'none'; }
-  box.querySelectorAll('[data-tip]').forEach(function (el) {
-    el.addEventListener('mouseenter', function () { show(el); });
-    el.addEventListener('focus', function () { show(el); });
-    el.addEventListener('mouseleave', hide);
-    el.addEventListener('blur', hide);
-  });
-  box.addEventListener('scroll', hide, { passive: true });
-})();
-"""
-
-
-def _hours(minutes: float) -> str:
-    h, m = divmod(int(round(minutes)), 60)
-    return f"{h}h {m:02d}m" if h and m else f"{h}h" if h else f"{m}m"
-
-
-def _day(value: str) -> date:
-    return date.fromisoformat(str(value)[:10])
-
-
-def _md(d: date, year: bool = False) -> str:
-    return f"{d:%b} {d.day}" + (f", {d.year}" if year else "")
-
-
-def render_season_html(data: dict, token: str | None) -> str:
-    plans = data["plans"]
-    if not plans:
-        body = ("<h1>Season</h1>"
-                '<div class="card">No plans yet — upload one to see it on the season timeline.</div>'
-                f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a></div>')
-        return _page("Season", body, token)
-
-    today = _day(data["today"])
-    first = min(_day(p["start"]) for p in plans)
-    last = max(_day(p["end"]) for p in plans)
-    origin = first - timedelta(days=first.weekday())        # the Monday on or before
-    span_end = max(last, today) if today >= origin else last
-    weeks_n = (span_end - origin).days // 7 + 1
-    WEEK, BAR, PAD = 22, 14, 12                             # px per week, column width, side padding
-    width = PAD * 2 + weeks_n * WEEK
-    AXIS, ROW = 30, 146                                     # axis height, row height
-    RACE_Y, BARS_TOP, BARS_H = 44, 52, 56                   # within a row: race labels, then columns
-    BAND_Y, BAND_H = BARS_TOP + BARS_H + 8, 8
-    height = AXIS + ROW * len(plans) + 6
-    peak = max((w["plannedMin"] for p in plans for w in p["weeks"]), default=0) or 60
-
-    def x_of(d: date) -> float:
-        return PAD + (d - origin).days / 7 * WEEK
-
-    svg = [f'<svg width="{width}" height="{height}" viewBox="0 0 {width} {height}" role="img" '
-           f'aria-label="Season timeline of {len(plans)} plan(s); the table below has the same numbers">']
-    # month gridlines and labels
-    m = date(origin.year, origin.month, 1)
-    while m <= span_end:
-        if m >= origin:
-            x = x_of(m)
-            svg.append(f'<line class="s-grid" x1="{x:.1f}" x2="{x:.1f}" y1="{AXIS - 8}" y2="{height}"/>')
-        label_x = max(x_of(m), PAD) + 4
-        if label_x < width - 30:
-            svg.append(f'<text class="s-axis" x="{label_x:.1f}" y="16">{_e(m.strftime("%b" if m.month != 1 else "%b %Y"))}</text>')
-        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
-
-    for i, p in enumerate(plans):
-        y = AXIS + i * ROW
-        status = p["status"]
-        px = x_of(_day(p["start"]))
-        svg.append(f'<g class="s-row {status}">')
-        sub = f'{status} · {_md(_day(p["start"]))} – {_md(_day(p["end"]), True)}'
-        svg.append(f'<text class="s-name" x="{px:.1f}" y="{y + 16}">{_e(p["event"])}</text>')
-        svg.append(f'<text class="s-sub" x="{px:.1f}" y="{y + 29}">{_e(sub)}</text>')
-        base = y + BARS_TOP + BARS_H
-        for w in p["weeks"]:
-            wx = x_of(_day(w["start"]))
-            ph = BARS_H * w["plannedMin"] / peak
-            dh = BARS_H * min(w["doneMin"], w["plannedMin"]) / peak
-            href = _url("/training-plan", token, plan=None if status == "active" else p["id"], week=w["weekNumber"])
-            tip = (f'<b>{_e(p["event"])} · Week {w["weekNumber"]}</b><br>'
-                   f'{_md(_day(w["start"]))} – {_md(_day(w["end"]))}'
-                   f'{" · " + _e(w["phase"]) if w["phase"] else ""}{" · recovery" if w["recovery"] else ""}<br>'
-                   f'{_hours(w["plannedMin"])} planned · {_hours(w["doneMin"])} done')
-            cx = wx + (WEEK - BAR) / 2
-            svg.append(f'<a class="s-wk" href="{_e(href)}" data-tip="{_e(tip)}" tabindex="0" '
-                       f'aria-label="Week {w["weekNumber"]}: {_hours(w["plannedMin"])} planned, {_hours(w["doneMin"])} done">')
-            svg.append(f'<rect class="hit" x="{wx:.1f}" y="{y + BARS_TOP - 4}" width="{WEEK}" height="{BARS_H + BAND_H + 16}" rx="4"/>')
-            for cls, h in (("s-plan", ph), ("s-done", dh)):
-                if h >= 1:
-                    r = min(4, h)   # rounded data end, square at the baseline
-                    svg.append(f'<path class="{cls}" d="M{cx:.1f},{base:.1f}V{base - h + r:.1f}'
-                               f'q0,-{r} {r},-{r}h{BAR - 2 * r}q{r},0 {r},{r}V{base:.1f}Z"/>')
-            svg.append("</a>")
-        # phase band: a 2px surface gap between segments, the name under it when it fits
-        for ph in p["phases"]:
-            sx, ex = x_of(_day(ph["start"])), x_of(_day(ph["end"]) + timedelta(days=1))
-            color = PHASE_COLORS.get(ph["name"], _PHASE_DEFAULT)
-            svg.append(f'<rect x="{sx + 1:.1f}" y="{y + BAND_Y}" width="{max(ex - sx - 2, 1):.1f}" height="{BAND_H}" rx="3" fill="{color}"/>')
-            if ph["name"] and len(ph["name"]) * 6.2 + 6 <= ex - sx:
-                svg.append(f'<text class="s-phase" x="{sx + 3:.1f}" y="{y + BAND_Y + BAND_H + 13}">{_e(ph["name"])}</text>')
-        for race in p["races"]:
-            rx = x_of(_day(race["date"])) + WEEK / 14
-            svg.append(f'<line class="s-race" x1="{rx:.1f}" x2="{rx:.1f}" y1="{y + RACE_Y}" y2="{y + BAND_Y + BAND_H}"/>')
-            svg.append(f'<path class="s-race-m" d="M{rx:.1f},{y + RACE_Y - 5}l5,5l-5,5l-5,-5Z"/>')
-            # Flip the label to the marker's left when it would run off the right edge.
-            fits = rx + 8 + len(race["name"]) * 6.4 <= width - 4
-            anchor = "" if fits else ' text-anchor="end"'
-            svg.append(f'<text class="s-race-l" x="{rx + 8 if fits else rx - 8:.1f}" y="{y + RACE_Y + 4}"{anchor}>'
-                       f'{_e(race["name"])}</text>')
-        svg.append("</g>")
-
-    if origin <= today <= span_end:
-        tx = x_of(today) + WEEK / 14
-        svg.append(f'<line class="s-today" data-today-x="{tx:.0f}" x1="{tx:.1f}" x2="{tx:.1f}" y1="{AXIS - 8}" y2="{height}"/>')
-        svg.append(f'<text class="s-today-l" x="{tx + 4:.1f}" y="{AXIS - 1}">Today</text>')
-    svg.append("</svg>")
-
-    rows = []
-    for p in plans:
-        planned = sum(w["plannedMin"] for w in p["weeks"])
-        done = sum(w["doneMin"] for w in p["weeks"])
-        href = _url("/training-plan", token, plan=None if p["status"] == "active" else p["id"])
-        rows.append(
-            f'<tr><td><a href="{_e(href)}">{_e(p["event"])}</a></td><td>{_e(p["status"])}</td>'
-            f'<td>{_e(p["start"])} – {_e(p["end"])}</td><td class="num">{len(p["weeks"])}</td>'
-            f'<td class="num">{_hours(planned)}</td><td class="num">{_hours(done)}</td>'
-            f'<td>{_e(", ".join(ph["name"] for ph in p["phases"] if ph["name"]))}</td>'
-            f'<td>{_e("; ".join(r["date"] + " " + r["name"] for r in p["races"]))}</td></tr>'
-        )
-    body = (
-        f"<style>{_SEASON_STYLE}</style>"
-        '<div class="season-head"><h1>Season</h1>'
-        '<nav class="view-switch" aria-label="Plan view">'
-        f'<a href="{_e(_url("/training-plan", token, mode="week"))}">Week</a>'
-        f'<a class="month-only" href="{_e(_url("/training-plan", token, mode="month"))}">Month</a>'
-        '<span aria-current="page">Season</span></nav></div>'
-        '<div class="meta">Every active and future plan, and archived ones from the last year. '
-        "Columns are each week's planned hours, filled in as workouts are done; a column opens that week.</div>"
-        '<div class="legend">'
-        '<span><i style="background:color-mix(in srgb, var(--accent) 34%, var(--surface))"></i>Planned</span>'
-        '<span><i style="background:var(--accent)"></i>Done</span>'
-        '<span><i style="background:var(--warn); transform:rotate(45deg) scale(.75)"></i>Race</span>'
-        '<span><i style="background:var(--accent); width:2px"></i>Today</span>'
-        "</div>"
-        f'<div class="season">{"".join(svg)}<div class="tip" role="tooltip"></div></div>'
-        "<h2>Plans</h2>"
-        '<div class="table-wrap"><table><thead><tr><th>Plan</th><th>Status</th><th>Dates</th>'
-        '<th class="num">Weeks</th><th class="num">Planned</th><th class="num">Done</th><th>Phases</th><th>Races</th>'
-        f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
-        f'<div class="links"><a href="{_e(_url("/training-plan", token))}">Active plan</a>'
-        f'<a href="{_e(_url("/training-plan/plans", token))}">All plans</a></div>'
-        f"<script>{_SEASON_SCRIPT}</script>"
-        # Week / Month: start loading the plan page when the pointer rests on them.
-        '<script type="speculationrules">'
-        '{"prerender":[{"where":{"selector_matches":".view-switch a"},"eagerness":"moderate"}]}'
-        "</script>"
-    )
-    return _page("Season", body, token)
-
-
 # ── ROUTES ────────────────────────────────────────────────────────────────────
 
 def _token(request):
@@ -711,15 +478,6 @@ async def serve_plans(request):
     return HTMLResponse(render_plans_html(plans, _token(request), request.query_params.get("error"),
                                           notes, local_time.local_today().isoformat()),
                         headers=_NO_STORE)
-
-
-async def serve_season(request):
-    """GET /training-plan/season — every plan on one timeline."""
-    try:
-        data = await run_in_threadpool(plan_service.season)
-    except PlanStorageUnavailable as e:
-        return _unavailable(request, e)
-    return HTMLResponse(render_season_html(data, _token(request)), headers=_NO_STORE)
 
 
 async def handle_plan_action(request):
@@ -1179,7 +937,6 @@ async def api_sync_cancel(request):
 ROUTES = [
     Route("/training-plan", serve_plan, methods=["GET"]),
     Route("/training-plan/plans", serve_plans, methods=["GET"]),
-    Route("/training-plan/season", serve_season, methods=["GET"]),
     Route("/training-plan/plans/{plan_id}/{action}", handle_plan_action, methods=["POST"]),
     Route("/training-plan/upload", serve_upload_form, methods=["GET"]),
     Route("/training-plan/upload", handle_upload, methods=["POST"]),
@@ -1222,5 +979,5 @@ def owns_path(path: str) -> bool:
 
 def create_app() -> Starlette:
     """The training-plan sub-app, mounted by server.py behind token auth."""
-    from tools import seasons_page   # imports this module's page helpers, so not at the top
-    return Starlette(routes=ROUTES + seasons_page.ROUTES)
+    from tools import season_view, seasons_page   # they import this module's page helpers, so not at the top
+    return Starlette(routes=ROUTES + seasons_page.ROUTES + season_view.ROUTES)

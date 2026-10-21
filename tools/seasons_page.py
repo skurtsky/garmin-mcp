@@ -87,15 +87,16 @@ def render_seasons_html(seasons: list[dict], token: str | None, notice=None, err
     def card(s):
         archived = s["status"] == "archived"
         action = "restore" if archived else "archive"
+        view_url = _e(_url(f"/training-plan/seasons/{s['id']}", token))
         edit_url = _e(_url(f"/training-plan/seasons/{s['id']}/edit", token))
         action_url = _e(_url(f"/training-plan/seasons/{s['id']}/{action}", token))
         warn = f' · <span class="warn">{len(s["warnings"])} warning(s)</span>' if s["warnings"] else ""
         return (
             f'<div class="card"><div class="row"><div>'
-            f'<div class="title"><a href="{edit_url}">{_e(s["name"])}</a></div>'
+            f'<div class="title"><a href="{view_url}">{_e(s["name"])}</a></div>'
             f'<div class="sub">{_e(_date_span(s))} · {len(s["planIds"])} plan(s) · {len(s["races"])} race(s){warn}</div>'
             f'</div><span class="tag{" archived" if archived else ""}">{_e(s["status"])}</span></div>'
-            f'<div class="actions"><a class="btn" href="{edit_url}">Edit</a>'
+            f'<div class="actions"><a class="btn" href="{view_url}">View</a><a class="btn" href="{edit_url}">Edit</a>'
             f'<form class="inline" method="post" action="{action_url}">'
             f'<button type="submit">{"Restore" if archived else "Archive"}</button></form></div></div>'
         )
@@ -211,7 +212,7 @@ def render_season_edit_html(season: dict, all_plans: list[dict], token: str | No
 
     body = (
         _STYLE
-        + f'<h1>{_e(season["name"])}</h1>'
+        + f'<h1><a href="{_e(_url("/training-plan/seasons/" + sid, token))}" title="Open the season timeline">{_e(season["name"])}</a></h1>'
         f'<div class="meta">{_e(_date_span(season))} · <span class="tag{" archived" if archived else ""}">{_e(season["status"])}</span></div>'
         + _messages(notice, error, season["warnings"])
         + '<div class="card"><h2>Details</h2>'
@@ -242,7 +243,8 @@ def render_season_edit_html(season: dict, all_plans: list[dict], token: str | No
         '<div class="sub">Measurable steps toward the goals. Friel suggests up to four. You set the status by hand.</div>'
         f'<form method="post" action="{post("objectives")}">{_goal_rows(season, "objective")}'
         '<div class="actions"><button type="submit" class="btn-primary">Save objectives</button></div></form></div>'
-        f'<div class="links"><a href="{_e(_url("/training-plan/seasons", token))}">All seasons</a>'
+        f'<div class="links"><a href="{_e(_url("/training-plan/seasons/" + sid, token))}">View season</a>'
+        f'<a href="{_e(_url("/training-plan/seasons", token))}">All seasons</a>'
         f'<a href="{_e(_url("/training-plan/plans", token))}">All plans</a></div>'
     )
     return _page(f"Season · {season['name']}", body, token, active="settings")

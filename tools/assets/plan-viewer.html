@@ -1150,7 +1150,7 @@ function goalRacePicker(c) {
   const races = c.races || [];
   let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:2px;">Goal race</div>'
     + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">Chosen from the races of '
-    + '<a href="' + esc(appLink('/training-plan/seasons/' + encodeURIComponent(c.season.id) + '/edit')) + '">' + esc(c.season.name) + '</a>. '
+    + '<a href="' + esc(appLink('/training-plan/seasons/' + encodeURIComponent(c.season.id))) + '">' + esc(c.season.name) + '</a>. '
     + 'Today, Trends and Fitness follow it while this plan is active.</div>';
   if (!races.length) {
     h += '<a class="btn btn-secondary" href="' + esc(appLink('/training-plan/seasons/' + encodeURIComponent(c.season.id) + '/edit')) + '">Add races to this season</a>';

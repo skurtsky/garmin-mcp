@@ -12,8 +12,11 @@ Raises ``PlanStorageUnavailable`` without DATABASE_URL, ``LookupError`` for an
 unknown season, race or plan, and ``SeasonError`` for invalid input (its
 message is safe to show to the user).
 """
+from datetime import date
+
 import db
-from tools import season_doc
+from tools import plan_service, season_doc, season_timeline
+from tools.local_time import local_today
 from tools.plan_service import PlanStorageUnavailable
 from tools.season_doc import SeasonError
 
@@ -98,6 +101,36 @@ def season_for_plan(plan_id: str) -> dict | None:
     _require_db()
     season_id = db.get_plan_seasons().get(plan_id)
     return season_payload(_load(season_id)) if season_id else None
+
+
+# ── TIMELINE ──────────────────────────────────────────────────────────────────
+
+def timeline(season_id: str, today: date | None = None) -> dict:
+    """The season, its plans' weeks and the computed timeline
+    (tools/season_timeline.py) as of ``today``."""
+    _require_db()
+    season = get_season(season_id)
+    plans = plan_service.timeline_plans(season["planIds"])
+    return {"season": season, "plans": plans,
+            "timeline": season_timeline.build(season, plans, today or local_today())}
+
+
+def unassigned_plans() -> list[dict]:
+    """Plans that are in no season: {id, event, start, end, status}."""
+    _require_db()
+    linked = db.get_plan_seasons()
+    return [p for p in _plan_index().values() if p["id"] not in linked]
+
+
+def default_season_id() -> str | None:
+    """The season to show when none is named: the active plan's, else the
+    newest active season, else None."""
+    _require_db()
+    linked = db.get_plan_seasons()
+    active = next((p for p in db.list_training_plans() if p["status"] == "active"), None)
+    if active and active["id"] in linked:
+        return linked[active["id"]]
+    return next((s["id"] for s in db.list_seasons() if s["status"] == "active"), None)
 
 
 # ── SEASONS ───────────────────────────────────────────────────────────────────

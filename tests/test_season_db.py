@@ -143,3 +143,23 @@ def test_delete_race_removes_references_in_the_season_json():
     after = season_service.delete_race(season["id"], race["id"])
 
     assert after["goals"] == [{"id": after["goals"][0]["id"], "text": "Sub 5:30"}]
+
+
+def test_the_season_timeline_runs_on_real_plans_with_the_target_fallback():
+    from datetime import date
+    season = season_service.create_season({**SEASON, "startDate": "2026-09-14", "endDate": "2026-10-04"})
+    skeleton = sample_plan()
+    skeleton["weeks"][1]["days"] = []
+    skeleton["weeks"][1]["status"] = "skeleton"
+    plan_service.save_upload(skeleton, activate=False)
+    season_service.link_plan(season["id"], "test-block-2026")
+    plan_service.set_completion("test-block-2026", "w1-tue-run", True)
+
+    data = season_service.timeline(season["id"], date(2026, 9, 16))
+    kinds = [c["kind"] for c in data["timeline"]["weeks"]]
+    first, second = data["timeline"]["weeks"][:2]
+
+    assert kinds == ["planned", "target", "unplanned"]
+    assert first["text"] == "Planned 3.8 h, 1 of 4 workouts done"
+    assert second["text"] == "Target 4.0 h (no workouts yet)"
+    assert data["timeline"]["totals"]["includesTargets"] is True and data["timeline"]["today"]["col"] == 1

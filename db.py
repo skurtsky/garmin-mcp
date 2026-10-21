@@ -1597,17 +1597,12 @@ def get_workout_states(plan_id: str) -> dict[str, dict]:
             return {row["workout_id"]: row for row in cur.fetchall()}
 
 
-def get_season_plans(archived_since: str) -> tuple[list[dict], dict[str, set[str]]]:
-    """The Season view's data in two queries on one connection: every active
-    and future plan plus archived ones that ended on or after
-    ``archived_since`` (with their JSON), and {plan_id: completed workout ids}."""
+def get_plans_with_completion(plan_ids: list[str]) -> tuple[list[dict], dict[str, set[str]]]:
+    """The season timeline's data in two queries on one connection: these plans
+    (with their JSON) and {plan_id: completed workout ids}."""
     with get_conn() as conn:
         with conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                f"""SELECT {_PLAN_COLUMNS} FROM training_plans
-                    WHERE status <> 'archived' OR plan->'meta'->>'planEndDate' >= %s""",
-                (archived_since,),
-            )
+            cur.execute(f"SELECT {_PLAN_COLUMNS} FROM training_plans WHERE id = ANY(%s)", (list(plan_ids),))
             rows = cur.fetchall()
             cur.execute(
                 """SELECT plan_id, workout_id FROM training_plan_workout_state

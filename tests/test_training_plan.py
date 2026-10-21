@@ -733,39 +733,6 @@ def test_plans_list_and_upload_flag_overlaps_and_gaps(client, fake_db):
     assert "7 days with no plan between Test Block and Next Block (2026-09-28 – 2026-10-04)" in page
 
 
-def test_season_page(client, fake_db):
-    assert "No plans yet" in client.get("/training-plan/season", params=TOKEN).text
-    race = sample_plan()
-    race["weeks"][1]["days"][0]["workouts"].append({"id": "w2-race", "sport": "race", "name": "Fall 10K", "durationMinutes": 45})
-    _upload(client, race)
-    client.post("/training-plan/api/completion", params=TOKEN, json={"workout_id": "w1-tue-run"})
-    _upload(client, _next_block(), activate=False)
-
-    r = client.get("/training-plan/season", params=TOKEN)
-
-    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
-    assert "<svg" in r.text and "Fall 10K" in r.text
-    assert "Next Block" in r.text and "Test Block" in r.text
-    assert "/training-plan?plan=next-block&amp;week=2&amp;token=t0k" in r.text   # a column opens its week
-    assert "/training-plan?week=1&amp;token=t0k" in r.text                        # the active plan's
-    assert "50m done" in r.text   # the ticked tempo run, in its week's tooltip
-
-
-def test_season_page_switches_back_to_week_and_month_and_keeps_race_names_in_view(client):
-    plan = sample_plan()
-    plan["weeks"][1]["days"][0]["workouts"].append(
-        {"id": "w2-race", "sport": "race", "name": "A Very Long Race Name Championship", "durationMinutes": 45})
-    _upload(client, plan)
-
-    r = client.get("/training-plan/season", params=TOKEN)
-
-    assert '<a href="/training-plan?mode=week&amp;token=t0k">Week</a>' in r.text
-    assert 'href="/training-plan?mode=month&amp;token=t0k">Month</a>' in r.text
-    assert '<span aria-current="page">Season</span>' in r.text
-    # the race is in the last week: its label sits to the marker's left, inside the chart
-    assert re.search(r'<text class="s-race-l" x="[\d.]+" y="[\d.]+" text-anchor="end">A Very Long Race', r.text)
-
-
 def test_plans_list_and_viewer_offer_a_pdf_download_with_progress(client, fake_db):
     _upload(client, sample_plan())
     _upload(client, _next_block(), activate=False)
@@ -777,16 +744,3 @@ def test_plans_list_and_viewer_offer_a_pdf_download_with_progress(client, fake_d
     assert "window.__pdfLinks" in client.get("/training-plan", params=TOKEN).text
 
 
-def test_season_page_reads_everything_in_one_call(client, fake_db, monkeypatch):
-    _upload(client, sample_plan())
-    _upload(client, _next_block(), activate=False)
-    calls = []
-    for name in ("get_training_plan", "get_workout_states", "list_training_plans"):
-        original = getattr(db, name)
-        monkeypatch.setattr(db, name, lambda *a, _n=name, _o=original: calls.append(_n) or _o(*a))
-
-    r = client.get("/training-plan/season", params=TOKEN)
-
-    assert r.status_code == 200 and "Next Block" in r.text
-    assert calls == []                                   # just db.get_season_plans
-    assert '<script type="speculationrules">' in r.text  # Week / Month load on hover
