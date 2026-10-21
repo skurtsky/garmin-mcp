@@ -12,14 +12,21 @@ Every function raises ``PlanStorageUnavailable`` when DATABASE_URL isn't set,
 ``LookupError`` for an unknown plan, and ``plan_doc.PlanError`` for an invalid
 upload or edit (its message is safe to show to the user).
 """
+import copy
+import hashlib
+import ipaddress
 import json
 import logging
 import os
+import socket
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
 from datetime import date, datetime, timedelta, timezone
 from tools.local_time import local_today
 
 import db
-from tools import plan_doc
+from tools import plan_doc, plan_validation
 from tools.plan_doc import PlanError
 
 logger = logging.getLogger(__name__)
@@ -484,6 +491,204 @@ def _season_plan(row: dict, done_ids: set[str]) -> dict:
     }
 
 
+# ── CREATE ────────────────────────────────────────────────────────────────────
+
+CREATE_STATUSES = ("future", "archived")
+CONFLICT_MODES = ("reject", "replace")
+URL_TIMEOUT_S = 20
+
+
+class PlanRejected(PlanError):
+    """A plan that failed validation; ``errors``/``warnings`` are {"path", "message"}."""
+
+    def __init__(self, errors: list[dict], warnings: list[dict]):
+        self.errors, self.warnings = errors, warnings
+        n = len(errors)
+        super().__init__(f"Plan rejected, nothing was saved ({n} error{'s' if n != 1 else ''}):\n"
+                         + plan_validation.format_issues(errors, warnings))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def fetch_plan_url(url: str) -> bytes:
+    """The body behind an https URL, for ``create_training_plan(plan_url=…)``.
+
+    Public hosts only (no loopback / private / link-local addresses), no
+    redirects, size-capped; TRAINING_PLAN_URL_HOSTS (comma-separated) narrows it
+    to named hosts.
+    """
+    parts = urlsplit(str(url or ""))
+    if parts.scheme != "https" or not parts.hostname:
+        raise PlanError("plan_url must be an https:// URL.")
+    allowed = [h.strip().lower() for h in os.environ.get("TRAINING_PLAN_URL_HOSTS", "").split(",") if h.strip()]
+    if allowed and parts.hostname.lower() not in allowed:
+        raise PlanError(f"plan_url host {parts.hostname!r} isn't allowed (allowed: {', '.join(allowed)}).")
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(parts.hostname, parts.port or 443,
+                                                               proto=socket.IPPROTO_TCP)}
+    except OSError as e:
+        raise PlanError(f"Couldn't resolve plan_url host {parts.hostname!r} ({e}).") from None
+    if not addresses or not all(ipaddress.ip_address(a).is_global for a in addresses):
+        raise PlanError("plan_url must point at a public host.")
+    request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "garmin-mcp"})
+    try:
+        with urllib.request.build_opener(_NoRedirect).open(request, timeout=URL_TIMEOUT_S) as response:
+            body = response.read(MAX_UPLOAD_BYTES + 1)
+    except (urllib.error.URLError, OSError) as e:
+        raise PlanError(f"Couldn't fetch plan_url ({e}).") from None
+    if len(body) > MAX_UPLOAD_BYTES:
+        raise PlanError(f"plan_url is larger than the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
+    return body
+
+
+def plan_counts(plan: dict) -> dict:
+    weeks = plan.get("weeks") or []
+    return {
+        "weeks": len(weeks),
+        "workouts": sum(1 for _ in plan_doc.iter_workouts(plan)),
+        "skeleton_weeks": sum(1 for w in weeks if isinstance(w, dict) and plan_doc.is_skeleton_week(plan, w)
+                              and not plan_doc.week_workouts(w)),
+    }
+
+
+def _overlap_warnings(plan_id: str, plan: dict) -> list[dict]:
+    """Other future/active plans whose dates overlap this one — worth knowing,
+    not a reason to refuse."""
+    meta = plan.get("meta") or {}
+    try:
+        start, end = plan_doc.parse_date(meta.get("planStartDate")), plan_doc.parse_date(meta.get("planEndDate"))
+    except PlanError:
+        return []
+    out = []
+    for other in db.list_training_plans():
+        if other["id"] == plan_id or other["status"] not in ("active", "future"):
+            continue
+        try:
+            o_start = plan_doc.parse_date(other.get("start_date"))
+            o_end = plan_doc.parse_date(other.get("end_date"))
+        except PlanError:
+            continue
+        if start <= o_end and o_start <= end:
+            days = (min(end, o_end) - max(start, o_start)).days + 1
+            out.append({"path": "meta.planStartDate" if start >= o_start else "meta.planEndDate",
+                        "message": f"Overlaps {other.get('event') or other['id']!r} ({other['status']}, "
+                                   f"{o_start} – {o_end}) by {days} day{'s' if days != 1 else ''}."})
+    return out
+
+
+def create_plan(plan=None, plan_url: str | None = None, status: str = "future",
+                validate_only: bool = False, on_conflict: str = "reject",
+                idempotency_key: str | None = None) -> dict:
+    """Validate, then atomically store, a new plan as revision 1.
+
+    Never activates a plan, never touches the active one, and has no Garmin
+    side effects. ``validate_only`` runs everything except the write.
+    ``on_conflict="replace"`` swaps the content of an existing future or
+    archived plan with the same id (as a new revision). With an
+    ``idempotency_key`` a retried call returns the first call's result.
+    """
+    _require_db()
+    if status == "active":
+        raise PlanError("A plan can't be created as active — only the athlete activates a plan "
+                        "(at /training-plan/plans, or a future plan takes over on its start date). "
+                        "Create it as 'future'.")
+    if status not in CREATE_STATUSES:
+        raise PlanError(f"status must be one of {', '.join(CREATE_STATUSES)}.")
+    if on_conflict not in CONFLICT_MODES:
+        raise PlanError(f"on_conflict must be one of {', '.join(CONFLICT_MODES)}.")
+    if idempotency_key is not None and not (isinstance(idempotency_key, str) and 1 <= len(idempotency_key) <= 200):
+        raise PlanError("idempotency_key must be a string of 1–200 characters.")
+    if (plan is None) == (plan_url is None):
+        raise PlanError("Give exactly one of plan (the JSON) or plan_url.")
+    if plan_url is not None:
+        plan = _parse_json(fetch_plan_url(plan_url))
+    elif isinstance(plan, str):
+        plan = _parse_json(plan.encode("utf-8"))
+    if not isinstance(plan, dict):
+        raise PlanError("plan must be a JSON object.")
+
+    request_hash = hashlib.sha256(json.dumps(
+        {"plan": plan, "status": status, "on_conflict": on_conflict}, sort_keys=True, default=str,
+    ).encode()).hexdigest()
+    if idempotency_key and not validate_only:
+        recorded = db.get_idempotent_result(idempotency_key)
+        if recorded:
+            if recorded["request_hash"] != request_hash:
+                raise PlanError(f"idempotency_key {idempotency_key!r} was already used for a different request.")
+            return {**recorded["result"], "idempotent_replay": True}
+
+    if len(json.dumps(plan, default=str)) > MAX_UPLOAD_BYTES:
+        raise PlanError(f"The plan exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit.")
+    errors, warnings = plan_validation.validate_document(plan)
+    plan_id = (plan.get("meta") or {}).get("id")
+    existing = None
+    if isinstance(plan_id, str) and plan_doc.PLAN_ID_RE.match(plan_id):
+        existing = db.get_training_plan(plan_id)   # not get_plan(): reading must not switch plans
+        if existing and existing["status"] == "active":
+            errors.append({"path": "meta.id", "message": f"{plan_id!r} is the active plan; creating a plan "
+                                                          "never touches the active one."})
+        elif existing and on_conflict == "reject":
+            errors.append({"path": "meta.id", "message": (
+                f"A plan with this id already exists ({existing['status']}, version {existing['version']}). "
+                "Pass on_conflict='replace' to overwrite it, or use a new id.")})
+        elif existing:
+            new_ids = {w.get("id") for _, _, w in plan_doc.iter_workouts(plan)}
+            lost = sorted(wid for wid in completed_map(plan_id) if wid not in new_ids)
+            warnings.append({"path": "meta.id", "message": (
+                f"Replacing the stored plan (version {existing['version']}; it stays in the history)."
+                + (f" {len(lost)} completed workout(s) aren't in the new plan: {', '.join(lost[:5])}"
+                   f"{'…' if len(lost) > 5 else ''}." if lost else ""))})
+        if not errors:
+            warnings += _overlap_warnings(plan_id, plan)
+    counts = plan_counts(plan)
+
+    if validate_only:
+        return {"valid": not errors, "validate_only": True, "plan_id": plan_id, "status": status,
+                "would": None if errors else "replace" if existing else "create",
+                "counts": counts, "errors": errors, "warnings": warnings}
+    if errors:
+        raise PlanRejected(errors, warnings)
+
+    plan = copy.deepcopy(plan)
+    if existing and "unit" not in plan and existing["plan"].get("unit"):
+        plan["unit"] = existing["plan"]["unit"]
+    plan_doc.normalize_plan(plan)
+    n = counts
+    summary = (f"Created plan ({n['weeks']} weeks, {n['workouts']} workouts)" if not existing
+               else f"Replaced plan content ({n['weeks']} weeks, {n['workouts']} workouts)")
+
+    def build(row, outcome):
+        return {"plan_id": row["id"], "revision": row["version"], "version": row["version"],
+                "status": row["status"], "outcome": outcome, "counts": counts, "warnings": warnings,
+                "idempotent_replay": False}
+
+    try:
+        _, result, replayed = db.create_training_plan(
+            plan_id, plan, status, summary, on_conflict == "replace", build, idempotency_key, request_hash)
+    except db.PlanExists as e:   # lost a race with another create
+        raise PlanError(f"A plan with id {plan_id!r} already exists ({e.status}). Pass "
+                        "on_conflict='replace' to overwrite it, or use a new id.") from None
+    except db.PlanIsActive:
+        raise PlanError(f"{plan_id!r} is the active plan; creating a plan never touches the active one.") from None
+    except db.IdempotencyKeyReused:
+        raise PlanError(f"idempotency_key {idempotency_key!r} was already used for a different request.") from None
+    return {**result, "idempotent_replay": True} if replayed else result
+
+
+def _parse_json(raw: bytes):
+    if not raw or not raw.strip():
+        raise PlanError("The plan is empty.")
+    try:
+        return json.loads(raw.decode("utf-8-sig"))
+    except UnicodeDecodeError:
+        raise PlanError("The plan is not UTF-8 text.") from None
+    except ValueError as e:
+        raise PlanError(f"The plan is not valid JSON ({e}).") from None
+
+
 # ── UPLOAD ────────────────────────────────────────────────────────────────────
 
 def parse_upload(raw: bytes) -> tuple[dict, list[str]]:
@@ -581,15 +786,17 @@ def apply_operations(plan_id: str | None, operations: list, source: str,
     """Apply edits atomically to a plan (default: the active one).
 
     Archived plans are read-only. Returns the new row plus the change
-    messages and the ids of the workouts touched.
+    messages, the ids of the workouts touched and any warnings.
     """
     row = require_editable(plan_id)
     result = {}
     old_dates = {w.get("id"): str(d.get("date"))[:10] for _, d, w in plan_doc.iter_workouts(row["plan"])}
+    old_ids = {x.get("id"): wk.get("weekNumber") for wk, _, x in plan_doc.iter_workouts(row["plan"])}
 
     def mutate(plan):
-        new_plan, messages, touched = plan_doc.apply_operations(plan, operations)
-        result["changes"], result["touched"] = messages, touched
+        warnings = []
+        new_plan, messages, touched = plan_doc.apply_operations(plan, operations, warnings)
+        result["changes"], result["touched"], result["warnings"] = messages, touched, warnings
         summary = "; ".join(messages) or "No changes"
         if reason:
             summary = f"{reason.strip()} — {summary}"
@@ -597,6 +804,15 @@ def apply_operations(plan_id: str | None, operations: list, source: str,
 
     new_row = db.update_training_plan(row["id"], mutate, source)
     _unskip_rescheduled(new_row, old_dates, result.get("touched") or [])
+    replaced = {op.get("week_number") for op in operations if isinstance(op, dict) and op.get("op") == "replace_week"}
+    if replaced:
+        now_ids = {w.get("id") for _, _, w in plan_doc.iter_workouts(new_row["plan"])}
+        lost = sorted(wid for wid, state in db.get_workout_states(row["id"]).items()
+                      if state.get("completed") and wid not in now_ids and old_ids.get(wid) in replaced)
+        if lost:
+            result["warnings"].append({"path": "weeks", "message": (
+                f"{len(lost)} completed workout(s) from the replaced week(s) are no longer in the plan: "
+                f"{', '.join(lost[:5])}{'…' if len(lost) > 5 else ''}.")})
     return {"row": new_row, **result}
 
 
@@ -959,10 +1175,36 @@ def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) 
     return out
 
 
+def _week_drift(plan: dict, week: dict) -> list[str]:
+    """Messages where a filled week's workouts stray from its targetHours /
+    targetRunKm by more than the validator's tolerance."""
+    if not plan_doc.week_workouts(week):
+        return []
+    report = plan_validation.Report()
+    plan_validation._check_targets(report, {**week, "summary": None}, "week")
+    return [w["message"] for w in report.warnings]
+
+
+def _provisional_zones(plan: dict, today: date) -> dict | None:
+    """The zones block's ``provisional`` flag, with whether its re-anchor date
+    has come."""
+    zones = plan.get("zones")
+    if not isinstance(zones, dict) or zones.get("provisional") is not True:
+        return None
+    out = {"reanchorBy": zones.get("reanchorBy")}
+    try:
+        due = plan_doc.parse_date(zones.get("reanchorBy"))
+    except PlanError:
+        return out
+    out["daysLeft"] = (due - today).days
+    out["overdue"] = due < today
+    return out
+
+
 def plan_overview(plan_id: str | None = None, week_number: int | None = None,
                   start_date: str | None = None, end_date: str | None = None,
                   include_details: bool = True, today: date | None = None,
-                  sections: list | None = None) -> dict:
+                  sections: list | None = None, include_weeks: bool = True) -> dict:
     """A token-friendly read of a plan for the coach.
 
     Always: meta, status/version, current thresholds, phases and a one-line
@@ -970,6 +1212,8 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
     start_date..end_date, or by default the current and next week.
     ``sections`` adds those top-level parts of the document verbatim (e.g.
     raceStrategy, assessment, zones) under ``sections`` — what set_field edits.
+    ``include_weeks=False`` leaves out every week (detail and one-liners) for a
+    plan-level read.
     """
     row = require_plan(plan_id)
     plan = row["plan"]
@@ -994,13 +1238,22 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
 
     def week_line(w):
         ids = [x.get("id") for d in w.get("days") or [] for x in d.get("workouts") or [] if x.get("sport") != "rest"]
-        return {
+        line = {
             "weekNumber": w.get("weekNumber"), "startDate": w.get("startDate"), "endDate": w.get("endDate"),
             "phase": w.get("phase"), "isRecoveryWeek": w.get("isRecoveryWeek", False),
             "targetHours": w.get("targetHours"), "plannedHours": (w.get("summary") or {}).get("totalHours"),
             "workouts": len(ids), "completed": sum(1 for i in ids if (states.get(i) or {}).get("completed")),
             "skipped": sum(1 for i in ids if i in skipped),
         }
+        if plan_doc.is_skeleton_week(plan, w) and not plan_doc.week_workouts(w):
+            line["status"] = "skeleton"
+        if w.get("targetRunKm") is not None:
+            line["targetRunKm"] = w["targetRunKm"]
+            line["plannedRunKm"] = (((w.get("summary") or {}).get("bySport") or {}).get("run") or {}).get("km", 0)
+        drift = _week_drift(plan, w)
+        if drift:
+            line["drift"] = drift
+        return line
 
     if sections is not None and (not isinstance(sections, list)
                                  or not all(isinstance(k, str) for k in sections)):
@@ -1011,7 +1264,7 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
         raise PlanError(f"No section {', '.join(map(repr, unknown))} in this plan (available: {available}).")
 
     detail = []
-    for w in selected:
+    for w in selected if include_weeks else []:
         detail.append({
             # Any extra week fields the coach added, then the standard view.
             **{k: v for k, v in w.items() if k not in ("days", "summary")},
@@ -1036,8 +1289,8 @@ def plan_overview(plan_id: str | None = None, week_number: int | None = None,
         "thresholds": plan_doc.effective_thresholds(plan),
         "unit": plan.get("unit"),
         "phases": [{k: p.get(k) for k in ("name", "startWeek", "endWeek", "focus")} for p in plan.get("phases") or []],
-        "weekSummaries": [week_line(w) for w in weeks],
-        "weeks": detail,
+        **({"weekSummaries": [week_line(w) for w in weeks], "weeks": detail} if include_weeks else {}),
+        **({"zonesProvisional": prov} if (prov := _provisional_zones(plan, today)) else {}),
         **({"sections": {k: plan[k] for k in sections}} if sections else {}),
         **({"thresholdCarryover": carry} if (carry := pending_carryover(row)) else {}),
     }

@@ -397,6 +397,7 @@ def get_training_plan(
     end_date: Optional[str] = None,
     include_details: bool = True,
     sections: Optional[list[str]] = None,
+    include_weeks: bool = True,
 ) -> dict:
     """
     Read the athlete's training plan (the Claude Coach plan uploaded at
@@ -425,9 +426,18 @@ def get_training_plan(
             under "sections" — e.g. ["raceStrategy", "assessment", "zones",
             "phases", "preferences"] — before editing them with
             amend_training_plan's set_field/append_to_list.
+        include_weeks: False leaves out every week (detail and the per-week
+            one-liners) — with `sections`, a plan-level read (zones, phases,
+            raceStrategy) that costs a fraction of the tokens.
+
+    Skeleton weeks (not filled in yet) show status "skeleton"; weeks with a
+    targetRunKm show plannedRunKm beside it; a week whose workouts stray more
+    than 10% from targetHours / targetRunKm carries a `drift` note. When the
+    zones are provisional, zonesProvisional says when to re-anchor them
+    (reanchorBy, daysLeft, overdue).
     """
     return plan_tools.get_training_plan(plan_id, week_number, start_date, end_date, include_details,
-                                        sections)
+                                        sections, include_weeks)
 
 
 @mcp.tool()
@@ -465,6 +475,17 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
           "targetHours": 8.5, "isRecoveryWeek": true, "phase": "..."}}
           — any week field except weekNumber, startDate, endDate, days and
             summary; null removes one
+      {"op": "replace_week", "week_number": 5, "week": {...}}
+          — swap in a whole week, e.g. to fill a skeleton week. The week
+            keeps its slot: startDate/endDate default to the plan's (and
+            can't differ), phase defaults from the phases block (and must
+            match it), workouts without an id get one, and `summary` is
+            recomputed. The week is validated alone (Monday–Sunday, dayOfWeek
+            matches date, workout ids unique across the plan, zone tokens
+            resolve, sport / step / exercise names) and rejects the whole call
+            on any error. Warnings (returned under `warnings`, each with a
+            JSON path) flag targetHours / targetRunKm that the workouts miss
+            by more than 10%.
       {"op": "set_zones", "ftp": 262, "bikeLthr": 164, "runLthr": 170,
           "thresholdPace": "4:10", "cssLabel": "2:05/100m"}  — any subset;
             null resets one to the plan's original value
@@ -550,6 +571,95 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     and the recomputed summaries of the affected weeks.
     """
     return plan_tools.amend_training_plan(operations, reason, plan_id)
+
+
+@mcp.tool()
+def create_training_plan(
+    plan: Optional[dict] = None,
+    status: str = "future",
+    validate_only: bool = False,
+    on_conflict: str = "reject",
+    idempotency_key: Optional[str] = None,
+    plan_url: Optional[str] = None,
+) -> dict:
+    """
+    Create a training plan from its JSON — no manual upload. Everything is
+    validated first, then written atomically (a rejected plan leaves nothing
+    behind) as revision 1, so restore_training_plan_revision has a baseline.
+
+    Never activates a plan and never touches the active one — which plan is
+    active stays the athlete's call (set_training_plan_status can't do it
+    either; a future plan takes over by itself on its start date). Nothing is
+    scheduled or pushed to Garmin.
+
+    Errors are fatal and reject the plan; warnings are returned and don't. Both
+    carry a JSON path, e.g. weeks[3].startDate. Checks:
+      - structure: "version" ("1.x"), unique workout ids, meta.id / event /
+        planStartDate / planEndDate / totalWeeks.
+      - calendar: every week startDate a Monday and endDate a Sunday; dayOfWeek
+        matches date; days inside their week; weeks numbered 1..N and
+        contiguous (no gaps or overlaps); totalWeeks, planStartDate and
+        planEndDate agree with the weeks; meta.eventDate (and
+        raceStrategy.event.date) inside the plan.
+      - phases: startWeek/endWeek cover every week exactly once; a phase's
+        startDate/endDate (if given) match its weeks; a week's `phase` matches.
+      - tokens: every {{run-pace:5a}}, {{bike-watts:ss}}, {{run-hr:2}},
+        {{bike-ftp:75-77}}… must resolve against the plan's zones (an unresolved
+        token would render blank on the watch) — an error.
+      - enums: workout sport, step kinds and strength exercise names.
+      - overlap (warning only): the dates overlap another future or active plan.
+
+    Skeleton plans: a week with no workouts is an error unless it is flagged
+    "status": "skeleton" on the week (or "skeleton": true on the plan). Give a
+    skeleton week its targetHours and optional targetRunKm, then fill it later
+    with amend_training_plan's replace_week.
+
+    Summaries are computed by the server: each filled week's `summary`
+    (bySport sessions / hours / km, totalHours) comes from its workouts, and a
+    hand-written one is replaced (with a warning if it differed). Warnings flag
+    weeks whose workouts stray more than 10% from targetHours or targetRunKm.
+
+    Zones may be flagged provisional — "zones": {"provisional": true,
+    "reanchorBy": "YYYY-MM-DD", …} — and get_training_plan then surfaces it
+    (zonesProvisional).
+
+    Args:
+        plan: The plan document (version, meta, zones, phases, weeks, …).
+        status: "future" (default) or "archived". Never "active".
+        validate_only: True runs every check, including the id-conflict and
+            overlap checks, and returns what would happen without writing.
+        on_conflict: "reject" (default) fails if meta.id already exists;
+            "replace" swaps the content of an existing future or archived plan
+            (as a new revision; the old content stays in its history). The
+            active plan is never replaced.
+        idempotency_key: A retried call with the same key and payload returns
+            the first call's result (idempotent_replay: true) instead of
+            writing again; the same key with a different payload is an error.
+        plan_url: An https URL serving the plan JSON, instead of `plan` — for
+            big plans (public hosts only; TRAINING_PLAN_URL_HOSTS can narrow it).
+
+    Returns plan_id, revision (the plan's version — 1 for a new plan), status,
+    outcome ("created" or "replaced"), counts (weeks, workouts,
+    skeleton_weeks) and warnings. With validate_only: valid, would
+    ("create" / "replace"), counts, errors and warnings.
+    """
+    return plan_tools.create_training_plan(plan, status, validate_only, on_conflict, idempotency_key,
+                                           plan_url)
+
+
+@mcp.tool()
+def delete_training_plan(plan_id: str, confirm: str) -> dict:
+    """
+    Permanently delete a future or archived plan — a clean way out of a bad
+    create_training_plan, and it frees the id. Its revisions and completion
+    ticks go with it; the active plan can't be deleted. To keep the history,
+    archive it instead (set_training_plan_status).
+
+    Args:
+        plan_id: The plan's id (from list_training_plans).
+        confirm: Must equal plan_id.
+    """
+    return plan_tools.delete_training_plan(plan_id, confirm)
 
 
 @mcp.tool()

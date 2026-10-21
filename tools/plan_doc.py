@@ -43,7 +43,8 @@ ZONE_SPORTS = ("swim", "bike", "run")
 UNITS = ("metric", "imperial")
 
 # Week fields with a known type; update_week takes any other field as-is.
-WEEK_FIELDS = {"focus": str, "targetHours": (int, float), "isRecoveryWeek": bool, "phase": str}
+WEEK_FIELDS = {"focus": str, "targetHours": (int, float), "targetRunKm": (int, float),
+               "isRecoveryWeek": bool, "phase": str}
 # Week fields update_week can't change: identity, dates (the days hang off
 # them), the workouts (workout ops) and the recomputed summary.
 WEEK_LOCKED = ("weekNumber", "startDate", "endDate", "days", "summary")
@@ -120,6 +121,17 @@ def week_for_date(plan: dict, day: date) -> dict | None:
         if start <= day <= end:
             return week
     return None
+
+
+def week_workouts(week: dict) -> list:
+    return [w for d in week.get("days") or [] if isinstance(d, dict)
+            for w in d.get("workouts") or [] if isinstance(w, dict)]
+
+
+def is_skeleton_week(plan: dict, week: dict) -> bool:
+    """A week the coach flagged as intentionally unfilled: ``"status":
+    "skeleton"`` on the week, or ``"skeleton": true`` on the plan."""
+    return week.get("status") == "skeleton" or plan.get("skeleton") is True
 
 
 def _day_entry(plan: dict, day: date) -> dict:
@@ -288,9 +300,13 @@ def week_summary(week: dict) -> dict:
 
 
 def normalize_plan(plan: dict) -> dict:
-    """Recompute every week's summary in place; returns the plan."""
+    """Recompute every week's summary in place; returns the plan. An empty
+    skeleton week has no summary — there is nothing to total yet."""
     for week in plan.get("weeks") or []:
-        week["summary"] = week_summary(week)
+        if is_skeleton_week(plan, week) and not week_workouts(week):
+            week.pop("summary", None)
+        else:
+            week["summary"] = week_summary(week)
     return plan
 
 
@@ -414,6 +430,70 @@ def _op_update_week(plan, op):
             raise PlanError(f"Week field {key!r} has the wrong type.")
         week[key] = value
     return f"Updated week {number} ({', '.join(fields)})", None
+
+
+def _op_replace_week(plan, op):
+    """Swap in a whole week — the way a skeleton week is filled. The week keeps
+    its slot: dates default to (and must equal) the ones it has, ids are
+    generated for workouts without one, and the phase comes from the phases
+    block. The week is validated alone, against the plan around it."""
+    from tools import plan_validation
+    number = op.get("week_number")
+    weeks = plan.get("weeks") or []
+    index = next((i for i, w in enumerate(weeks) if w.get("weekNumber") == number), None)
+    if index is None:
+        raise PlanError(f"No week {number!r} in this plan.")
+    week = copy.deepcopy(op.get("week"))
+    if not isinstance(week, dict):
+        raise PlanError("replace_week needs a 'week' object.")
+    old = weeks[index]
+    if week.setdefault("weekNumber", number) != number:
+        raise PlanError(f"week.weekNumber {week['weekNumber']!r} isn't {number} — weeks can't be renumbered.")
+    for key in ("startDate", "endDate"):
+        if week.setdefault(key, old.get(key)) != old.get(key):
+            raise PlanError(f"week.{key} {week[key]!r} isn't week {number}'s {old.get(key)} — "
+                            "weeks can't be moved this way.")
+    phase = plan_validation.phase_map(plan).get(number)
+    if phase and week.get("phase") is None:
+        week["phase"] = phase
+    if week.get("days") is not None and not isinstance(week["days"], list):
+        raise PlanError("week.days must be a list.")
+    week["days"] = [d for d in week.get("days") or []]
+    others = {w.get("id") for i, wk in enumerate(weeks) if i != index for w in week_workouts(wk)}
+    taken = set(others) | {w["id"] for w in week_workouts(week) if isinstance(w.get("id"), str)}
+    for day in week["days"]:
+        if not isinstance(day, dict):
+            continue
+        when = day.get("date")
+        for w in day.get("workouts") or []:
+            if not isinstance(w, dict):
+                continue
+            w.setdefault("completed", False)
+            if not w.get("id") and isinstance(when, str) and isinstance(w.get("sport"), str):
+                try:
+                    base = f"w{number}-{date.fromisoformat(when).strftime('%a').lower()}-{w['sport']}"
+                except ValueError:
+                    continue
+                candidate, n = base, 2
+                while candidate in taken:
+                    candidate, n = f"{base}-{n}", n + 1
+                w["id"] = candidate
+                taken.add(candidate)
+    week["days"].sort(key=lambda d: str(d.get("date")) if isinstance(d, dict) else "")
+    if week.get("status") == "skeleton" and week_workouts(week):
+        week["status"] = "planned"
+
+    errors, warnings = plan_validation.validate_week(plan, week, index)
+    if errors:
+        raise PlanError("; ".join(f"{e['path']}: {e['message']}" for e in errors))
+    week.pop("summary", None)   # recomputed from the workouts
+    weeks[index] = week
+    ids = [w["id"] for w in week_workouts(week)]
+    message = f"Replaced week {number} ({len(ids)} workouts)"
+    if plan.get("skeleton") is True and all(week_workouts(w) for w in weeks):
+        plan["skeleton"] = False
+        message += "; every week is filled, so the plan is no longer a skeleton"
+    return message, ids, warnings
 
 
 def parse_path(path) -> list:
@@ -601,6 +681,7 @@ OPERATIONS = {
     "move_workout": _op_move_workout,
     "remove_workout": _op_remove_workout,
     "update_week": _op_update_week,
+    "replace_week": _op_replace_week,
     "set_zones": _op_set_zones,
     "set_zone_validation": _op_set_zone_validation,
     "set_unit": _op_set_unit,
@@ -609,11 +690,13 @@ OPERATIONS = {
 }
 
 
-def apply_operations(plan: dict, operations: list) -> tuple[dict, list[str], list[str]]:
+def apply_operations(plan: dict, operations: list,
+                     warnings: list | None = None) -> tuple[dict, list[str], list[str]]:
     """Apply edits to a copy of ``plan``, all-or-nothing.
 
     Returns (new_plan, change_messages, touched_workout_ids). Raises PlanError
-    naming the failing operation; the input plan is never modified.
+    naming the failing operation; the input plan is never modified. Non-fatal
+    findings ({"path", "message"}) are appended to ``warnings`` when given.
     """
     if not isinstance(operations, list) or not operations:
         raise PlanError("operations must be a non-empty list.")
@@ -631,8 +714,12 @@ def apply_operations(plan: dict, operations: list) -> tuple[dict, list[str], lis
             raise PlanError(f"Operation {i} ({op.get('op')}): {e}") from None
         if result:
             messages.append(result[0])
-            if result[1]:
+            if isinstance(result[1], list):
+                touched.extend(result[1])
+            elif result[1]:
                 touched.append(result[1])
+            if warnings is not None and len(result) > 2:
+                warnings.extend(result[2])
     normalize_plan(plan)
     meta = plan.setdefault("meta", {})
     meta["updatedAt"] = local_today().isoformat() + "T00:00:00Z"

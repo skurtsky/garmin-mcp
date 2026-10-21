@@ -191,6 +191,16 @@ CREATE TABLE IF NOT EXISTS training_plan_revisions (
     PRIMARY KEY (plan_id, version)
 );
 
+-- create_training_plan's idempotency keys: a retried call with the same key
+-- and payload gets the first call's result instead of a second plan.
+CREATE TABLE IF NOT EXISTS training_plan_idempotency (
+    key           TEXT PRIMARY KEY,
+    plan_id       TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+    request_hash  TEXT NOT NULL,
+    result        JSONB NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Per-workout state kept outside the plan JSON so replacing or restoring the
 -- plan content never loses it: completion, the matching Garmin activity, and
 -- the Garmin Connect workout the coach scheduled for it, and whether it was

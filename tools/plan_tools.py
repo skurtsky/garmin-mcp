@@ -30,9 +30,9 @@ def _tool_errors(fn):
 
 @_tool_errors
 def get_training_plan(plan_id=None, week_number=None, start_date=None, end_date=None,
-                      include_details=True, sections=None) -> dict:
+                      include_details=True, sections=None, include_weeks=True) -> dict:
     return plan_service.plan_overview(plan_id, week_number, start_date, end_date, include_details,
-                                      sections=sections)
+                                      sections=sections, include_weeks=include_weeks)
 
 
 @_tool_errors
@@ -46,18 +46,20 @@ def amend_training_plan(operations: list, reason: str, plan_id=None) -> dict:
         raise PlanError("Give a short reason — it's shown in the plan's history.")
     result = plan_service.apply_operations(plan_id, operations, "mcp", reason)
     row = result["row"]
-    touched_weeks = sorted({
+    touched_weeks = {
         w.get("weekNumber")
         for w in row["plan"].get("weeks") or []
         for d in w.get("days") or []
         for x in d.get("workouts") or []
         if x.get("id") in result["touched"]
-    })
+    } | {op.get("week_number") for op in operations
+         if isinstance(op, dict) and op.get("op") in ("replace_week", "update_week")}
     return {
         "plan_id": row["id"],
         "version": row["version"],
         "changes": result["changes"],
         "workout_ids": result["touched"],
+        "warnings": result["warnings"],
         "weeks": [
             {"weekNumber": w["weekNumber"], "targetHours": w.get("targetHours"), "summary": w.get("summary")}
             for w in row["plan"].get("weeks") or [] if w.get("weekNumber") in touched_weeks
@@ -130,3 +132,22 @@ def get_training_plan_revisions(plan_id=None, limit: int = 20) -> list:
 def restore_training_plan_revision(version: int, plan_id=None) -> dict:
     row = plan_service.restore_revision(plan_id, int(version), "mcp")
     return {"plan_id": row["id"], "version": row["version"], "restored_from": int(version)}
+
+
+@_tool_errors
+def create_training_plan(plan=None, status="future", validate_only=False, on_conflict="reject",
+                         idempotency_key=None, plan_url=None) -> dict:
+    return plan_service.create_plan(plan, plan_url, status, validate_only, on_conflict, idempotency_key)
+
+
+@_tool_errors
+def delete_training_plan(plan_id: str, confirm: str) -> dict:
+    if not plan_id:
+        raise PlanError("Give the plan_id (from list_training_plans).")
+    row = plan_service.require_plan(plan_id)
+    if confirm != plan_id:
+        raise PlanError(f"Deleting {plan_id!r} is permanent — its revisions and completion ticks go too. "
+                        "Pass confirm set to the same plan_id, or archive it instead "
+                        "(set_training_plan_status).")
+    plan_service.delete_plan(plan_id)
+    return {"deleted": plan_id, "was": row["status"]}

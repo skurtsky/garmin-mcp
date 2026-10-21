@@ -159,6 +159,16 @@ TRAINING_PLAN_SCHEMA = """
     ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped_at TIMESTAMPTZ;
     ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skipped_auto BOOLEAN NOT NULL DEFAULT FALSE;
     ALTER TABLE training_plan_workout_state ADD COLUMN IF NOT EXISTS skip_reason TEXT;
+
+    -- create_training_plan's idempotency keys: a retried call with the same key
+    -- and payload gets the first call's result instead of a second plan.
+    CREATE TABLE IF NOT EXISTS training_plan_idempotency (
+        key           TEXT PRIMARY KEY,
+        plan_id       TEXT NOT NULL REFERENCES training_plans(id) ON DELETE CASCADE,
+        request_hash  TEXT NOT NULL,
+        result        JSONB NOT NULL,
+        created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
 """
 
 # The published calendar feed (tools/plan_calendar.py): one row holding the
@@ -1334,6 +1344,94 @@ def save_uploaded_training_plan(plan_id: str, plan: dict, summary: str, activate
             row = cur.fetchone()
             _insert_revision(cur, row, "upload", summary)
             return row
+
+
+class PlanExists(Exception):
+    """create_training_plan found the id taken and was told not to replace it."""
+
+    def __init__(self, status: str):
+        super().__init__(status)
+        self.status = status
+
+
+class PlanIsActive(Exception):
+    """create_training_plan never touches the active plan."""
+
+
+class IdempotencyKeyReused(Exception):
+    """The key was already used for a different request."""
+
+
+def get_idempotent_result(key: str) -> dict | None:
+    """{request_hash, result} recorded for an idempotency key, or None."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT request_hash, result FROM training_plan_idempotency WHERE key = %s", (key,))
+            return cur.fetchone()
+
+
+def create_training_plan(plan_id: str, plan: dict, status: str, summary: str, replace: bool,
+                         build_result, idempotency_key: str | None = None,
+                         request_hash: str | None = None) -> tuple[dict | None, dict, bool]:
+    """Create a plan (revision 1), or with ``replace`` swap an existing
+    future/archived plan's content (a new revision), in one transaction.
+
+    ``status`` is future or archived — this never activates a plan and never
+    touches the active one. ``build_result(row, outcome)`` makes the response
+    ("created" / "replaced"); it is stored under ``idempotency_key`` in the
+    same transaction, so a retry with the same key and ``request_hash`` gets it
+    back with ``replayed`` True instead of writing again.
+
+    Returns (row, result, replayed); row is None when replayed. Raises
+    PlanExists, PlanIsActive or IdempotencyKeyReused — all before any write.
+    """
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            if idempotency_key:
+                # Two calls with one key take turns, so the second sees the first's record.
+                cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (idempotency_key,))
+                cur.execute("SELECT request_hash, result FROM training_plan_idempotency WHERE key = %s",
+                            (idempotency_key,))
+                found = cur.fetchone()
+                if found:
+                    if found["request_hash"] != request_hash:
+                        raise IdempotencyKeyReused(idempotency_key)
+                    return None, found["result"], True
+            cur.execute("SELECT status FROM training_plans WHERE id = %s FOR UPDATE", (plan_id,))
+            current = cur.fetchone()
+            if current is not None and not replace:
+                raise PlanExists(current["status"])
+            if current is not None and current["status"] == "active":
+                raise PlanIsActive(plan_id)
+            try:
+                if current is None:
+                    cur.execute(
+                        f"""INSERT INTO training_plans (id, status, plan, version, archived_at)
+                            VALUES (%s, %s, %s, 1, CASE WHEN %s = 'archived' THEN now() END)
+                            RETURNING {_PLAN_COLUMNS}""",
+                        (plan_id, status, Jsonb(plan), status),
+                    )
+                else:
+                    cur.execute(
+                        f"""UPDATE training_plans
+                            SET plan = %s, status = %s, version = version + 1, updated_at = now(),
+                                archived_at = CASE WHEN %s = 'archived' THEN coalesce(archived_at, now()) END
+                            WHERE id = %s
+                            RETURNING {_PLAN_COLUMNS}""",
+                        (Jsonb(plan), status, status, plan_id),
+                    )
+            except psycopg.errors.UniqueViolation:   # another call created it first
+                raise PlanExists("future") from None
+            row = cur.fetchone()
+            _insert_revision(cur, row, "upload", summary)
+            result = build_result(row, "created" if current is None else "replaced")
+            if idempotency_key:
+                cur.execute(
+                    """INSERT INTO training_plan_idempotency (key, plan_id, request_hash, result)
+                       VALUES (%s, %s, %s, %s)""",
+                    (idempotency_key, plan_id, request_hash, Jsonb(result)),
+                )
+            return row, result, False
 
 
 def _insert_revision(cur, row: dict, source: str, summary: str) -> None:

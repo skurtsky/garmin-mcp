@@ -74,6 +74,7 @@ class FakePlanDB:
         self.activities = {}  # garmin_id -> brief
         self.calendar = None  # the calendar_settings row
         self.settings = {}    # app_settings key -> JSON value
+        self.idempotency = {}  # key -> {plan_id, request_hash, result}
         self._clock = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
     def _now(self):
@@ -130,6 +131,35 @@ class FakePlanDB:
         self._revision(row, "upload", summary)
         return copy.deepcopy(row)
 
+    def get_idempotent_result(self, key):
+        found = self.idempotency.get(key)
+        return copy.deepcopy({"request_hash": found["request_hash"], "result": found["result"]}) if found else None
+
+    def create_training_plan(self, plan_id, plan, status, summary, replace, build_result,
+                             idempotency_key=None, request_hash=None):
+        found = self.idempotency.get(idempotency_key) if idempotency_key else None
+        if found:
+            if found["request_hash"] != request_hash:
+                raise db.IdempotencyKeyReused(idempotency_key)
+            return None, copy.deepcopy(found["result"]), True
+        row = self.plans.get(plan_id)
+        if row is not None and not replace:
+            raise db.PlanExists(row["status"])
+        if row is not None and row["status"] == "active":
+            raise db.PlanIsActive(plan_id)
+        now = self._now()
+        if row is None:
+            row = self.plans[plan_id] = {"id": plan_id, "version": 0, "created_at": now}
+        row["version"] += 1
+        row.update(plan=copy.deepcopy(plan), status=status, updated_at=now,
+                   archived_at=now if status == "archived" else None)
+        self._revision(row, "upload", summary)
+        result = build_result(copy.deepcopy(row), "created" if row["version"] == 1 else "replaced")
+        if idempotency_key:
+            self.idempotency[idempotency_key] = {"plan_id": plan_id, "request_hash": request_hash,
+                                                 "result": copy.deepcopy(result)}
+        return copy.deepcopy(row), result, False
+
     def update_training_plan(self, plan_id, mutate, source):
         row = self.plans.get(plan_id)
         if row is None:
@@ -154,6 +184,7 @@ class FakePlanDB:
 
     def delete_training_plan(self, plan_id):
         self.revisions.pop(plan_id, None)
+        self.idempotency = {k: v for k, v in self.idempotency.items() if v["plan_id"] != plan_id}
         self.states = {k: v for k, v in self.states.items() if k[0] != plan_id}
         return self.plans.pop(plan_id, None) is not None
 
@@ -266,7 +297,7 @@ class FakePlanDB:
 
 PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
-    "update_training_plan", "set_training_plan_status", "delete_training_plan",
+    "update_training_plan", "create_training_plan", "get_idempotent_result", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
     "get_workout_states", "get_season_plans", "upsert_workout_state", "auto_skip_workouts", "get_activity_brief",
     "get_activities_by_ids", "get_activities_in_range", "delete_activities_not_in", "get_setting", "set_setting",
