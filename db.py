@@ -186,6 +186,45 @@ CALENDAR_SCHEMA = """
 """
 
 
+# Seasons (tools/season_service.py): a season owns races, goals and objectives
+# and groups plans. Goals, objectives and the plan -> goal race choices are
+# small JSON lists on the season row; races get a table of their own. A plan's
+# season is a column beside its JSON (training_plans.season_id), so replacing or
+# restoring a plan never unlinks it and the plan schema is untouched.
+SEASON_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS seasons (
+        id               TEXT PRIMARY KEY,
+        name             TEXT NOT NULL,
+        start_date       DATE NOT NULL,
+        end_date         DATE NOT NULL,
+        status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+        goals            JSONB NOT NULL DEFAULT '[]'::jsonb,
+        objectives       JSONB NOT NULL DEFAULT '[]'::jsonb,
+        plan_goal_races  JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
+    CREATE TABLE IF NOT EXISTS season_races (
+        id          TEXT PRIMARY KEY,
+        season_id   TEXT NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+        name        TEXT NOT NULL,
+        race_date   DATE NOT NULL,
+        priority    TEXT NOT NULL CHECK (priority IN ('A', 'B', 'C')),
+        race_type   TEXT NOT NULL DEFAULT 'other',
+        goal        TEXT NOT NULL DEFAULT '',
+        location    TEXT NOT NULL DEFAULT '',
+        url         TEXT NOT NULL DEFAULT '',
+        notes       TEXT NOT NULL DEFAULT '',
+        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_season_races_season ON season_races (season_id, race_date);
+
+    ALTER TABLE training_plans ADD COLUMN IF NOT EXISTS season_id TEXT;
+"""
+
+
 # The redesigned Activity / Trends / Fitness tabs. Garmin only exposes the
 # current thresholds, race predictions and records, so the sync job keeps a
 # daily copy of each to chart how they move. Metric values are stored in one
@@ -404,6 +443,7 @@ def ensure_schema():
             """)
             cur.execute(TRAINING_PLAN_SCHEMA)
             cur.execute(CALENDAR_SCHEMA)
+            cur.execute(SEASON_SCHEMA)
             cur.execute(DASHBOARD_HISTORY_SCHEMA)
             cur.execute(SYNC_RUNS_SCHEMA)
     logger.info("Database schema verified")
@@ -1578,6 +1618,117 @@ def get_season_plans(archived_since: str) -> tuple[list[dict], dict[str, set[str
             for r in cur.fetchall():
                 done.setdefault(r["plan_id"], set()).add(r["workout_id"])
             return rows, done
+
+
+
+# ── SEASONS ───────────────────────────────────────────────────────────────────
+
+_SEASON_COLUMNS = ("id, name, start_date::text AS start_date, end_date::text AS end_date, status, "
+                   "goals, objectives, plan_goal_races, created_at, updated_at")
+_RACE_COLUMNS = ("id, season_id, name, race_date::text AS race_date, priority, race_type, "
+                 "goal, location, url, notes")
+
+
+def _with_children(cur, seasons: list[dict]) -> list[dict]:
+    """Each season row with its ``races`` (by date) and the ``plan_ids`` linked to it."""
+    ids = [s["id"] for s in seasons]
+    cur.execute(f"SELECT {_RACE_COLUMNS} FROM season_races WHERE season_id = ANY(%s) ORDER BY race_date, id", (ids,))
+    races: dict[str, list[dict]] = {}
+    for r in cur.fetchall():
+        races.setdefault(r["season_id"], []).append(r)
+    cur.execute("SELECT id, season_id FROM training_plans WHERE season_id = ANY(%s) ORDER BY id", (ids,))
+    plans: dict[str, list[str]] = {}
+    for r in cur.fetchall():
+        plans.setdefault(r["season_id"], []).append(r["id"])
+    return [{**s, "races": races.get(s["id"], []), "plan_ids": plans.get(s["id"], [])} for s in seasons]
+
+
+def list_seasons() -> list[dict]:
+    """Every season with its races and linked plan ids; active ones first, newest start first."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(f"SELECT {_SEASON_COLUMNS} FROM seasons "
+                        "ORDER BY (status = 'archived'), start_date DESC, id")
+            return _with_children(cur, cur.fetchall())
+
+
+def get_season(season_id: str) -> dict | None:
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(f"SELECT {_SEASON_COLUMNS} FROM seasons WHERE id = %s", (season_id,))
+            row = cur.fetchone()
+            return _with_children(cur, [row])[0] if row else None
+
+
+def save_season(row: dict) -> None:
+    """Insert or replace a season's own fields (not its races or plan links)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO seasons (id, name, start_date, end_date, status, goals, objectives, plan_goal_races)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO UPDATE SET
+                       name = EXCLUDED.name, start_date = EXCLUDED.start_date, end_date = EXCLUDED.end_date,
+                       status = EXCLUDED.status, goals = EXCLUDED.goals, objectives = EXCLUDED.objectives,
+                       plan_goal_races = EXCLUDED.plan_goal_races, updated_at = now()""",
+                (row["id"], row["name"], row["start_date"], row["end_date"], row["status"],
+                 Jsonb(row["goals"]), Jsonb(row["objectives"]), Jsonb(row["plan_goal_races"])),
+            )
+
+
+def save_season_race(row: dict) -> None:
+    """Insert or replace one race of a season."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """INSERT INTO season_races (id, season_id, name, race_date, priority, race_type,
+                                             goal, location, url, notes)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO UPDATE SET
+                       name = EXCLUDED.name, race_date = EXCLUDED.race_date, priority = EXCLUDED.priority,
+                       race_type = EXCLUDED.race_type, goal = EXCLUDED.goal, location = EXCLUDED.location,
+                       url = EXCLUDED.url, notes = EXCLUDED.notes, updated_at = now()""",
+                (row["id"], row["season_id"], row["name"], row["race_date"], row["priority"], row["race_type"],
+                 row["goal"], row["location"], row["url"], row["notes"]),
+            )
+
+
+def delete_season_race(season_id: str, race_id: str) -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM season_races WHERE id = %s AND season_id = %s", (race_id, season_id))
+            return cur.rowcount > 0
+
+
+def set_plan_season(plan_id: str, season_id: str | None) -> bool:
+    """Link a plan to a season (None unlinks). False when there is no such plan."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE training_plans SET season_id = %s WHERE id = %s", (season_id, plan_id))
+            return cur.rowcount > 0
+
+
+def get_active_plan_goal_race() -> dict | None:
+    """The race the active plan's season names as that plan's goal race, or None."""
+    with get_conn() as conn:
+        with conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                f"""SELECT r.id, r.season_id, r.name, r.race_date::text AS race_date, r.priority,
+                           r.race_type, r.goal, r.location, r.url, r.notes
+                    FROM training_plans p
+                    JOIN seasons s ON s.id = p.season_id
+                    JOIN season_races r ON r.season_id = s.id AND r.id = s.plan_goal_races ->> p.id
+                    WHERE p.status = 'active'"""
+            )
+            return cur.fetchone()
+
+
+def get_plan_seasons() -> dict[str, str]:
+    """{plan_id: season_id} for every linked plan."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, season_id FROM training_plans WHERE season_id IS NOT NULL")
+            return {pid: sid for pid, sid in cur.fetchall()}
 
 
 _STATE_FIELDS = ("completed", "completed_at", "activity_id", "notes",

@@ -285,6 +285,40 @@ CREATE TABLE IF NOT EXISTS activity_best_efforts (
 CREATE INDEX IF NOT EXISTS idx_activity_best_efforts_type
     ON activity_best_efforts (sport, record_type, activity_date DESC);
 
+-- Seasons: a season owns races, goals and objectives and groups plans. Goals,
+-- objectives and each plan's goal-race choice are JSON on the season row.
+-- A plan's season is a column beside its JSON, so the plan schema is untouched.
+CREATE TABLE IF NOT EXISTS seasons (
+    id               TEXT PRIMARY KEY,
+    name             TEXT NOT NULL,
+    start_date       DATE NOT NULL,
+    end_date         DATE NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'archived')),
+    goals            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    objectives       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    plan_goal_races  JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS season_races (
+    id          TEXT PRIMARY KEY,
+    season_id   TEXT NOT NULL REFERENCES seasons(id) ON DELETE CASCADE,
+    name        TEXT NOT NULL,
+    race_date   DATE NOT NULL,
+    priority    TEXT NOT NULL CHECK (priority IN ('A', 'B', 'C')),
+    race_type   TEXT NOT NULL DEFAULT 'other',
+    goal        TEXT NOT NULL DEFAULT '',
+    location    TEXT NOT NULL DEFAULT '',
+    url         TEXT NOT NULL DEFAULT '',
+    notes       TEXT NOT NULL DEFAULT '',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_season_races_season ON season_races (season_id, race_date);
+
+ALTER TABLE training_plans ADD COLUMN IF NOT EXISTS season_id TEXT;
+
 -- Manual corrections to automatic per-activity flags (commute detection).
 CREATE TABLE IF NOT EXISTS activity_overrides (
     garmin_id   BIGINT PRIMARY KEY,

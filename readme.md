@@ -318,6 +318,19 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
   and archived ones from the last year, on one timeline: each week's planned
   hours filled in as workouts are done, the phases, races and today. A week
   opens it in the viewer; a table underneath has the same numbers.
+- **Seasons.** `/training-plan/seasons` (also Settings → Plan → Seasons) is
+  where a season is defined: a name, start and end dates, the plans linked to
+  it (a plan is in at most one season), its races (priority A / B / C, type
+  from sprint triathlon to marathon, goal, location, URL, notes), up to three
+  goals and four objectives (each with an optional date and race link;
+  objectives carry a status you set by hand). Friel's limits (3 A races, 5 B
+  races, 3 goals, 4 objectives) and plans or races outside the season's dates
+  are warnings, never blocks. In Settings → Training, a plan in a season picks
+  its **goal race** from the season's races; the active plan's pick is the goal
+  race Today, Trends and Fitness follow (ride and "other" races have no goal-race
+  distance, so the saved goal race stays in charge). A plan without a season
+  keeps the saved goal race and is prompted to link one. The link lives beside
+  the plan (`training_plans.season_id`), not in the plan JSON.
 - **Paging into the next plan.** Stepping past the last week of a plan (or the
   first) carries on into the plan after (or before) it, and the month view
   shows the next plan's days faded, so the hand-over between blocks is visible.
@@ -342,6 +355,7 @@ http://localhost:8000/training-plan/upload?token=YOUR_TOKEN
 |---|---|---|
 | `/training-plan` | `GET` | The viewer for the active plan (`?plan=<id>` for a future one, or an archived one read-only; `&week=` / `&month=` to open at a week or month), or a "No plan active" page |
 | `/training-plan/season` | `GET` | Every plan on one timeline: weekly hours, phases, races, today |
+| `/training-plan/seasons` | `GET` / `POST` | Every season, and create one; `/seasons/{id}/edit` is a season's page (dates, plans, races, goals, objectives) with its form posts under `/seasons/{id}/…` |
 | `/training-plan/plans` | `GET` | Every stored plan, with view / download PDF or JSON / activate / move to future / archive / delete |
 | `/training-plan/plans/{id}/{activate\|future\|archive\|delete}` | `POST` | Plan lifecycle (the active plan can't be deleted) |
 | `/training-plan/upload` | `GET` / `POST` | Upload a plan JSON (validated; stored as a future plan unless made active; same-id uploads confirm first) |

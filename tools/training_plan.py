@@ -15,6 +15,8 @@ a plan; without it the active plan is used.
     GET  /training-plan                  — the viewer, or a "No plan active" page
     GET  /training-plan/season           — every plan on one timeline: weekly hours, phases, races
     GET  /training-plan/plans            — every plan: view / activate / future / archive / delete
+    GET  /training-plan/seasons          — seasons: create, edit, archive; races, goals, objectives,
+                                           linked plans (tools/seasons_page.py has the sub-routes)
     POST /training-plan/plans/{id}/{action}  — activate | future | archive | delete
     GET  /training-plan/upload           — the upload form
     POST /training-plan/upload           — validate, confirm a same-id replace, store
@@ -42,6 +44,10 @@ JSON API used by the viewer:
     GET  /training-plan/api/goal-race    — {goal, distances} for Settings' Goal race
     POST /training-plan/api/goal-race    — {name, date, distance, target?, show_on_today} → same shape
     POST /training-plan/api/goal-race/clear → same shape (goal: null)
+    POST /training-plan/api/plan-season  — {season_id | null}: link the plan to a season (or unlink) →
+                                           {goalRace, seasonChoice}
+    POST /training-plan/api/season-goal-race — {race_id | null}: the plan's goal race, chosen from its
+                                           season's races → {goalRace, seasonChoice}
     GET  /training-plan/api/timezone     — {timezone, effective, source, now} for Settings' Time zone
     POST /training-plan/api/timezone     — {timezone: "America/Toronto" | null} → same shape
     GET  /training-plan/api/sync         — Settings' Garmin Sync: {lastSync, dataTypes, runs, latest, modes}
@@ -64,11 +70,12 @@ from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Route
 
 import db
-from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service, sync_runner
+from tools import goal_race, local_time, plan_calendar, plan_doc, plan_service, season_service, sync_runner
 from tools.navbar import ICON_LINKS, THEME_BOOT, inject_icon_links, inject_nav, render_nav_html
 from tools.pdf_route import inject_pdf_links, render_plan_pdf
 from tools.plan_doc import PlanError
 from tools.plan_service import PlanStorageUnavailable
+from tools.season_doc import SeasonError
 
 logger = logging.getLogger(__name__)
 
@@ -184,11 +191,13 @@ def render_viewer_html(row: dict, token: str | None = None, goal_future=None, tz
     # Independent reads: overlap their database round trips rather than adding
     # them up (this is the page-open wait). The caller may already have started
     # the goal-race and time-zone reads while the plan itself was loading.
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         payload = pool.submit(plan_service.view_payload, row)
         goal = goal_future or pool.submit(_goal_race_payload)
         tz = tz_future or pool.submit(_timezone_payload)
-        server = {**payload.result(), "goalRace": goal.result(), "timezone": tz.result()}
+        season = pool.submit(_season_choice_payload, row["id"])
+        server = {**payload.result(), "goalRace": goal.result(), "timezone": tz.result(),
+                  "seasonChoice": season.result()}
     page = page.replace("__PLAN_SERVER_JSON__", _json_for_script(server))
     page = page.replace("__PLAN_JSON__", _json_for_script(row["plan"]))
     athlete = (row["plan"].get("meta") or {}).get("athlete")
@@ -407,6 +416,7 @@ def render_plans_html(plans: list[dict], token: str | None, error: str | None = 
         + ("".join(cards) or '<div class="card">No plans stored yet.</div>')
         + f'<div class="links"><a href="{_e(_url("/training-plan/upload", token))}">Upload a plan</a>'
         f'<a href="{_e(_url("/training-plan/season", token))}">Season view</a>'
+        f'<a href="{_e(_url("/training-plan/seasons", token))}">Seasons</a>'
         f'<a href="{_e(_url("/training-plan", token))}">Active plan</a></div>'
     )
     return inject_pdf_links(_page("Training plans", body, token, active="settings"))
@@ -1044,6 +1054,48 @@ async def api_clear_goal_race(request):
     return await api_get_goal_race(request)
 
 
+def _season_choice_payload(plan_id: str) -> dict | None:
+    """What the Settings goal-race dropdown needs for a plan, or None when
+    seasons can't be read (the section then shows the stored goal race alone)."""
+    try:
+        return season_service.goal_race_choice(plan_id)
+    except Exception:  # noqa: BLE001 — seasons are optional on this page
+        logger.exception("Season choice unavailable")
+        return None
+
+
+async def _season_goal_response(plan_id: str) -> JSONResponse:
+    def build():
+        return {"goalRace": _goal_race_payload(), "seasonChoice": _season_choice_payload(plan_id)}
+    return JSONResponse(await run_in_threadpool(build), headers=_NO_STORE)
+
+
+async def api_plan_season(request):
+    """POST /training-plan/api/plan-season — link the plan to a season, or unlink it."""
+    try:
+        body = await _json_body(request)
+        row = await run_in_threadpool(plan_service.require_plan, _plan_param(request))
+        season_id = body.get("season_id") or None
+        if season_id:
+            await run_in_threadpool(season_service.link_plan, season_id, row["id"])
+        else:
+            await run_in_threadpool(season_service.unlink_plan, row["id"])
+    except (PlanStorageUnavailable, LookupError, PlanError, SeasonError) as e:
+        return _api_error(e)
+    return await _season_goal_response(row["id"])
+
+
+async def api_season_goal_race(request):
+    """POST /training-plan/api/season-goal-race — choose the plan's goal race from its season."""
+    try:
+        body = await _json_body(request)
+        row = await run_in_threadpool(plan_service.require_plan, _plan_param(request))
+        await run_in_threadpool(season_service.set_plan_goal_race, row["id"], body.get("race_id") or None)
+    except (PlanStorageUnavailable, LookupError, PlanError, SeasonError) as e:
+        return _api_error(e)
+    return await _season_goal_response(row["id"])
+
+
 def _timezone_payload() -> dict | None:
     """The Settings time-zone picker's data, or None when it can't be read."""
     try:
@@ -1150,6 +1202,8 @@ ROUTES = [
     Route("/training-plan/api/goal-race", api_get_goal_race, methods=["GET"]),
     Route("/training-plan/api/goal-race", api_save_goal_race, methods=["POST"]),
     Route("/training-plan/api/goal-race/clear", api_clear_goal_race, methods=["POST"]),
+    Route("/training-plan/api/plan-season", api_plan_season, methods=["POST"]),
+    Route("/training-plan/api/season-goal-race", api_season_goal_race, methods=["POST"]),
     Route("/training-plan/api/timezone", api_get_timezone, methods=["GET"]),
     Route("/training-plan/api/timezone", api_save_timezone, methods=["POST"]),
     Route("/training-plan/api/sync", api_sync_overview, methods=["GET"]),
@@ -1168,4 +1222,5 @@ def owns_path(path: str) -> bool:
 
 def create_app() -> Starlette:
     """The training-plan sub-app, mounted by server.py behind token auth."""
-    return Starlette(routes=ROUTES)
+    from tools import seasons_page   # imports this module's page helpers, so not at the top
+    return Starlette(routes=ROUTES + seasons_page.ROUTES)

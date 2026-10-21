@@ -77,6 +77,7 @@ def test_viewer_embeds_plan_and_server_state(client, fake_db):
     assert plan["weeks"][0]["summary"]["totalHours"] == 3.83
     assert server.pop("goalRace")["goal"] is None   # Settings' goal race (none set yet)
     assert server.pop("timezone")["source"] in ("default", "env", "offset")   # Settings' time zone (none picked yet)
+    assert server.pop("seasonChoice") == {"season": None, "seasons": []}   # Settings' goal race: no season yet
     assert server.pop("startTimes")["w1-thu-bike"] == "06:00"   # the default start time
     assert server == {"id": "test-block-2026", "status": "active", "version": 1,
                       "readOnly": False, "completed": {"w1-tue-run": True}, "activities": {},
