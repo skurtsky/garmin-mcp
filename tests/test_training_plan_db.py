@@ -24,7 +24,7 @@ def database(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", TEST_DATABASE_URL)
     monkeypatch.setattr(db, "_pool", None)
     with db.get_conn() as conn, conn.cursor() as cur:
-        cur.execute("DROP TABLE IF EXISTS training_plan_workout_state, training_plan_revisions, training_plans, "
+        cur.execute("DROP TABLE IF EXISTS training_plan_idempotency, training_plan_workout_state, training_plan_revisions, training_plans, "
                     "calendar_settings")
     db.ensure_schema()
     yield
@@ -215,3 +215,84 @@ def test_skip_reason_round_trips():
     assert db.get_workout_states(row["id"])["w1-tue-run"]["skip_reason"] == "Sick"
     plan_service.set_completion(row["id"], "w1-tue-run", True)
     assert db.get_workout_states(row["id"])["w1-tue-run"]["skip_reason"] is None
+
+
+# ── create_training_plan (real SQL) ───────────────────────────────────────────
+
+def _create(plan=None, **kwargs):
+    from tests.test_plan_create import good_plan
+    return plan_service.create_plan(plan if plan is not None else good_plan(), **kwargs)
+
+
+def test_create_writes_revision_one_and_leaves_the_active_plan_alone():
+    plan_service.save_upload(sample_plan())
+
+    result = _create()
+
+    assert (result["revision"], result["status"], result["outcome"]) == (1, "future", "created")
+    assert plan_service.require_plan("next-block-2027")["status"] == "future"
+    assert plan_service.require_plan("test-block-2026")["status"] == "active"
+    assert [(r["version"], r["source"]) for r in db.list_training_plan_revisions("next-block-2027")] == [(1, "upload")]
+    assert "summary" not in db.get_training_plan("next-block-2027")["plan"]["weeks"][2]
+
+
+def test_create_conflicts_and_replace_in_one_transaction():
+    from tools.plan_doc import PlanError
+    _create()
+    with pytest.raises(PlanError, match="already exists"):
+        _create()
+    assert db.get_training_plan("next-block-2027")["version"] == 1
+
+    result = _create(on_conflict="replace")
+    assert (result["outcome"], result["revision"]) == ("replaced", 2)
+    assert [r["version"] for r in db.list_training_plan_revisions("next-block-2027")] == [2, 1]
+
+    plan_service.save_upload(sample_plan())
+    with pytest.raises(PlanError, match="active plan"):
+        _create(sample_plan(), on_conflict="replace")
+
+
+def test_a_stale_pre_check_still_ends_in_a_conflict_error(monkeypatch):
+    """The service's own lookup says the id is free; the transaction knows better."""
+    from tools.plan_doc import PlanError
+    from tests.test_plan_create import good_plan
+    plan_service.save_upload(good_plan(), activate=False)
+    monkeypatch.setattr(db, "get_training_plan", lambda *a, **k: None)
+    with pytest.raises(PlanError, match="already exists"):
+        _create()
+
+
+def test_idempotency_key_replays_across_calls_and_dies_with_the_plan():
+    from tools.plan_doc import PlanError
+    first = _create(idempotency_key="k")
+    again = _create(idempotency_key="k")
+    assert again["idempotent_replay"] is True and again["revision"] == first["revision"] == 1
+    assert db.get_training_plan("next-block-2027")["version"] == 1
+
+    from tests.test_plan_create import good_plan
+    other = good_plan()
+    other["weeks"][0]["focus"] = "x"
+    with pytest.raises(PlanError, match="different request"):
+        _create(other, idempotency_key="k", on_conflict="replace")
+
+    plan_service.delete_plan("next-block-2027")
+    assert db.get_idempotent_result("k") is None
+
+
+def test_validation_failure_writes_nothing():
+    from tools.plan_doc import PlanError
+    from tests.test_plan_create import good_plan
+    plan = good_plan()
+    plan["meta"]["totalWeeks"] = 9
+    with pytest.raises(PlanError, match=r"meta\.totalWeeks"):
+        _create(plan, idempotency_key="bad")
+    assert db.list_training_plans() == [] and db.get_idempotent_result("bad") is None
+
+
+def test_replace_week_through_the_real_update_path():
+    from tests.test_plan_create import filled_week
+    _create()
+    result = plan_service.apply_operations(
+        "next-block-2027", [{"op": "replace_week", "week_number": 3, "week": filled_week()}], "mcp", "Fill")
+    assert result["row"]["version"] == 2
+    assert result["row"]["plan"]["weeks"][2]["summary"]["totalHours"] == 6

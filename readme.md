@@ -105,8 +105,8 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 
 ### Training Plan
 
-`get_training_plan`, `list_training_plans`, `set_training_plan_status`,
-`amend_training_plan`, `complete_plan_workout`, `skip_plan_workout`, `link_plan_workout_to_garmin`,
+`get_training_plan`, `list_training_plans`, `create_training_plan`, `set_training_plan_status`,
+`delete_training_plan`, `amend_training_plan`, `complete_plan_workout`, `skip_plan_workout`, `link_plan_workout_to_garmin`,
 `get_training_plan_revisions` and `restore_training_plan_revision` read and
 edit the Claude Coach plan stored in PostgreSQL — see
 [Training Plan](#training-plan).
@@ -385,10 +385,12 @@ to, so plan edits show up in the calendar without re-importing anything.
 
 | Tool | Description |
 |---|---|
-| `get_training_plan` | Plan meta, current thresholds, phases, a one-line summary per week, and workout detail for the current + next week (or a given week / date range), with completion and Garmin-link state |
+| `get_training_plan` | Plan meta, current thresholds, phases, a one-line summary per week, and workout detail for the current + next week (or a given week / date range), with completion and Garmin-link state. `include_weeks: false` with `sections` is a cheap plan-level read; skeleton weeks, target drift and provisional zones are flagged |
 | `list_training_plans` | Every stored plan and its status |
+| `create_training_plan` | Create a plan from its JSON (or an https `plan_url`) with no manual upload: validates everything first (Monday–Sunday weeks, contiguous, `dayOfWeek`, totals, phases, zone tokens, enums — each issue with a JSON path like `weeks[3].startDate`), then writes atomically as revision 1. Always a future plan; never activates or touches the active plan; nothing goes to Garmin. `validate_only`, `on_conflict` (`reject` / `replace`) and `idempotency_key` are supported. Weeks flagged `"status": "skeleton"` may be empty; the server computes each filled week's `summary` and warns when it strays >10% from `targetHours` / `targetRunKm`; zones can be `provisional` with a `reanchorBy` date |
+| `delete_training_plan` | Permanently delete a future or archived plan (needs `confirm` = the plan id). Archive via `set_training_plan_status` to keep the history |
 | `set_training_plan_status` | Queue a plan as future (it takes over on its start date) or archive one. It can't activate a plan or touch the active one — that stays with the athlete in the web app |
-| `amend_training_plan` | Atomic edits with a reason: add / update / move / remove workouts, edit a week, set zones or units |
+| `amend_training_plan` | Atomic edits with a reason: add / update / move / remove workouts, edit a week, `replace_week` (fill a skeleton week, validated alone against the plan), set zones or units |
 | `complete_plan_workout` | Mark a planned workout complete by id, or from a Garmin activity (matched by date and sport) |
 | `skip_plan_workout` | Mark a planned workout skipped (or un-skip it), with an optional reason. Workouts whose day passes undone are skipped automatically |
 | `link_plan_workout_to_garmin` | Record the Garmin Connect workout scheduled for a planned workout, so it isn't scheduled twice |
@@ -624,6 +626,7 @@ garmin-mcp/
 │   ├── profile.py         # get_athlete_profile, get_gear
 │   ├── plan_calendar.py   # the active plan as an iCalendar feed + its start-time schedule and feed key
 │   ├── plan_doc.py        # training-plan document rules: validation, weekly totals, edit operations
+│   ├── plan_validation.py # strict plan validation for create_training_plan / replace_week (paths, errors, warnings)
 │   ├── plan_service.py    # training-plan storage (PostgreSQL) + completion / Garmin links + auto-matching
 │   ├── plan_today.py      # the active plan as the dashboard's Today / Fitness screens show it
 │   ├── plan_tools.py      # training-plan MCP tools
@@ -652,6 +655,7 @@ garmin-mcp/
 │   ├── test_performance.py
 │   ├── test_profile.py
 │   ├── test_plan_calendar.py
+│   ├── test_plan_create.py
 │   ├── test_plan_doc.py
 │   ├── test_plan_tools.py
 │   ├── test_training_plan.py

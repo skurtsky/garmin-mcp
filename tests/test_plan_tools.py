@@ -38,6 +38,7 @@ def test_overview_defaults_to_current_and_next_week(plan, monkeypatch):
         "weekNumber": 1, "startDate": "2026-09-14", "endDate": "2026-09-20", "phase": "Base",
         "isRecoveryWeek": False, "targetHours": 3, "plannedHours": 3.83, "workouts": 4, "completed": 1,
         "skipped": 2,   # Monday's swim and Tuesday's strength went by undone
+        "drift": ["targetHours 3 but the workouts add up to 3.83 h (+28%)."],
     }
     run = next(x for d in overview["weeks"][0]["days"] for x in d["workouts"] if x["id"] == "w1-tue-run")
     assert run["completed"] is True and run["date"] == "2026-09-15"
