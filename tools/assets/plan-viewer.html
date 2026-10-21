@@ -479,6 +479,9 @@ const state = {
   calendarError: '',
   calendarCopied: false,
   goal: SERVER.goalRace || null,   // {goal, distances} from the server, or null if unavailable
+  seasonChoice: SERVER.seasonChoice || null,  // {season, races, selectedRaceId} | {season: null, seasons}; null if unavailable
+  seasonSaving: false,
+  seasonError: '',
   tz: SERVER.timezone || null,     // {timezone, effective, source, now} from the server, or null if unavailable
   goalDraft: null,                 // the editor's copy while editing; saved only on Save
   goalError: '',
@@ -1039,7 +1042,7 @@ function settingsPane(key) {
       + '</div></div>';
     h += timezoneSection();
   } else if (key === 'training') {
-    h += goalRaceSection();
+    h += goalRacePanel();
     h += '<div class="card elev-sm" style="margin:12px 18px; padding:16px;">'
       + '<div class="card-title" style="margin-bottom:2px;">Zones &amp; thresholds</div>'
       + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:14px;">Re-anchor these after a field test — the plan zones on Fitness, and every workout\'s pace/watt targets, recalculate from them. After updating a value from a fresh test, validate it below so it stops reading as an estimate.</div>';
@@ -1069,6 +1072,8 @@ function settingsPane(key) {
       appLink('/training-plan/plans'), 'list', 'View plans');
     h += settingsLinkCard('Season', 'Every plan on one timeline — weekly hours, phases and races, with today marked.',
       appLink('/training-plan/season'), 'chartbar', 'Open');
+    h += settingsLinkCard('Seasons', 'Create a season, set its dates, link plans, and edit its races, goals and objectives.',
+      appLink('/training-plan/seasons'), 'flag', 'Manage');
     h += settingsLinkCard('Upload plan', 'Upload a plan JSON from the coach — as a future plan (it takes over on its start date), or as the active plan if you tick the box. The same id replaces that plan after a confirmation.',
       appLink('/training-plan/upload'), 'up', 'Upload');
     h += historySection();
@@ -1115,6 +1120,73 @@ function goalTaperLabel(iso, key) {
   const start = d(iso); start.setDate(start.getDate() - dist.taper_days);
   return dist.taper_days + ' days · starts ' + start.toLocaleDateString(undefined, { month:'short', day:'numeric' });
 }
+/* The flag tile with the race's name, date, distance and target — shared by
+   the saved goal race and the season's pick. */
+function goalTile(g) {
+  return '<div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px;">'
+    + '<div class="goal-tile">' + icon('flag', 20) + '</div>'
+    + '<div style="flex:1; min-width:0;"><div style="font-size:15px; font-weight:500;">' + esc(g.name) + '</div>'
+      + '<div style="font-size:12px; color:var(--color-neutral-500);">' + esc(goalDateLabel(g.date)) + ' · ' + esc(g.distance_long) + '</div>'
+      + (g.target ? '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:2px;">Target ' + esc(g.target) + '</div>' : '')
+    + '</div></div>';
+}
+function goalInfo(src) {
+  return '<div class="goal-info">'
+    + '<div><span>Taper</span><span>' + esc(goalTaperLabel(src.date, src.distance)) + '</span></div>'
+    + '<div><span>Race-day form target</span><span>' + RACE_FORM_TARGET + '</span></div></div>';
+}
+/* With a season, a plan's goal race is one of the season's races (a dropdown);
+   without one, a prompt to link a season, and the saved goal race below it. */
+function goalRacePanel() {
+  const c = state.seasonChoice;
+  if (!c) return goalRaceSection();
+  return c.season ? goalRacePicker(c) : seasonPrompt(c) + goalRaceSection();
+}
+function raceOptionLabel(r) {
+  return r.priority + ' · ' + r.name + ' · ' + d(r.date).toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' });
+}
+function goalRacePicker(c) {
+  const g = state.goal && state.goal.goal;
+  const races = c.races || [];
+  let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:2px;">Goal race</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">Chosen from the races of '
+    + '<a href="' + esc(appLink('/training-plan/seasons/' + encodeURIComponent(c.season.id))) + '">' + esc(c.season.name) + '</a>. '
+    + 'Today, Trends and Fitness follow it while this plan is active.</div>';
+  if (!races.length) {
+    h += '<a class="btn btn-secondary" href="' + esc(appLink('/training-plan/seasons/' + encodeURIComponent(c.season.id) + '/edit')) + '">Add races to this season</a>';
+  } else {
+    h += '<div class="field" style="margin-bottom:12px;"><select class="input" data-season-goal aria-label="Goal race"' + (state.seasonSaving ? ' disabled' : '') + '>'
+      + '<option value=""' + (c.selectedRaceId ? '' : ' selected') + '>No goal race</option>'
+      + races.map(r => '<option value="' + esc(r.id) + '"' + (r.id === c.selectedRaceId ? ' selected' : '') + '>' + esc(raceOptionLabel(r)) + '</option>').join('')
+      + '</select></div>';
+    if (c.selectedRaceId && g && state.goal.from_season) h += goalTile(g) + goalInfo(g);
+    else if (c.selectedRaceId) h += '<div class="goal-note">This race type has no goal-race distance (ride, other), so Today, Trends and Fitness keep using the saved goal race.</div>';
+  }
+  if (state.seasonError) h += '<div class="goal-error">' + esc(state.seasonError) + '</div>';
+  return h + '</div>';
+}
+function seasonPrompt(c) {
+  const seasons = c.seasons || [];
+  let h = '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:2px;">Season</div>'
+    + '<div style="color:var(--color-neutral-400); font-size:13px; margin-bottom:12px;">This plan isn\'t in a season. Link it to one to choose its goal race from the season\'s races.'
+    + (state.goal && state.goal.from_season ? ' Today currently follows the goal race of the active plan\'s season.' : '') + '</div>';
+  if (seasons.length) {
+    h += '<div style="display:flex; gap:8px; align-items:center;"><select class="input" data-season-link aria-label="Season to link"' + (state.seasonSaving ? ' disabled' : '') + '>'
+      + '<option value="">Link to a season…</option>'
+      + seasons.map(x => '<option value="' + esc(x.id) + '">' + esc(x.name) + '</option>').join('') + '</select></div>';
+  }
+  h += '<a class="btn btn-secondary" style="margin-top:10px; display:inline-block;" href="' + esc(appLink('/training-plan/seasons')) + '">'
+    + (seasons.length ? 'Manage seasons' : 'Create a season') + '</a>';
+  if (state.seasonError) h += '<div class="goal-error">' + esc(state.seasonError) + '</div>';
+  return h + '</div>';
+}
+function seasonSubmit(path, body) {
+  state.seasonSaving = true; state.seasonError = ''; render();
+  return api(path, body)
+    .then(data => { state.goal = data.goalRace || state.goal; state.seasonChoice = data.seasonChoice; })
+    .catch(err => { state.seasonError = err.message; })
+    .finally(() => { state.seasonSaving = false; render(); });
+}
 function goalRaceSection() {
   if (!state.goal) return '<div class="card elev-sm" style="margin:12px 18px; padding:16px;"><div class="card-title" style="margin-bottom:4px;">Goal race</div>'
     + '<div style="color:var(--color-neutral-400); font-size:13px;">Unavailable right now — the goal race needs the database.</div></div>';
@@ -1140,17 +1212,10 @@ function goalRaceSection() {
         + state.goal.distances.map(x => '<button type="button" class="goal-dist' + (f.distance === x.key ? ' on' : '') + '" data-act="goal-distance" data-key="' + esc(x.key) + '" aria-pressed="' + (f.distance === x.key) + '">' + esc(x.label) + '</button>').join('')
       + '</div></div>';
   } else {
-    h += '<div style="display:flex; align-items:flex-start; gap:12px; margin-bottom:12px;">'
-      + '<div class="goal-tile">' + icon('flag', 20) + '</div>'
-      + '<div style="flex:1; min-width:0;"><div style="font-size:15px; font-weight:500;">' + esc(g.name) + '</div>'
-        + '<div style="font-size:12px; color:var(--color-neutral-500);">' + esc(goalDateLabel(g.date)) + ' · ' + esc(g.distance_long) + '</div>'
-        + (g.target ? '<div style="font-size:12px; color:var(--color-neutral-400); margin-top:2px;">Target ' + esc(g.target) + '</div>' : '')
-      + '</div></div>';
+    h += goalTile(g);
   }
   const src = f || g;
-  h += '<div class="goal-info">'
-      + '<div><span>Taper</span><span>' + esc(goalTaperLabel(src.date, src.distance)) + '</span></div>'
-      + '<div><span>Race-day form target</span><span>' + RACE_FORM_TARGET + '</span></div></div>';
+  h += goalInfo(src);
   const on = f ? f.show_on_today : g.show_on_today;
   h += '<button type="button" class="goal-toggle" data-act="goal-toggle-today" role="switch" aria-checked="' + on + '">'
       + '<span style="font-size:13px;">Show countdown on Today</span><span class="switch' + (on ? ' on' : '') + '"></span></button>';
@@ -2307,6 +2372,8 @@ document.getElementById('app').addEventListener('input', e => {
 
 document.getElementById('app').addEventListener('change', e => {
   if (e.target.hasAttribute && e.target.hasAttribute('data-tz-select')) return tzSubmit(e.target.value);
+  if (e.target.hasAttribute && e.target.hasAttribute('data-season-goal')) return seasonSubmit('season-goal-race', { race_id: e.target.value || null });
+  if (e.target.hasAttribute && e.target.hasAttribute('data-season-link')) return e.target.value ? seasonSubmit('plan-season', { season_id: e.target.value }) : undefined;
   if (e.target.hasAttribute && e.target.hasAttribute('data-sync-mode')) { state.syncForm.mode = e.target.value; state.syncFormError = ''; return render(); }
   if (e.target.getAttribute && e.target.getAttribute('data-goal-field') === 'date' && state.goalDraft) {
     state.goalDraft.date = e.target.value;

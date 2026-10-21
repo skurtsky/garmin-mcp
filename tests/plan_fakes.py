@@ -75,6 +75,9 @@ class FakePlanDB:
         self.calendar = None  # the calendar_settings row
         self.settings = {}    # app_settings key -> JSON value
         self.idempotency = {}  # key -> {plan_id, request_hash, result}
+        self.seasons = {}      # id -> season row (no races / plan ids)
+        self.season_races = {}  # id -> race row
+        self.plan_seasons = {}  # plan id -> season id
         self._clock = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
     def _now(self):
@@ -186,6 +189,7 @@ class FakePlanDB:
         self.revisions.pop(plan_id, None)
         self.idempotency = {k: v for k, v in self.idempotency.items() if v["plan_id"] != plan_id}
         self.states = {k: v for k, v in self.states.items() if k[0] != plan_id}
+        self.plan_seasons.pop(plan_id, None)
         return self.plans.pop(plan_id, None) is not None
 
     def list_training_plan_revisions(self, plan_id, limit=100):
@@ -200,12 +204,11 @@ class FakePlanDB:
         rev = next((r for r in self.revisions.get(plan_id, []) if r["version"] == version), None)
         return copy.deepcopy(rev)
 
-    def get_season_plans(self, archived_since):
-        rows = [copy.deepcopy(r) for r in self.plans.values()
-                if r["status"] != "archived" or (r["plan"]["meta"].get("planEndDate") or "") >= archived_since]
+    def get_plans_with_completion(self, plan_ids):
+        rows = [copy.deepcopy(self.plans[i]) for i in plan_ids if i in self.plans]
         done = {}
-        for (pid, wid), s in self.states.items():
-            if s.get("completed"):
+        for (pid, wid), st in self.states.items():
+            if st.get("completed") and pid in plan_ids:
                 done.setdefault(pid, set()).add(wid)
         return rows, done
 
@@ -285,6 +288,55 @@ class FakePlanDB:
                 state["activity_id"] = None
         return removed
 
+    # — seasons —
+    def _season(self, row):
+        races = sorted((copy.deepcopy(r) for r in self.season_races.values() if r["season_id"] == row["id"]),
+                       key=lambda r: (r["race_date"], r["id"]))
+        plan_ids = sorted(p for p, s in self.plan_seasons.items() if s == row["id"])
+        return {**copy.deepcopy(row), "races": races, "plan_ids": plan_ids}
+
+    def list_seasons(self):
+        rows = sorted(self.seasons.values(), key=lambda r: r["start_date"], reverse=True)
+        rows.sort(key=lambda r: r["status"] == "archived")   # stable: newest first within each group
+        return [self._season(r) for r in rows]
+
+    def get_season(self, season_id):
+        row = self.seasons.get(season_id)
+        return self._season(row) if row else None
+
+    def save_season(self, row):
+        now = self._now()
+        old = self.seasons.get(row["id"], {})
+        self.seasons[row["id"]] = {**copy.deepcopy(row), "created_at": old.get("created_at", now), "updated_at": now}
+
+    def save_season_race(self, row):
+        self.season_races[row["id"]] = copy.deepcopy(row)
+
+    def delete_season_race(self, season_id, race_id):
+        race = self.season_races.get(race_id)
+        if race is None or race["season_id"] != season_id:
+            return False
+        del self.season_races[race_id]
+        return True
+
+    def set_plan_season(self, plan_id, season_id):
+        if plan_id not in self.plans:
+            return False
+        if season_id is None:
+            self.plan_seasons.pop(plan_id, None)
+        else:
+            self.plan_seasons[plan_id] = season_id
+        return True
+
+    def get_plan_seasons(self):
+        return dict(self.plan_seasons)
+
+    def get_active_plan_goal_race(self):
+        plan = next((r for r in self.plans.values() if r["status"] == "active"), None)
+        season = self.seasons.get(self.plan_seasons.get(plan["id"])) if plan else None
+        race = self.season_races.get((season["plan_goal_races"] or {}).get(plan["id"])) if season else None
+        return copy.deepcopy(race)
+
     def get_setting(self, key):
         return copy.deepcopy(self.settings.get(key))
 
@@ -299,9 +351,11 @@ PATCHED = [
     "get_training_plan", "list_training_plans", "save_uploaded_training_plan",
     "update_training_plan", "create_training_plan", "get_idempotent_result", "set_training_plan_status", "delete_training_plan",
     "list_training_plan_revisions", "last_upload_version", "get_training_plan_revision",
-    "get_workout_states", "get_season_plans", "upsert_workout_state", "auto_skip_workouts", "get_activity_brief",
+    "get_workout_states", "get_plans_with_completion", "upsert_workout_state", "auto_skip_workouts", "get_activity_brief",
     "get_activities_by_ids", "get_activities_in_range", "delete_activities_not_in", "get_setting", "set_setting",
     "get_calendar_settings", "save_calendar_schedule", "set_calendar_token",
+    "list_seasons", "get_season", "save_season", "save_season_race", "delete_season_race",
+    "set_plan_season", "get_plan_seasons", "get_active_plan_goal_race",
 ]
 
 

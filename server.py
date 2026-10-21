@@ -56,7 +56,7 @@ from tools.gear_tracker import (
     log_maintenance as log_maintenance_impl,
     get_maintenance_status as get_maintenance_status_impl,
 )
-from tools import plan_tools
+from tools import plan_tools, season_tools
 
 load_dotenv()
 
@@ -434,7 +434,9 @@ def get_training_plan(
     targetRunKm show plannedRunKm beside it; a week whose workouts stray more
     than 10% from targetHours / targetRunKm carries a `drift` note. When the
     zones are provisional, zonesProvisional says when to re-anchor them
-    (reanchorBy, daysLeft, overdue).
+    (reanchorBy, daysLeft, overdue). When the plan is linked to a season,
+    `season` gives its name, dates, goals and this plan's goal race (read the
+    whole season with get_season).
     """
     return plan_tools.get_training_plan(plan_id, week_number, start_date, end_date, include_details,
                                         sections, include_weeks)
@@ -782,6 +784,212 @@ def restore_training_plan_revision(version: int, plan_id: Optional[str] = None) 
     are never rolled back.
     """
     return plan_tools.restore_training_plan_revision(version, plan_id)
+
+
+# ── SEASONS (a season groups plans, races, goals and objectives) ─────────────
+
+@mcp.tool()
+def list_seasons(include_archived: bool = True) -> list:
+    """
+    List the athlete's seasons: id, name, dates, status, linked plan ids, how
+    many races / goals / objectives each has, and any warnings. A season is a
+    training year: it owns several plans, a set of races and the athlete's
+    goals and objectives. Edited at /training-plan/seasons; drawn on one
+    timeline at /training-plan/seasons/{id}.
+
+    Args:
+        include_archived: False leaves out archived seasons.
+    """
+    return season_tools.list_seasons(include_archived)
+
+
+@mcp.tool()
+def get_season(season_id: Optional[str] = None, include_weeks: bool = False) -> dict:
+    """
+    Read one season: dates, status, goals, objectives (each with a status the
+    athlete sets by hand), races (id, date, priority A/B/C, type, goal), the
+    linked plans, each plan's chosen goal race (planGoalRaces) and warnings.
+    Also the season's numbers: totals (planned hours, average per week,
+    includesTargets) and nextARace (weeks and days away).
+
+    Hours per week follow one rule: a week with workouts counts their planned
+    hours; a skeleton week with no workouts yet counts its targetHours (kind
+    "target"); a week with neither is "empty"; a week no plan covers is
+    "unplanned" (e.g. the week after an A race). totals.includesTargets is true
+    when any week is target-only.
+
+    Args:
+        season_id: Season id (from list_seasons). Omit for the active plan's season.
+        include_weeks: True adds the week-by-week timeline (kind, hours, plan,
+            plan week, phase, workouts done) — useful for spotting gaps and load.
+    """
+    return season_tools.get_season(season_id, include_weeks)
+
+
+@mcp.tool()
+def create_season(
+    name: str,
+    start_date: str,
+    end_date: str,
+    goals: Optional[list] = None,
+    objectives: Optional[list] = None,
+) -> dict:
+    """
+    Create a season. Add its races with add_race, then link plans with
+    link_plan_to_season. Friel's limits (3 A races, 5 B races, 3 goals, 4
+    objectives) come back as warnings, never errors.
+
+    Args:
+        name: e.g. "Season 2026–27".
+        start_date / end_date: YYYY-MM-DD; the end can't be before the start.
+        goals: Up to three outcomes for the year — text, or
+            {"text", "target_date"?}. Race links need the race to exist first:
+            use set_season_goals after add_race.
+        objectives: Up to four measurable steps — text, or
+            {"text", "target_date"?, "status"?} with status "not_started"
+            (default), "on_track" or "met".
+    """
+    return season_tools.create_season(name, start_date, end_date, goals, objectives)
+
+
+@mcp.tool()
+def update_season(
+    season_id: str,
+    name: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    status: Optional[str] = None,
+) -> dict:
+    """
+    Change a season's name, dates or status. Only the fields you pass change.
+    Plans or races left outside the new dates are kept and flagged in warnings.
+
+    Args:
+        season_id: From list_seasons.
+        status: "active" or "archived" (archived seasons take no new plan links).
+    """
+    return season_tools.update_season(season_id, name, start_date, end_date, status)
+
+
+@mcp.tool()
+def link_plan_to_season(plan_id: str, season_id: Optional[str] = None, goal_race_id: Optional[str] = None) -> dict:
+    """
+    Put a plan in a season (a plan is in at most one, so linking moves it out of
+    any other), or take it out of its season by leaving season_id empty. The
+    plan's content and schema are untouched. A plan outside the season's dates
+    is linked anyway, with a warning.
+
+    Args:
+        plan_id: From list_training_plans (any status).
+        season_id: The season to join; omit to unlink the plan.
+        goal_race_id: Optionally also choose this plan's goal race from the
+            season's races (race id from get_season); "" clears it. The active
+            plan's goal race is what Today, Trends and Fitness count down to.
+            Ride and "other" races have no goal-race distance, so they don't
+            drive those screens.
+    """
+    return season_tools.link_plan_to_season(plan_id, season_id, goal_race_id)
+
+
+@mcp.tool()
+def add_race(
+    season_id: str,
+    name: str,
+    date: str,
+    priority: str,
+    type: str = "other",
+    goal: Optional[str] = None,
+    location: Optional[str] = None,
+    url: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """
+    Add a race to a season. Its week in a plan is found by its date; there is
+    no separate link. Returns the season with the new race (its id is in
+    races) and any warnings (e.g. a fourth A race, or a date outside the season).
+
+    Args:
+        season_id: From list_seasons.
+        name: Race name.
+        date: YYYY-MM-DD.
+        priority: "A" (peak for it), "B" (train through, mini-taper) or "C"
+            (training race). Friel suggests at most 3 A and 5 B per season.
+        type: "sprint", "olympic", "70.3", "140.6" (triathlon), "5k", "10k",
+            "half", "marathon" (run), "ride" or "other".
+        goal: Target time ("5:30:00") or free text.
+        location / url / notes: Optional.
+    """
+    return season_tools.add_race(season_id, name, date, priority, type, goal, location, url, notes)
+
+
+@mcp.tool()
+def update_race(
+    season_id: str,
+    race_id: str,
+    name: Optional[str] = None,
+    date: Optional[str] = None,
+    priority: Optional[str] = None,
+    type: Optional[str] = None,
+    goal: Optional[str] = None,
+    location: Optional[str] = None,
+    url: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> dict:
+    """
+    Change a race. Only the fields you pass change; use "" to clear goal,
+    location, url or notes. Same values as add_race.
+
+    Args:
+        season_id: From list_seasons.
+        race_id: From get_season (races[].id).
+    """
+    return season_tools.update_race(season_id, race_id, name, date, priority, type, goal, location, url, notes)
+
+
+@mcp.tool()
+def delete_race(season_id: str, race_id: str) -> dict:
+    """
+    Delete a race. Goals, objectives and plan goal-race choices that pointed at
+    it keep their text and lose only the link. Returns the deleted race and the
+    updated season, so it can be re-added with add_race if it was a mistake.
+
+    Args:
+        season_id: From list_seasons.
+        race_id: From get_season (races[].id).
+    """
+    return season_tools.delete_race(season_id, race_id)
+
+
+@mcp.tool()
+def set_season_goals(season_id: str, goals: list) -> dict:
+    """
+    Replace the season's goals (the whole list). Friel suggests up to three —
+    a fourth is kept with a warning. To keep an existing goal's id, pass it back.
+
+    Args:
+        season_id: From list_seasons.
+        goals: Each is text, or {"text", "target_date"?, "race_id"?, "id"?};
+            race_id links the goal to one of the season's races. Blank text
+            is dropped, so [] clears the goals.
+    """
+    return season_tools.set_season_goals(season_id, goals)
+
+
+@mcp.tool()
+def set_season_objectives(season_id: str, objectives: list) -> dict:
+    """
+    Replace the season's objectives (the whole list). Friel suggests up to four
+    — a fifth is kept with a warning. The athlete sets status by hand, so keep
+    each objective's existing status when you rewrite the list (read it with
+    get_season first); never mark one "met" on your own.
+
+    Args:
+        season_id: From list_seasons.
+        objectives: Each is text, or {"text", "target_date"?, "race_id"?,
+            "status"?, "id"?}; status is "not_started" (default), "on_track"
+            or "met". [] clears the objectives.
+    """
+    return season_tools.set_season_objectives(season_id, objectives)
 
 
 @mcp.tool()

@@ -265,19 +265,18 @@ def test_overview_mentions_a_pending_carry_over(plan):
     assert "thresholdCarryover" not in plan_tools.get_training_plan()
 
 
-def test_season_data(plan, fake_db):
+def test_season_timeline_data(plan, fake_db):
     plan_service.set_completion(None, "w1-tue-run", True)
     plan_service.save_upload(_shifted("winter", "2026-10-05"), activate=False)
-    plan_service.save_upload(_shifted("ancient", "2024-01-01"), activate=False)
-    plan_service.set_status("ancient", "archived")
+    plan_service.save_upload(_shifted("other", "2026-12-07"), activate=False)
 
-    data = plan_service.season(date(2026, 9, 20))
+    data = plan_service.timeline_plans(["winter", "test-block-2026"])
 
-    assert [p["id"] for p in data["plans"]] == ["test-block-2026", "winter"]   # old archived plans left out
-    first = data["plans"][0]
+    assert [p["id"] for p in data] == ["test-block-2026", "winter"]   # in start order; "other" was not asked for
+    first = data[0]
     assert first["weeks"][0] == {"weekNumber": 1, "start": "2026-09-14", "end": "2026-09-20", "phase": "Base",
-                                 "recovery": False, "plannedMin": 230, "doneMin": 50}
-    assert first["phases"] == [{"name": "Base", "start": "2026-09-14", "end": "2026-09-27"}]
+                                 "recovery": False, "plannedMin": 230, "doneMin": 50, "workouts": 4,
+                                 "doneWorkouts": 1, "targetHours": 3.0}
 
 
 def test_coach_can_queue_and_archive_plans_but_not_change_the_active_one(plan, fake_db, monkeypatch):

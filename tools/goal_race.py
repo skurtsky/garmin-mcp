@@ -7,10 +7,13 @@ prediction row). Stored as one JSON value in app_settings under
     {"name": str, "date": "YYYY-MM-DD", "distance": one of DISTANCES,
      "target_sec": int | null, "show_on_today": bool}
 """
+import logging
 from datetime import date, timedelta
 
 import db
 from tools.local_time import local_today
+
+logger = logging.getLogger(__name__)
 
 SETTING_KEY = "goal_race"
 
@@ -91,8 +94,20 @@ def validate(data: dict) -> dict:
             "target_sec": target, "show_on_today": bool(show)}
 
 
-def get_goal_race() -> dict | None:
-    """The stored goal race, or None when unset (or without a database)."""
+def season_goal_race() -> dict | None:
+    """The goal race the active plan's season names for it, or None. A season
+    that can't be read is the same as no season: the stored goal race applies."""
+    from tools import season_service   # season_service needs this module's DISTANCES
+    try:
+        goal = season_service.active_goal_race()
+        return validate(goal) if goal else None
+    except Exception:  # noqa: BLE001 — seasons are optional; never take Today down with them
+        logger.exception("Season goal race unavailable")
+        return None
+
+
+def stored_goal_race() -> dict | None:
+    """The goal race saved in Settings, or None when unset (or without a database)."""
     if not db.is_configured():
         return None
     value = db.get_setting(SETTING_KEY)
@@ -100,6 +115,14 @@ def get_goal_race() -> dict | None:
         return validate(value) if value else None
     except GoalRaceError:
         return None
+
+
+def get_goal_race() -> dict | None:
+    """The goal race: the one the active plan's season picks, else the one
+    saved in Settings, or None."""
+    if not db.is_configured():
+        return None
+    return season_goal_race() or stored_goal_race()
 
 
 def save_goal_race(data: dict) -> dict:
@@ -147,8 +170,10 @@ def describe(goal: dict, today: date) -> dict:
 def settings_payload(today: date | None = None) -> dict:
     """What the Settings editor needs: the goal race (described for today, or
     None) and the distance choices with their taper lengths."""
-    goal = get_goal_race()
+    from_season = season_goal_race() if db.is_configured() else None
+    goal = from_season or stored_goal_race()
     return {
         "goal": describe(goal, today or local_today()) if goal else None,
+        "from_season": from_season is not None,
         "distances": [{"key": k, "label": v[0], "long": v[1], "taper_days": v[2]} for k, v in DISTANCES.items()],
     }

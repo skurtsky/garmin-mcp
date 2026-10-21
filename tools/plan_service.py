@@ -430,26 +430,21 @@ def timeline_warnings(plan_id: str) -> list[str]:
     return [note_text(n) for n in timeline_notes() if plan_id in (n["first"]["id"], n["second"]["id"])]
 
 
-# ── SEASON ────────────────────────────────────────────────────────────────────
+# ── SEASON TIMELINE DATA ──────────────────────────────────────────────────────
 
-SEASON_HISTORY_DAYS = 365   # archived plans that ended longer ago than this are left out
-
-
-def season(today: date | None = None) -> dict:
-    """Every plan on one timeline: per week the planned and completed minutes,
-    phase and recovery flag; the phase spans; and the races. The active and
-    future plans, plus archived ones from the last year."""
+def timeline_plans(plan_ids: list[str]) -> list[dict]:
+    """What a season timeline needs from these plans, in start order: per week
+    its non-rest workouts (and how many are done), their minutes, the week's
+    targetHours (what a skeleton week carries before it has workouts), phase and
+    recovery flag; plus each plan's phases and races. Two queries however many
+    plans there are."""
     _require_db()
-    today = today or local_today()
-    cutoff = (today - timedelta(days=SEASON_HISTORY_DAYS)).isoformat()
-    # Two queries for the whole page, however many plans there are.
-    rows, done = db.get_season_plans(cutoff)
+    rows, done = db.get_plans_with_completion(list(plan_ids))
     rows.sort(key=lambda r: (str((r["plan"].get("meta") or {}).get("planStartDate") or ""), r["id"]))
-    plans = [_season_plan(row, done.get(row["id"], set())) for row in rows]
-    return {"today": today.isoformat(), "plans": [p for p in plans if p["weeks"]]}
+    return [p for p in (_timeline_plan(row, done.get(row["id"], set())) for row in rows) if p["weeks"]]
 
 
-def _season_plan(row: dict, done_ids: set[str]) -> dict:
+def _timeline_plan(row: dict, done_ids: set[str]) -> dict:
     plan = row["plan"]
     meta = plan.get("meta") or {}
     phase_of = {}
@@ -459,35 +454,34 @@ def _season_plan(row: dict, done_ids: set[str]) -> dict:
     weeks, races = [], []
     for w in sorted((w for w in plan.get("weeks") or [] if w.get("startDate") and w.get("endDate")),
                     key=lambda w: str(w["startDate"])):
-        planned = done = 0
+        planned = done = count = done_count = 0
         for d in w.get("days") or []:
             for x in d.get("workouts") or []:
                 if x.get("sport") == "rest":
                     continue
                 minutes = float(x.get("durationMinutes") or 0)
                 planned += minutes
+                count += 1
                 if x.get("id") in done_ids:
                     done += minutes
+                    done_count += 1
                 if x.get("sport") == "race":
                     races.append({"date": str(d.get("date"))[:10], "name": x.get("name") or "Race"})
+        target = w.get("targetHours")
         weeks.append({
             "weekNumber": w.get("weekNumber"), "start": str(w["startDate"])[:10], "end": str(w["endDate"])[:10],
             "phase": w.get("phase") or phase_of.get(w.get("weekNumber")) or "",
             "recovery": bool(w.get("isRecoveryWeek")), "plannedMin": round(planned), "doneMin": round(done),
+            "workouts": count, "doneWorkouts": done_count,
+            "targetHours": float(target) if isinstance(target, (int, float)) and not isinstance(target, bool) else None,
         })
     event = (plan.get("raceStrategy") or {}).get("event") or {}
     if event.get("date") and str(event["date"])[:10] not in {r["date"] for r in races}:
         races.append({"date": str(event["date"])[:10], "name": event.get("name") or meta.get("event") or "Race"})
-    phases = []
-    for w in weeks:
-        if phases and phases[-1]["name"] == w["phase"]:
-            phases[-1]["end"] = w["end"]
-        else:
-            phases.append({"name": w["phase"], "start": w["start"], "end": w["end"]})
     return {
         "id": row["id"], "status": row["status"], "event": meta.get("event") or row["id"],
         "start": weeks[0]["start"] if weeks else None, "end": weeks[-1]["end"] if weeks else None,
-        "weeks": weeks, "phases": phases, "races": sorted(races, key=lambda r: r["date"]),
+        "weeks": weeks, "races": sorted(races, key=lambda r: r["date"]),
     }
 
 

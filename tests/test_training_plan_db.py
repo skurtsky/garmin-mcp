@@ -173,16 +173,18 @@ def test_auto_switch_and_carry_over(monkeypatch):
     assert db.get_setting(plan_service.CARRYOVER_KEY) is None
 
 
-def test_season_reads_plans_and_completions_together():
+def test_season_timeline_reads_the_given_plans_and_completions_together():
     plan_service.save_upload(sample_plan())
-    plan_service.save_upload(sample_plan(id="old", planEndDate="2024-01-01"), activate=False)
-    plan_service.set_status("old", "archived")
-    plan_service.set_completion(None, "w1-tue-run", True)
+    plan_service.save_upload(sample_plan(id="old"), activate=False)
+    plan_service.save_upload(sample_plan(id="other"), activate=False)
+    plan_service.set_completion("old", "w1-tue-run", True)
+    plan_service.set_completion("other", "w1-mon-swim", True)
 
-    rows, done = db.get_season_plans("2025-01-01")
+    rows, done = db.get_plans_with_completion(["test-block-2026", "old"])
 
-    assert [r["id"] for r in rows] == ["test-block-2026"]
-    assert done == {"test-block-2026": {"w1-tue-run"}}
+    assert sorted(r["id"] for r in rows) == ["old", "test-block-2026"]
+    assert done == {"old": {"w1-tue-run"}}
+    assert db.get_plans_with_completion([]) == ([], {})
 
 
 def test_auto_skip_leaves_decided_and_completed_workouts_alone():
