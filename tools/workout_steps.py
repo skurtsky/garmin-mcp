@@ -285,9 +285,12 @@ _KIND_DEFAULT = {"warmup": .6, "work": .8, "recovery": .5, "rest": .3, "cooldown
 # Fallback speeds when a distance step's pace can't be worked out.
 _DEFAULT_SEC_PER_KM = {"run": 360, "bike": 120, "swim": 1200}
 
-# Bar colours by intensity band, the Fitness tab's zone palette.
-_BANDS = ((.56, "#6c93b0", "Z1"), (.76, "#5eb8ad", "Z2"), (.91, "#8fb85e", "Z3"),
-          (1.0, "#d9b35a", "Z4"), (9.9, "#d9705e", "Z5"))
+# Bar colours by intensity band; Z5–Z7 are zones 5a–5c.
+ZONE_PALETTE = {"1": "#636073", "2": "#4a90dd", "3": "#2db585", "4": "#ffd200",
+                "5": "#e8731a", "6": "#d41a3a", "7": "#8c10a0"}
+_BANDS = ((.56, ZONE_PALETTE["1"], "Z1"), (.76, ZONE_PALETTE["2"], "Z2"), (.91, ZONE_PALETTE["3"], "Z3"),
+          (1.0, ZONE_PALETTE["4"], "Z4"), (1.04, ZONE_PALETTE["5"], "Z5"), (1.13, ZONE_PALETTE["6"], "Z6"),
+          (9.9, ZONE_PALETTE["7"], "Z7"))
 REST_COLOR = "#7c8194"
 
 
@@ -596,7 +599,8 @@ def _garmin_step(sport: str, step: dict, t: dict, where: str) -> dict:
 def to_garmin(plan: dict, sport: str, steps: list[dict]) -> tuple[str, list[dict]]:
     """(sport_type, steps) for ``tools.workout.create_workout``. A repeat of
     one work step (optionally followed by an untargeted timed recovery/rest)
-    becomes a Garmin repeat group; any other repeat is written out in full.
+    becomes a Garmin repeat group with its simple form; any other repeat becomes
+    a repeat group holding its steps, each with its own end and target.
     Raises PlanError when something can't be sent."""
     blocker = garmin_blocker(sport, steps)
     if blocker:
@@ -622,8 +626,8 @@ def to_garmin(plan: dict, sport: str, steps: list[dict]) -> tuple[str, list[dict
                 work["rest_duration_s"] = int(round(rest["durationS"]))
             out.append(work)
         else:
-            for _ in range(step["count"]):
-                out += [_garmin_step(sport, s, t, f"{where} (repeat)") for s in inner]
+            out.append({"type": "repeat", "sets": step["count"],
+                        "steps": [_garmin_step(sport, s, t, f"{where} (repeat)") for s in inner]})
     return GARMIN_SPORT[sport], out
 
 

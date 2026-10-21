@@ -42,8 +42,9 @@ def test_a_planned_workout_with_steps(plan):
     v = _view("w1-thu-bike")
     html = v["html"]
     assert 'data-id="w1-thu-bike"' in html and "Thu 17 Sep · Week 1 · Base" in html
-    # The graph starts on the first work step; every rep is a bar.
-    assert html.count('<button type="button" class="wd-bar') == 8 and 'class="wd-bar on" data-wg-i="1"' in html
+    # No step is selected to begin with; every rep is a bar carrying its details.
+    assert html.count('<button type="button" class="wd-bar') == 8 and 'wd-bar on' not in html and 'wd-row on' not in html
+    assert "Select a step to see its details" in html
     assert "Step 2 of 8 · Work · Rep 1 of 3" in html and "8:00 · 220–230 W · 88–92% FTP" in html
     assert "FTP 250 W" in html and "0:15" in html
     # The step table keeps the repeat together.
@@ -173,7 +174,7 @@ def test_ramps_in_the_view_and_the_editor(plan):
     html = _view("w1-thu-bike")["html"]
     # A ramp is one sloped shape with a fade; its row swatch and strip colour fade too.
     assert html.count('class="wd-bar ramp') == 2 and html.count("<polygon") == 2
-    assert 'data-c="linear-gradient(180deg, #5eb8ad, #5eb8ad)"' in html
+    assert 'data-c="linear-gradient(180deg, #4a90dd, #4a90dd)"' in html
     assert "165 → 188 W · 66 → 75% FTP" in html and "138 → 113 W · 55 → 45% FTP" in html
     assert ".wd-bar.ramp.on { box-shadow:none; filter:drop-shadow(" in workout_detail.WD_CSS
     # The editor: a shape dropdown for % FTP ranges, and bars and rows that select each other.

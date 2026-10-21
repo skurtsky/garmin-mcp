@@ -1154,6 +1154,39 @@ def send_to_garmin(plan_id: str | None, workout_id: str) -> dict:
             "scheduled_date": result.get("scheduled_date"), "warnings": result.get("warnings") or []}
 
 
+def unsend_from_garmin(plan_id: str | None, workout_id: str) -> dict:
+    """Take a workout sent with :func:`send_to_garmin` back off the watch:
+    unschedule its Garmin calendar entry, delete the Garmin workout this app
+    created for it, and clear the link so it can be sent again."""
+    from tools.workout import delete_workout, unschedule_workout
+    from garmin_client import get_client
+    row = require_editable(plan_id)
+    hit = plan_doc.find_workout(row["plan"], workout_id)
+    if hit is None:
+        raise PlanError(f"No workout with id {workout_id!r} in this plan.")
+    state = db.get_workout_states(row["id"]).get(workout_id) or {}
+    gid = state.get("garmin_workout_id")
+    if not gid:
+        raise PlanError("It isn't on Garmin.")
+    on = str(state.get("garmin_scheduled_date") or hit[1].get("date"))[:10]
+    year, month = int(on[:4]), int(on[5:7])
+    items = (get_client().get_scheduled_workouts(year, month) or {}).get("calendarItems") or []
+    removed = 0
+    for item in items:
+        item_gid = item.get("workoutId") or (item.get("workout") or {}).get("workoutId")
+        if item.get("itemType") == "workout" and item_gid is not None and int(item_gid) == int(gid):
+            sid = item.get("workoutScheduleId") or item.get("calendarItemId") or item.get("id")
+            if sid is not None:
+                unschedule_workout(int(sid))
+                removed += 1
+    try:
+        delete_workout(int(gid))
+    except Exception:  # noqa: BLE001 — already gone, or Garmin refused; the schedule is what matters
+        logger.warning("Garmin workout %s was unscheduled but not deleted", gid, exc_info=True)
+    link_garmin_workout(row["id"], workout_id, None)
+    return {"workout_id": workout_id, "unscheduled": removed}
+
+
 # ── MCP READ VIEW ─────────────────────────────────────────────────────────────
 
 def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) -> dict:

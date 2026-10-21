@@ -469,11 +469,56 @@ def _build_single_interval_step(step: dict, sport_type: str, step_order: int) ->
     )
 
 
+def _build_repeat_group_of_steps(step: dict, sport_type: str, step_order: int, child_step_id: int) -> tuple[dict, int]:
+    """
+    A RepeatGroupDTO around any run of steps, each with its own end condition
+    and target: {"type": "repeat", "sets": 3, "steps": [{"type": "interval", ...},
+    {"type": "recovery", ...}]}. Inner types: interval, recovery, rest, warmup, cooldown.
+    Returns (repeat_group_dto, new_step_order).
+    """
+    _check_fields(step, {"type", "sets", "steps"}, "repeat step")
+    sets = step.get("sets")
+    if not isinstance(sets, int) or sets < 1:
+        raise ValueError("repeat step requires sets as a positive integer")
+    inner = step["steps"]
+    if not isinstance(inner, list) or not inner:
+        raise ValueError("repeat step 'steps' must be a non-empty list")
+    order = step_order + 1          # the group itself
+    group_order = order
+    children = []
+    for child in inner:
+        order += 1
+        kind = child.get("type")
+        if kind == "interval":
+            dto = _build_single_interval_step(child, sport_type, order)
+        elif kind in ("warmup", "cooldown", "recovery", "rest"):
+            dto = _build_plain_step(child, sport_type, order)
+        else:
+            raise ValueError(f"a step inside a repeat can't be {kind!r}; use interval, recovery, rest, warmup or cooldown")
+        dto["childStepId"] = child_step_id
+        children.append(dto)
+    repeat_dto = {
+        "type": "RepeatGroupDTO",
+        "stepOrder": group_order,
+        "childStepId": child_step_id,
+        "stepType": _STEP_TYPE_MAP["repeat"],
+        "numberOfIterations": sets,
+        "endCondition": _END_CONDITION_MAP["iterations"],
+        "endConditionValue": sets,
+        "skipLastRestStep": False,
+        "smartRepeat": False,
+        "workoutSteps": children,
+    }
+    return repeat_dto, order
+
+
 def _build_repeat_group(step: dict, sport_type: str, step_order: int, child_step_id: int) -> tuple[dict, int]:
     """
     Build a RepeatGroupDTO wrapping one targeted interval step and one rest step.
     Returns (repeat_group_dto, new_step_order).
     """
+    if "steps" in step:
+        return _build_repeat_group_of_steps(step, sport_type, step_order, child_step_id)
     _check_fields(step, _ENDURANCE_STEP_FIELDS, "repeat step")
     sets = step.get("sets")
     if not isinstance(sets, int) or sets < 1:
