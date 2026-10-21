@@ -281,10 +281,10 @@ def _hero(**w):
     return dashboard._desk_session_hero({**base, **w}, None, None, "Today")
 
 
-def test_hero_draws_the_graph_with_a_detail_strip_on_the_first_work_step():
+def test_hero_draws_the_graph_with_a_detail_strip_and_no_step_selected():
     html = _hero()
     assert html.count('<button type="button" class="wg-bar') == 9
-    assert 'class="wg-bar on" data-wg-i="1"' in html
+    assert 'wg-bar on' not in html and "Select a step to see its details" in html
     assert "Step 2 of 9 · Work · Rep 1 of 3" in html and "8:00 · 220–230 W · 88–92% FTP" in html
     assert html.count('<button type="button" class="wg-row') == 5 and "data-wg" in html
     assert 'data-garmin-send="w1"' in html
@@ -295,7 +295,8 @@ def test_hero_send_button_states():
     greyed = _hero(sport="swim", steps=swim, garmin_blocker="Swim workouts can't be sent to Garmin yet.")
     assert 'class="td-gsend" disabled aria-label="Send to Garmin — Swim workouts' in greyed
     assert "data-garmin-send" not in greyed
-    assert 'class="td-gsend sent" disabled aria-label="On Garmin' in _hero(garmin_workout_id=42)
+    sent = _hero(garmin_workout_id=42)
+    assert 'class="td-gsend sent" data-garmin-unsend="w1" aria-label="On Garmin' in sent and "disabled" not in sent.split("td-gsend sent")[1].split(">")[0]
     assert "td-gsend" not in _hero(completed=True)
     # The live button says it schedules on the workout's own day.
     assert 'aria-label="Send to Garmin — create and schedule it for Thu 17 Sep"' in _hero(date="2026-09-17")
@@ -313,7 +314,7 @@ def test_workout_details_button_opens_its_dialog():
     # The dialog opener used to ignore every click inside a <button>, the
     # Workout details button included.
     assert "return inner && inner !== card ? null : card;" in dashboard._ACTIVITY_MODAL_JS
-    assert "fetch('/training-plan/api/garmin/send'" in dashboard._ACTIVITY_MODAL_JS
+    assert "'/training-plan/api/garmin/' + (removing ? 'unsend' : 'send')" in dashboard._ACTIVITY_MODAL_JS
 
 
 # ── ramps (build / recover) ───────────────────────────────────────────────────
@@ -388,3 +389,35 @@ def test_hero_draws_ramps_as_sloped_shapes():
     assert html.count('class="wg-bar ramp') == 2 and '<polygon points="0,' in html
     assert "165 → 188 W · 66 → 75% FTP" in html
     assert f'class="wg-line" style="bottom:{workout_steps.THRESHOLD_AT}%"' in html
+
+
+def test_hero_step_list_stops_at_six_lines_and_points_to_the_details():
+    html = _hero()
+    assert "wg-more" not in html            # the sample's 5 lines fit
+    long = [{"kind": "work", "durationS": 60, "target": {"pctFtp": [88, 92]}} for _ in range(9)]
+    resolved = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", long))
+    html = _hero(steps=resolved)
+    assert html.count('<button type="button" class="wg-row') == 6 and "<details" not in html
+    assert "+3 more steps &middot; see Workout details" in html
+
+
+def test_unsend_from_garmin_unschedules_deletes_and_clears_the_link(plan, garmin, monkeypatch):
+    _amend(plan, {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"steps": BIKE}})
+    plan_service.send_to_garmin(PLAN_ID, "w1-thu-bike")
+    gone = {"unscheduled": [], "deleted": []}
+
+    class Client:
+        def get_scheduled_workouts(self, year, month):
+            assert (year, month) == (2026, 9)
+            return {"calendarItems": [{"itemType": "workout", "workoutId": 1, "workoutScheduleId": 5},
+                                      {"itemType": "workout", "workoutId": 9001, "workoutScheduleId": 77}]}
+
+    monkeypatch.setattr("garmin_client.get_client", lambda: Client())
+    monkeypatch.setattr("tools.workout.unschedule_workout", lambda sid: gone["unscheduled"].append(sid))
+    monkeypatch.setattr("tools.workout.delete_workout", lambda wid: gone["deleted"].append(wid))
+    r = TestClient(training_plan.create_app()).post("/training-plan/api/garmin/unsend", json={"workout_id": "w1-thu-bike"})
+    assert r.status_code == 200 and r.json()["unscheduled"] == 1
+    assert gone == {"unscheduled": [77], "deleted": [9001]}
+    assert not plan.states[(PLAN_ID, "w1-thu-bike")].get("garmin_workout_id")
+    assert TestClient(training_plan.create_app()).post(
+        "/training-plan/api/garmin/unsend", json={"workout_id": "w1-thu-bike"}).status_code == 400

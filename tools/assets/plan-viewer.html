@@ -623,6 +623,23 @@ function setPlanView(v) {
   persistView();
   render();
 }
+/* The week of this plan that holds today, or null when today is outside it. */
+function todayWeek() {
+  const t = todayStr();
+  return (PLAN.weeks || []).find(w => w.startDate && w.endDate && t >= String(w.startDate).slice(0, 10) && t <= String(w.endDate).slice(0, 10)) || null;
+}
+function atToday() {
+  const wk = todayWeek();
+  if (!wk) return false;
+  return isMonth() ? state.monthKey === todayStr().slice(0, 7) : state.planWeekNumber === wk.weekNumber;
+}
+function goToToday() {
+  const wk = todayWeek();
+  if (!wk || atToday()) return;
+  if (isMonth()) state.monthKey = todayStr().slice(0, 7);
+  else state.planWeekNumber = wk.weekNumber;
+  render();
+}
 function stepMonth(delta) {
   const [lo, hi] = navMonthRange();
   const dt = new Date(+state.monthKey.slice(0, 4), +state.monthKey.slice(5, 7) - 1 + delta, 1);
@@ -957,6 +974,8 @@ function planTab() {
       + '<div class="plan-bar"><div style="width:' + Math.max(pctDone, doneCount ? 2 : 0) + '%;"></div></div>'
     + '</div>'
     + '<div class="plan-head-nav">'
+      + '<button type="button" class="btn btn-secondary plan-today" data-act="go-today"' + (atToday() || !todayWeek() ? ' disabled' : '')
+        + ' title="' + (todayWeek() ? 'Jump back to ' + (month ? 'this month' : 'this week') : 'Today is outside this plan') + '">' + (month ? 'This month' : 'This week') + '</button>'
       + '<div class="seg view-seg" role="group" aria-label="Plan view">'
         + '<button type="button" class="seg-opt' + (month ? '' : ' on') + '" data-act="view-week" aria-pressed="' + !month + '">Week</button>'
         + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '">Month</button>'
@@ -2194,6 +2213,7 @@ document.getElementById('app').addEventListener('click', e => {
   /* Browsing a week is not an edit, so archived plans can do it too. */
   if (a === 'open-week') { state.planView = 'week'; persistView(); state.planWeekNumber = +act.dataset.week; return render(); }
   if (a === 'open-plan') return goToPlan(NEIGHBORS[act.dataset.neighbor], { month: state.monthKey });
+  if (a === 'go-today') return goToToday();
   if (a === 'prev') return isMonth() ? stepMonth(-1) : stepWeek(-1);
   if (a === 'next') return isMonth() ? stepMonth(1) : stepWeek(1);
   if (a === 'close' || a === 'backdrop') { state.editId = null; state.editDraft = null; return render(); }
@@ -2800,6 +2820,8 @@ html { -webkit-tap-highlight-color: transparent; }
 .we-opt { display:flex; align-items:center; gap:10px; padding:7px 9px; border:0; border-radius:7px; background:none; color:var(--color-text);
   font:inherit; font-size:13px; line-height:1.3; text-align:left; cursor:pointer; }
 .we-opt:hover { background:var(--color-inset, color-mix(in srgb, var(--color-text) 6%, transparent)); }
+.plan-today { font-size:12px; padding:5px 10px; }
+.plan-today[disabled] { opacity:.45; cursor:default; }
 .we-opt.sel { background:color-mix(in srgb, var(--color-accent) 18%, transparent); }
 .we-opt small { display:block; font-size:11px; color:var(--color-neutral-500); }
 .we-optn { display:block; }

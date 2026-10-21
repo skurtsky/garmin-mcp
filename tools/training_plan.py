@@ -693,6 +693,22 @@ async def api_garmin_send(request):
     return JSONResponse(result, headers=_NO_STORE)
 
 
+async def api_garmin_unsend(request):
+    """Send to Garmin pressed again: take the workout back off the watch."""
+    try:
+        body = await _json_body(request)
+        workout_id = body.get("workout_id")
+        if not isinstance(workout_id, str) or not workout_id:
+            raise PlanError("workout_id is required.")
+        result = await run_in_threadpool(plan_service.unsend_from_garmin, _plan_param(request), workout_id)
+    except (PlanStorageUnavailable, LookupError, PlanError) as e:
+        return _api_error(e)
+    except Exception as e:  # noqa: BLE001 — Garmin Connect itself failed
+        logger.warning("Unsend from Garmin failed for %s", body.get("workout_id"), exc_info=True)
+        return JSONResponse({"error": f"Garmin Connect didn't take it off: {e}"}, status_code=502)
+    return JSONResponse(result, headers=_NO_STORE)
+
+
 async def api_skip(request):
     try:
         body = await _json_body(request)
@@ -950,6 +966,7 @@ ROUTES = [
     Route("/training-plan/api/workout", api_workout, methods=["GET"]),
     Route("/training-plan/api/steps/preview", api_steps_preview, methods=["POST"]),
     Route("/training-plan/api/garmin/send", api_garmin_send, methods=["POST"]),
+    Route("/training-plan/api/garmin/unsend", api_garmin_unsend, methods=["POST"]),
     Route("/training-plan/api/carryover", api_carryover, methods=["POST"]),
     Route("/training-plan/api/carryover/dismiss", api_carryover_dismiss, methods=["POST"]),
     Route("/training-plan/api/revisions", api_revisions, methods=["GET"]),

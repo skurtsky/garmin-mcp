@@ -1284,10 +1284,7 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .td-hero { box-shadow:0 0 0 1px var(--color-neutral-700); }
 .td-hero-body { display:flex; flex-wrap:wrap; gap:24px; }
 .td-hero-main { flex:3 1 320px; min-width:0; display:flex; flex-direction:column; gap:12px; }
-.td-steps-fold > summary { cursor:pointer; list-style:none; margin-bottom:6px; }
-.td-steps-fold > summary::-webkit-details-marker { display:none; }
-.td-steps-fold > summary::before { content:"\\25B8  "; }
-.td-steps-fold[open] > summary::before { content:"\\25BE  "; }
+.wg-more { padding:8px 10px; font-size:12px; color:var(--color-neutral-500); }
 .td-hero-side { flex:2 1 240px; min-width:0; display:flex; flex-direction:column; gap:10px; }
 .td-title { font-size:24px; font-weight:500; letter-spacing:-.01em; line-height:1.25; }
 .td-desc { margin:0; font-size:14px; color:var(--color-neutral-300); max-width:62ch; }
@@ -2348,32 +2345,33 @@ def _wg_text(bar: dict, i: int, n: int) -> tuple[str, str, str]:
     return kick, value, bar["note"]
 
 
+_WG_HINT = "Select a step to see its details"
+
+
 def _workout_graph(steps: dict, sport: str) -> str:
     """The workout as bars — width is time, height is intensity against the
     sport's threshold — with a detail strip above that shows the step a bar
-    (or a step-list row) was clicked for. Starts on the first work step."""
+    (or a step-list row) was clicked for. Nothing is selected to begin with."""
     bars = steps["bars"]
     n = len(bars)
-    start = next((i for i, b in enumerate(bars) if b["kind"] == "work"), 0)
     html = ""
     for i, b in enumerate(bars):
         kick, value, note = _wg_text(b, i, n)
         height = workout_steps.graph_height(b["intensity"])
         ramp = workout_steps.ramp_svg(b, f"wgr-{i}")
-        html += (f'<button type="button" class="wg-bar{" ramp" if ramp else ""}{" on" if i == start else ""}" data-wg-i="{i}" '
-                 f'aria-pressed="{"true" if i == start else "false"}" aria-label="{_e(kick)}: {_e(value)}" '
+        html += (f'<button type="button" class="wg-bar{" ramp" if ramp else ""}" data-wg-i="{i}" '
+                 f'aria-pressed="false" aria-label="{_e(kick)}: {_e(value)}" '
                  f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(note)}" '
                  f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
                  f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
-    k, v, note = _wg_text(bars[start], start, n)
     total = steps["total_s"]
     approx = "~" if steps.get("estimated") else ""
     return f"""
         <div class="wg">
-          <div class="wg-info" aria-live="polite">
-            <div class="t-kick wg-k">{_e(k)}</div>
-            <div class="wg-v">{_e(v)}</div>
-            <div class="wg-n"{'' if note else ' hidden'}>{_e(note)}</div>
+          <div class="wg-info" aria-live="polite" data-hint="{_e(_WG_HINT)}">
+            <div class="t-kick wg-k">{_e(_WG_HINT)}</div>
+            <div class="wg-v"></div>
+            <div class="wg-n" hidden></div>
           </div>
           <div class="wg-plot">
             <div class="wg-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_WG_THRESHOLD.get(sport, "Threshold")}</span></div>
@@ -2383,8 +2381,9 @@ def _workout_graph(steps: dict, sport: str) -> str:
         </div>"""
 
 
-def _step_rows(steps: dict) -> str:
-    """The step list beside the graph; a row selects its bar."""
+def _step_rows(steps: dict, max_lines: int | None = None) -> str:
+    """The step list beside the graph; a row selects its bar. With max_lines,
+    longer lists stop there and point to the workout details for the rest."""
     def row(item, indent=False):
         swatch = f'<span class="wg-sw" style="background:{item["fill"]}"></span>'
         sub = " · ".join(p for p in (item["target"], item["extras"]) if p)
@@ -2392,15 +2391,22 @@ def _step_rows(steps: dict) -> str:
                 f'{swatch}<span class="wg-row-t"><span>{_e(item["label"])}</span>'
                 f'{f"<span class=wg-row-s>{_e(sub)}</span>" if sub else ""}</span>'
                 f'<span class="wg-row-a">{_e(item["amount"])}</span></button></li>')
-    out = ""
+    lines = []
     for g in steps["groups"]:
         if "repeat" in g:
             note = f" · {_e(g['note'])}" if g["note"] else ""
-            out += f'<li class="wg-rep">{g["repeat"]} &times;{note}</li>'
-            out += "".join(row(c, indent=True) for c in g["children"])
+            lines.append((f'<li class="wg-rep">{g["repeat"]} &times;{note}</li>', 0))
+            lines += [(row(c, indent=True), 1) for c in g["children"]]
         else:
-            out += row(g)
-    return f'<ol class="wg-list">{out}</ol>'
+            lines.append((row(g), 1))
+    more = ""
+    if max_lines is not None and len(lines) > max_lines:
+        hidden = sum(n for _, n in lines[max_lines:])
+        lines = lines[:max_lines]
+        if hidden:
+            more = (f'<li class="wg-more">+{hidden} more step{"" if hidden == 1 else "s"} '
+                    f'&middot; see Workout details</li>')
+    return f'<ol class="wg-list">{"".join(h for h, _ in lines)}{more}</ol>'
 
 
 def _strength_rows(steps: dict) -> str:
@@ -2434,9 +2440,9 @@ def _garmin_button(w: dict) -> str:
     if w.get("completed") or not w.get("id"):
         return ""
     if w.get("garmin_workout_id"):
-        label = "On Garmin — scheduled on its plan day"
-        return (f'<button type="button" class="td-gsend sent" disabled aria-label="{label}" title="{label}">'
-                f'{_GSEND_ICON}</button>')
+        label = "On Garmin — scheduled on its plan day. Press to take it off your watch"
+        return (f'<button type="button" class="td-gsend sent" data-garmin-unsend="{_e(w["id"])}" aria-label="{label}" '
+                f'title="{label}">{_GSEND_ICON}</button>')
     blocker = w.get("garmin_blocker")
     if blocker:
         return (f'<button type="button" class="td-gsend" disabled aria-label="Send to Garmin — {_e(blocker)}" '
@@ -2452,7 +2458,7 @@ def _garmin_button(w: dict) -> str:
             f'title="{label}">{_GSEND_ICON}</button>')
 
 
-_DESK_STEPS_OPEN_MAX = 4   # longer step lists start collapsed on the desktop hero
+_DESK_STEPS_MAX_LINES = 6   # longer step lists are cut here; the rest is in Workout details
 
 
 def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: str) -> str:
@@ -2472,12 +2478,7 @@ def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: 
     graph = ""
     if steps and steps.get("graph"):
         graph = _workout_graph(steps, w["sport"])
-        n_steps = sum(len(g["children"]) if "repeat" in g else 1 for g in steps["groups"])
-        if n_steps > _DESK_STEPS_OPEN_MAX:
-            listing = (f'<details class="td-steps-fold"><summary class="t-kick">Steps &middot; {n_steps}</summary>'
-                       f'{_step_rows(steps)}</details>')
-        else:
-            listing = f'<div class="t-kick">Steps</div>{_step_rows(steps)}'
+        listing = f'<div class="t-kick">Steps</div>{_step_rows(steps, _DESK_STEPS_MAX_LINES)}'
     elif steps:
         listing = f'<div class="t-kick">Exercises</div>{_strength_rows(steps)}'
     elif w.get("details"):
@@ -3976,13 +3977,21 @@ _ACTIVITY_MODAL_JS = """
 
   // ── Today (desktop): the workout graph — a bar or step row shows its
   // step in the strip above the graph; arrow keys walk the bars. ──
-  function wgSelect(scope, i, focus) {
+  function wgSelect(scope, i, focus, toggle) {
     var bar = scope.querySelector('.wg-bar[data-wg-i="' + i + '"]');
     if (!bar) return;
+    var wasOn = bar.classList.contains('on');
     scope.querySelectorAll('.wg-bar.on, .wg-row.on').forEach(function (x) {
       x.classList.remove('on');
       if (x.classList.contains('wg-bar')) x.setAttribute('aria-pressed', 'false');
     });
+    if (toggle && wasOn) {      // clicking the selected step again clears it
+      var info0 = scope.querySelector('.wg-info');
+      info0.querySelector('.wg-k').textContent = info0.getAttribute('data-hint') || '';
+      info0.querySelector('.wg-v').textContent = '';
+      info0.querySelector('.wg-n').hidden = true;
+      return;
+    }
     bar.classList.add('on');
     bar.setAttribute('aria-pressed', 'true');
     scope.querySelectorAll('.wg-row[data-wg-i="' + i + '"]').forEach(function (r) { r.classList.add('on'); });
@@ -3997,7 +4006,7 @@ _ACTIVITY_MODAL_JS = """
   document.addEventListener('click', function (e) {
     var el = e.target.closest && e.target.closest('[data-wg-i]');
     var scope = el && el.closest('[data-wg]');
-    if (scope) wgSelect(scope, el.getAttribute('data-wg-i'), false);
+    if (scope) wgSelect(scope, el.getAttribute('data-wg-i'), false, true);
   });
   document.addEventListener('keydown', function (e) {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
@@ -4009,36 +4018,48 @@ _ACTIVITY_MODAL_JS = """
   });
 
   // ── Today (desktop): Send to Garmin — builds the workout from its steps,
-  // schedules it on its day and links it to the plan. ──
+  // schedules it on its day and links it to the plan. Pressed again once it's
+  // on Garmin, it takes the workout back off the watch. ──
   document.addEventListener('click', function (e) {
-    var btn = e.target.closest && e.target.closest('[data-garmin-send]');
+    var btn = e.target.closest && e.target.closest('[data-garmin-send], [data-garmin-unsend]');
     if (!btn || btn.disabled) return;
+    var removing = btn.hasAttribute('data-garmin-unsend');
+    var wid = btn.getAttribute(removing ? 'data-garmin-unsend' : 'data-garmin-send');
     var wrap = btn.closest('.td-actions-wrap');
     var msg = wrap && wrap.querySelector('.td-send-msg');
     var idle = btn.getAttribute('aria-label');
+    var sendLabel = removing ? (btn.getAttribute('data-send-label') || 'Send to Garmin — create and schedule it') : idle;
     function says(text) { btn.setAttribute('aria-label', text); btn.title = text; }
     btn.disabled = true;
     btn.classList.add('sending');
-    says('Sending to Garmin…');
+    says(removing ? 'Taking it off your watch…' : 'Sending to Garmin…');
     if (msg) { msg.textContent = ''; msg.classList.remove('err'); }
     var t = token();
-    fetch('/training-plan/api/garmin/send' + (t ? '?token=' + encodeURIComponent(t) : ''), {
+    fetch('/training-plan/api/garmin/' + (removing ? 'unsend' : 'send') + (t ? '?token=' + encodeURIComponent(t) : ''), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workout_id: btn.getAttribute('data-garmin-send') })
+      body: JSON.stringify({ workout_id: wid })
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) { return { ok: r.ok, j: j }; });
     }).then(function (res) {
       btn.classList.remove('sending');
-      if (res.ok) {
+      btn.disabled = false;
+      if (res.ok && removing) {
+        btn.classList.remove('sent');
+        btn.removeAttribute('data-garmin-unsend');
+        btn.setAttribute('data-garmin-send', wid);
+        says(sendLabel);
+        if (msg) msg.textContent = 'Taken off your watch.';
+      } else if (res.ok) {
         btn.classList.add('sent');
         btn.removeAttribute('data-garmin-send');
-        says('On Garmin — scheduled for ' + (res.j.scheduled_date || 'its plan day'));
+        btn.setAttribute('data-garmin-unsend', wid);
+        btn.setAttribute('data-send-label', idle);
+        says('On Garmin — scheduled for ' + (res.j.scheduled_date || 'its plan day') + '. Press to take it off your watch');
         if (msg) msg.textContent = 'Scheduled on Garmin for ' + (res.j.scheduled_date || 'its day') +
           ((res.j.warnings || []).length ? ' — Garmin changed: ' + res.j.warnings.join('; ') : '.');
       } else {
-        btn.disabled = false;
         says(idle);
-        if (msg) { msg.textContent = res.j.error || 'Couldn’t send it to Garmin.'; msg.classList.add('err'); }
+        if (msg) { msg.textContent = res.j.error || (removing ? 'Couldn’t take it off Garmin.' : 'Couldn’t send it to Garmin.'); msg.classList.add('err'); }
       }
     }).catch(function () {
       btn.classList.remove('sending');

@@ -42,8 +42,9 @@ def test_a_planned_workout_with_steps(plan):
     v = _view("w1-thu-bike")
     html = v["html"]
     assert 'data-id="w1-thu-bike"' in html and "Thu 17 Sep · Week 1 · Base" in html
-    # The graph starts on the first work step; every rep is a bar.
-    assert html.count('<button type="button" class="wd-bar') == 8 and 'class="wd-bar on" data-wg-i="1"' in html
+    # No step is selected to begin with; every rep is a bar carrying its details.
+    assert html.count('<button type="button" class="wd-bar') == 8 and 'wd-bar on' not in html and 'wd-row on' not in html
+    assert "Select a step to see its details" in html
     assert "Step 2 of 8 · Work · Rep 1 of 3" in html and "8:00 · 220–230 W · 88–92% FTP" in html
     assert "FTP 250 W" in html and "0:15" in html
     # The step table keeps the repeat together.

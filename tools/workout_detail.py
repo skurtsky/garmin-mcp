@@ -247,17 +247,19 @@ def _bar_text(b: dict, i: int, n: int) -> tuple[str, str]:
     return kick, value
 
 
+_STRIP_HINT = "Select a step to see its details"
+
+
 def _structure(resolved: dict, sport: str, plan: dict) -> str:
     bars = resolved["bars"]
     n = len(bars)
-    start = next((i for i, b in enumerate(bars) if b["kind"] == "work"), 0)
     html, gid = "", f"wdr{secrets.token_hex(3)}-"
     for i, b in enumerate(bars):
         kick, value = _bar_text(b, i, n)
         height = workout_steps.graph_height(b["intensity"])
         ramp = workout_steps.ramp_svg(b, f"{gid}{i}")
-        html += (f'<button type="button" class="wd-bar{" ramp" if ramp else ""}{" on" if i == start else ""}" data-wg-i="{i}" '
-                 f'aria-pressed="{"true" if i == start else "false"}" aria-label="{_e(kick)}: {_e(value)}" '
+        html += (f'<button type="button" class="wd-bar{" ramp" if ramp else ""}" data-wg-i="{i}" '
+                 f'aria-pressed="false" aria-label="{_e(kick)}: {_e(value)}" '
                  f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(b["note"])}" data-c="{b["fill"]}" '
                  f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
                  f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
@@ -267,8 +269,6 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
     ticks = "".join(f'<span style="left:{t / total * 100:.2f}%">{_hm(t)}</span>'
                     for t in range(0, int(total), step) if total - t > step * .45)
     approx = "~" if resolved.get("estimated") else ""
-    kick, value = _bar_text(bars[start], start, n)
-    note = bars[start]["note"]
     t = plan_doc.effective_thresholds(plan)
     line = {"bike": f"FTP {t['ftp']} W" if t.get("ftp") else "FTP",
             "run": f"Threshold {t['thresholdPace']}" if t.get("thresholdPace") else "Threshold",
@@ -279,10 +279,10 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
           <div class="wd-cardhead"><h3 class="wd-h">Structure</h3>
             <span class="wd-muted">{approx}{_dur(total / 60)} · {n} steps</span>
             <span class="wd-legend" aria-hidden="true">{legend}</span></div>
-          <div class="wd-strip" aria-live="polite">
-            <span class="wd-strip-c" style="background:{bars[start]['fill']}"></span>
-            <div class="wd-strip-t"><div class="wd-kick wd-k">{_e(kick)}</div><div class="wd-v">{_e(value)}</div></div>
-            <div class="wd-n"{'' if note else ' hidden'}>{_e(note)}</div>
+          <div class="wd-strip" aria-live="polite" data-hint="{_e(_STRIP_HINT)}">
+            <span class="wd-strip-c" style="background:transparent"></span>
+            <div class="wd-strip-t"><div class="wd-kick wd-k">{_e(_STRIP_HINT)}</div><div class="wd-v"></div></div>
+            <div class="wd-n" hidden></div>
           </div>
           <div class="wd-plot">
             <div class="wd-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_e(line)}</span></div>
@@ -422,8 +422,9 @@ def _send_button(w: dict, state: dict, steps, bar: bool) -> str:
         return ""
     cls = "wd-btn wd-ib wd-gsend" + (" wd-big" if bar else "")
     if state.get("garmin_workout_id"):
-        label = "On Garmin — scheduled on its plan day"
-        return f'<button type="button" class="{cls} sent" disabled aria-label="{label}" title="{label}">{_icon(_WATCH, 22, 1.7)}</button>'
+        label = "On Garmin — scheduled on its plan day. Press to take it off your watch"
+        return (f'<button type="button" class="{cls} sent" data-wd-unsend aria-label="{label}" title="{label}">'
+                f'{_icon(_WATCH, 22, 1.7)}</button>')
     blocker = workout_steps.garmin_blocker(w.get("sport"), steps)
     if blocker:
         return (f'<button type="button" class="{cls}" disabled aria-label="Send to Garmin — {_e(blocker)}" '
@@ -956,13 +957,22 @@ WD_JS = r"""
     });
   }
 
-  function select(i, focus) {
+  function select(i, focus, toggle) {
     var bar = panel.querySelector('.wd-bar[data-wg-i="' + i + '"]');
     if (!bar) return;
+    var wasOn = bar.classList.contains('on');
     panel.querySelectorAll('.wd-bar.on, .wd-row.on').forEach(function (x) {
       x.classList.remove('on');
       if (x.classList.contains('wd-bar')) x.setAttribute('aria-pressed', 'false');
     });
+    if (toggle && wasOn) {      // clicking the selected step again clears it
+      var s0 = panel.querySelector('.wd-strip');
+      s0.querySelector('.wd-k').textContent = s0.getAttribute('data-hint') || '';
+      s0.querySelector('.wd-v').textContent = '';
+      s0.querySelector('.wd-strip-c').style.background = 'transparent';
+      s0.querySelector('.wd-n').hidden = true;
+      return;
+    }
     bar.classList.add('on');
     bar.setAttribute('aria-pressed', 'true');
     // A repeat's rows stand for every rep: light the row of the same step.
@@ -1019,7 +1029,7 @@ WD_JS = r"""
     var go = t.closest('[data-wd-go]');
     if (go && !go.disabled) return load(go.getAttribute('data-wd-go'), false);
     var bar = t.closest('[data-wg-i]');
-    if (bar) return select(bar.getAttribute('data-wg-i'), false);
+    if (bar) return select(bar.getAttribute('data-wg-i'), false, true);
     var id = current && current.id;
     var complete = t.closest('[data-wd-complete]');
     if (complete) return act(complete, call('completion', { workout_id: id, completed: complete.getAttribute('data-wd-complete') === 'on' }));
@@ -1030,6 +1040,16 @@ WD_JS = r"""
     }
     if (t.closest('[data-wd-reason]')) return skipForm(true);
     if (t.closest('[data-wd-skipcancel]')) return skipForm(false);
+    var unsend = t.closest('[data-wd-unsend]');
+    if (unsend && !unsend.disabled) {
+      unsend.classList.add('sending'); unsend.disabled = true;
+      say('');
+      return call('garmin/unsend', { workout_id: id }).then(function (j) {
+        changed = true;
+        if (opts.onChange) opts.onChange(j);
+        return load(id, true).then(function () { say('Taken off your watch.', true); });
+      }).catch(function (err) { unsend.classList.remove('sending'); unsend.disabled = false; say(err.message); });
+    }
     var send = t.closest('[data-wd-send]');
     if (send && !send.disabled) {
       send.classList.add('sending'); send.disabled = true;
