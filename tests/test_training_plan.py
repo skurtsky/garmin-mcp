@@ -137,12 +137,12 @@ def test_upload_stores_plan_and_redirects(client, fake_db):
 
 def test_upload_with_warnings_shows_them(client):
     plan = sample_plan()
-    plan["weeks"][0]["days"][0]["workouts"][0]["description"] = "d" * 130
+    plan["weeks"][0]["days"][0]["workouts"][0]["description"] = "d" * 410
 
     r = _upload(client, plan, follow_redirects=False)
 
     assert r.status_code == 200
-    assert "Plan uploaded" in r.text and "description is 130 characters" in r.text
+    assert "Plan uploaded" in r.text and "description is 410 characters" in r.text
 
 
 @pytest.mark.parametrize("body, message", [

@@ -299,10 +299,11 @@ def _hero(**w):
     return dashboard._desk_session_hero({**base, **w}, None, None, "Today")
 
 
-def test_hero_draws_the_graph_with_a_detail_strip_and_no_step_selected():
+def test_hero_draws_the_graph_with_a_hidden_readout_and_no_step_selected():
     html = _hero()
     assert html.count('<button type="button" class="wg-bar') == 9
-    assert 'wg-bar on' not in html and "Select a step to see its details" in html
+    assert 'wg-bar on' not in html and "Select a step" not in html
+    assert 'class="wro-line" aria-live="polite" data-wro></div>' in html and html.count('data-r="') == 9
     assert "Step 2 of 9 · Work · Rep 1 of 3" in html and "8:00 · 220–230 W · 88–92% FTP" in html
     assert html.count('<button type="button" class="wg-row') == 5 and "data-wg" in html
     assert 'data-garmin-send="w1"' in html
@@ -439,3 +440,10 @@ def test_unsend_from_garmin_unschedules_deletes_and_clears_the_link(plan, garmin
     assert not plan.states[(PLAN_ID, "w1-thu-bike")].get("garmin_workout_id")
     assert TestClient(training_plan.create_app()).post(
         "/training-plan/api/garmin/unsend", json={"workout_id": "w1-thu-bike"}).status_code == 400
+
+
+def test_hero_shows_brief_tiles_tags_and_only_two_actions():
+    html = _hero(type="endurance", tags=["Trainer", "AE2"], primaryZone="Zone 2", description="Easy spin.")
+    assert 'class="td-ptag">Trainer</span>' in html and 'class="td-ptag">AE2</span>' in html
+    assert html.count('class="td-tile"') >= 3 and "Zone 2" in html
+    assert "Open in plan" not in html and 'data-plan-workout="w1">Workout details' in html

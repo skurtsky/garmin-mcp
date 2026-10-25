@@ -24,7 +24,7 @@ use.
 """
 import copy
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from tools.local_time import local_today
 
 # Plan ids end up in URLs and as a primary key — keep them to safe characters.
@@ -34,8 +34,19 @@ REQUIRED_META = ("id", "event", "planStartDate", "planEndDate", "totalWeeks")
 
 SPORTS = ("swim", "bike", "run", "brick", "strength", "race", "rest", "other")
 
-# plan-schema.md's length budget: these print in a 1.4in PDF column.
-FIELD_BUDGETS = {"description": 120, "keyTargets": 120}
+# Length budgets (warnings, not errors). description is the coach-notes summary
+# and keyTargets a ";"-separated bullet list; cues and purpose are short lines.
+FIELD_BUDGETS = {"description": 400, "keyTargets": 240, "cues": 200, "purpose": 240}
+
+# Workout tags (athlete-facing chips such as "25m", "AE2", a coach's name),
+# the coach's review comments, and the week brief fields.
+MAX_TAGS = 8
+MAX_TAG_LENGTH = 40
+MAX_REVIEWS = 30
+MAX_REVIEW_LENGTH = 800
+MAX_KEY_SESSIONS = 6
+MAX_KEY_SESSION_LENGTH = 140
+MAX_THEME_LENGTH = 240
 
 # Override keys the viewer and build_pdf.py read (plan["overrides"]).
 THRESHOLD_KEYS = ("ftp", "bikeLthr", "runLthr", "thresholdPace", "cssLabel", "cssSeconds")
@@ -43,8 +54,10 @@ ZONE_SPORTS = ("swim", "bike", "run")
 UNITS = ("metric", "imperial")
 
 # Week fields with a known type; update_week takes any other field as-is.
+# theme is the week brief's one-liner (the viewer falls back to focus) and
+# keySessions its short list: workout ids (shown as "Wed · name") or free text.
 WEEK_FIELDS = {"focus": str, "targetHours": (int, float), "targetRunKm": (int, float),
-               "isRecoveryWeek": bool, "phase": str}
+               "isRecoveryWeek": bool, "phase": str, "theme": str, "keySessions": list}
 # Week fields update_week can't change: identity, dates (the days hang off
 # them), the workouts (workout ops) and the recomputed summary.
 WEEK_LOCKED = ("weekNumber", "startDate", "endDate", "days", "summary")
@@ -242,6 +255,15 @@ def validate_plan(plan) -> tuple[list[str], list[str]]:
                     text = w.get(field)
                     if isinstance(text, str) and len(text) > budget:
                         warnings.append(f"{wid}: {field} is {len(text)} characters (budget {budget}).")
+                if "tags" in w:
+                    try:
+                        clean_tags(w["tags"])
+                    except PlanError as e:
+                        errors.append(f"{wid}: {e}")
+                if w.get("purposeMet") is not None and not isinstance(w["purposeMet"], bool):
+                    errors.append(f"{wid}: purposeMet must be true, false or omitted.")
+                if "coachReview" in w and not isinstance(w["coachReview"], list):
+                    errors.append(f"{wid}: coachReview must be a list of {{text, at, by}} entries.")
                 if w.get("steps") not in (None, []):
                     from tools import workout_steps
                     try:
@@ -312,6 +334,59 @@ def normalize_plan(plan: dict) -> dict:
 
 # ── EDIT OPERATIONS ───────────────────────────────────────────────────────────
 
+def clean_tags(value, what="tags") -> list[str] | None:
+    """A workout's tags as a tidy list: trimmed, whitespace collapsed, no
+    case-insensitive duplicates (the first spelling wins). None/[] → None
+    (the field is removed)."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise PlanError(f"{what} must be a list of short text labels, e.g. [\"25m\", \"AE2\"].")
+    out, seen = [], set()
+    for item in value:
+        if not isinstance(item, str):
+            raise PlanError(f"Every entry in {what} must be text.")
+        tag = " ".join(item.split())
+        if not tag:
+            continue
+        if len(tag) > MAX_TAG_LENGTH:
+            raise PlanError(f"Tag {tag[:20]!r}… is {len(tag)} characters (max {MAX_TAG_LENGTH}).")
+        if tag.casefold() in seen:
+            continue
+        seen.add(tag.casefold())
+        out.append(tag)
+    if len(out) > MAX_TAGS:
+        raise PlanError(f"A workout takes at most {MAX_TAGS} tags (got {len(out)}).")
+    return out or None
+
+
+def clean_key_sessions(value, what="keySessions") -> list[str]:
+    """A week's key sessions: workout ids or short free text, in order."""
+    if not isinstance(value, list):
+        raise PlanError(f"{what} must be a list of workout ids or short text lines.")
+    out = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise PlanError(f"Every entry in {what} must be non-empty text (a workout id or a short line).")
+        text = " ".join(item.split())
+        if len(text) > MAX_KEY_SESSION_LENGTH:
+            raise PlanError(f"A key session is {len(text)} characters (max {MAX_KEY_SESSION_LENGTH}).")
+        out.append(text)
+    if len(out) > MAX_KEY_SESSIONS:
+        raise PlanError(f"A week takes at most {MAX_KEY_SESSIONS} key sessions (got {len(out)}).")
+    return out
+
+
+def _review_entry(text, by="coach", at=None) -> dict:
+    text = str(text or "").strip()
+    if not text:
+        raise PlanError("A coach review needs text.")
+    if len(text) > MAX_REVIEW_LENGTH:
+        raise PlanError(f"A coach review is {len(text)} characters (max {MAX_REVIEW_LENGTH}) — "
+                        "keep it to a few sentences.")
+    return {"text": text, "by": by, "at": at or datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
 def _clean_workout_fields(fields: dict, *, adding: bool, sport: str | None = None) -> dict:
     """``sport`` is the workout's current sport (an edit), for its steps."""
     if not isinstance(fields, dict):
@@ -319,6 +394,12 @@ def _clean_workout_fields(fields: dict, *, adding: bool, sport: str | None = Non
     fields = dict(fields)
     fields.pop("id", None)
     fields.pop("completed", None)  # completion is tracked separately
+    if "coachReview" in fields:
+        raise PlanError("coachReview can't be set directly — use add_coach_review / remove_coach_review.")
+    if "tags" in fields:
+        fields["tags"] = clean_tags(fields["tags"])
+    if fields.get("purposeMet") is not None and not isinstance(fields["purposeMet"], bool):
+        raise PlanError("purposeMet must be true (met), false (not met) or null (not reviewed yet).")
     if "sport" in fields or adding:
         sport = fields.get("sport")
         if sport not in SPORTS:
@@ -338,7 +419,7 @@ def _clean_workout_fields(fields: dict, *, adding: bool, sport: str | None = Non
             if value is not None and (not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0):
                 raise PlanError(f"{key} must be a non-negative number.")
             fields[key] = _tidy(value, 2) if value is not None else None
-    for key in ("name", "type", "description", "keyTargets", "humanReadable", "primaryZone"):
+    for key in ("name", "type", "description", "keyTargets", "humanReadable", "primaryZone", "purpose", "cues"):
         if key in fields and fields[key] is not None and not isinstance(fields[key], str):
             raise PlanError(f"{key} must be text.")
     check_ftp_tokens(fields.get("humanReadable"), "humanReadable")
@@ -351,6 +432,17 @@ def _clean_workout_fields(fields: dict, *, adding: bool, sport: str | None = Non
     if fields.get("startTime") not in (None, ""):
         fields["startTime"] = parse_clock(fields["startTime"], "startTime")
     return fields
+
+
+def _budget_warnings(workout: dict) -> list[dict]:
+    """Soft-limit warnings for the coach-notes fields of one workout."""
+    out = []
+    for field, budget in FIELD_BUDGETS.items():
+        text = workout.get(field)
+        if isinstance(text, str) and len(text) > budget:
+            out.append({"path": f"{workout.get('id')}.{field}",
+                        "message": f"{len(text)} characters (budget {budget}) — saved, but trim it if it can be shorter."})
+    return out
 
 
 def _apply_fields(workout: dict, fields: dict) -> None:
@@ -369,7 +461,7 @@ def _op_add_workout(plan, op):
     _apply_fields(workout, fields)
     workout["completed"] = False
     entry["workouts"].append(workout)
-    return f"Added {_describe(workout)} on {_short(day)}", workout["id"]
+    return f"Added {_describe(workout)} on {_short(day)}", workout["id"], _budget_warnings(workout)
 
 
 def _op_update_workout(plan, op):
@@ -391,7 +483,42 @@ def _op_update_workout(plan, op):
         moved = _op_move_workout(plan, {"workout_id": workout["id"], "date": new_date})
         if moved:
             message += " and " + moved[0][0].lower() + moved[0][1:]
+    return message, workout["id"], _budget_warnings(workout)
+
+
+def _op_add_coach_review(plan, op):
+    """Append a dated coach comment to a workout (shown under "Coach review").
+    ``purpose_met`` true/false records whether the workout's purpose was met."""
+    _, _, workout = _require_workout(plan, op.get("workout_id"))
+    entry = _review_entry(op.get("text"))
+    reviews = workout.setdefault("coachReview", [])
+    if len(reviews) >= MAX_REVIEWS:
+        raise PlanError(f"{workout['id']} already has {MAX_REVIEWS} reviews — remove an old one first.")
+    reviews.append(entry)
+    message = f"Added a coach review to {_describe(workout)}"
+    met = op.get("purpose_met")
+    if met is not None:
+        if not isinstance(met, bool):
+            raise PlanError("purpose_met must be true or false.")
+        if not str(workout.get("purpose") or "").strip():
+            raise PlanError(f"{workout['id']} has no purpose yet — set one (update_workout, field "
+                            "'purpose') before marking it met or not met.")
+        workout["purposeMet"] = met
+        message += " (purpose met)" if met else " (purpose not met)"
     return message, workout["id"]
+
+
+def _op_remove_coach_review(plan, op):
+    _, _, workout = _require_workout(plan, op.get("workout_id"))
+    reviews = workout.get("coachReview") or []
+    index = op.get("index", -1)
+    if not isinstance(index, int) or isinstance(index, bool) or not -len(reviews) <= index < len(reviews):
+        raise PlanError(f"index must point at one of the {len(reviews)} review(s) "
+                        "(0 is the oldest, -1 the latest).")
+    reviews.pop(index)
+    if not reviews:
+        workout.pop("coachReview", None)
+    return f"Removed a coach review from {_describe(workout)}", workout["id"]
 
 
 def _op_move_workout(plan, op):
@@ -428,7 +555,16 @@ def _op_update_week(plan, op):
         kind = WEEK_FIELDS.get(key)
         if kind and (not isinstance(value, kind) or (kind != bool and isinstance(value, bool))):
             raise PlanError(f"Week field {key!r} has the wrong type.")
-        week[key] = value
+        if key == "keySessions":
+            value = clean_key_sessions(value) or None
+        elif key == "theme":
+            value = " ".join(value.split())
+            if len(value) > MAX_THEME_LENGTH:
+                raise PlanError(f"theme is {len(value)} characters (max {MAX_THEME_LENGTH}).")
+        if value in (None, ""):
+            week.pop(key, None)
+        else:
+            week[key] = value
     return f"Updated week {number} ({', '.join(fields)})", None
 
 
@@ -680,6 +816,8 @@ OPERATIONS = {
     "update_workout": _op_update_workout,
     "move_workout": _op_move_workout,
     "remove_workout": _op_remove_workout,
+    "add_coach_review": _op_add_coach_review,
+    "remove_coach_review": _op_remove_coach_review,
     "update_week": _op_update_week,
     "replace_week": _op_replace_week,
     "set_zones": _op_set_zones,

@@ -46,13 +46,13 @@ def test_warnings_for_budgets_phases_and_dates():
     plan = sample_plan()
     plan["phases"] = []
     plan["meta"].pop("totalWeeks")
-    plan["weeks"][0]["days"][0]["workouts"][0]["keyTargets"] = "x" * 121
+    plan["weeks"][0]["days"][0]["workouts"][0]["keyTargets"] = "x" * 241
     plan["weeks"][0]["days"][0]["date"] = "2026-09-30"
     errors, warnings = plan_doc.validate_plan(plan)
     assert errors == []
     text = " ".join(warnings)
     assert "phases" in text and "meta.totalWeeks" in text
-    assert "keyTargets is 121 characters" in text
+    assert "keyTargets is 241 characters" in text
     assert "outside the week" in text
 
 
@@ -264,3 +264,130 @@ def test_current_week_number():
     assert plan_doc.current_week_number(plan, date(2026, 9, 23)) == 2
     assert plan_doc.current_week_number(plan, date(2026, 9, 1)) == 1
     assert plan_doc.current_week_number(plan, date(2027, 1, 1)) is None
+
+
+# ── TAGS, PURPOSE, COACH REVIEW, WEEK BRIEF ───────────────────────────────────
+
+def _apply(plan, *ops):
+    return plan_doc.apply_operations(plan, list(ops))
+
+
+def test_tags_are_trimmed_deduped_and_removable():
+    plan, _, _ = _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-mon-swim",
+                                          "fields": {"tags": ["  25m ", "AE2", "ae2", "Bob   MacQuarrie", ""]}})
+    assert plan_doc.find_workout(plan, "w1-mon-swim")[2]["tags"] == ["25m", "AE2", "Bob MacQuarrie"]
+    plan, _, _ = _apply(plan, {"op": "update_workout", "workout_id": "w1-mon-swim", "fields": {"tags": []}})
+    assert "tags" not in plan_doc.find_workout(plan, "w1-mon-swim")[2]
+
+
+@pytest.mark.parametrize("tags, message", [
+    ("AE2", "list"),
+    ([1], "text"),
+    (["x" * 41], "max 40"),
+    ([f"t{i}" for i in range(9)], "at most 8"),
+])
+def test_bad_tags_are_rejected(tags, message):
+    with pytest.raises(PlanError, match=message):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-mon-swim", "fields": {"tags": tags}})
+
+
+def test_add_workout_takes_purpose_cues_and_tags():
+    plan, _, _ = _apply(sample_plan(), {"op": "add_workout", "date": "2026-09-16", "workout": {
+        "sport": "swim", "name": "Aerobic", "purpose": "Build base", "cues": "Long reach",
+        "tags": ["25m"], "purposeMet": None}})
+    w = plan_doc.find_workout(plan, "w1-wed-swim")[2]
+    assert (w["purpose"], w["cues"], w["tags"]) == ("Build base", "Long reach", ["25m"])
+    assert "purposeMet" not in w
+
+
+def test_purpose_met_must_be_a_boolean_and_false_is_kept():
+    with pytest.raises(PlanError, match="purposeMet"):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-mon-swim",
+                               "fields": {"purposeMet": "yes"}})
+    plan, _, _ = _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-mon-swim",
+                                          "fields": {"purpose": "Base", "purposeMet": False}})
+    assert plan_doc.find_workout(plan, "w1-mon-swim")[2]["purposeMet"] is False
+    plan, _, _ = _apply(plan, {"op": "update_workout", "workout_id": "w1-mon-swim", "fields": {"purposeMet": None}})
+    assert "purposeMet" not in plan_doc.find_workout(plan, "w1-mon-swim")[2]
+
+
+def test_add_coach_review_stamps_time_and_records_purpose_met():
+    plan, messages, touched = _apply(
+        sample_plan(),
+        {"op": "update_workout", "workout_id": "w1-mon-swim", "fields": {"purpose": "Base"}},
+        {"op": "add_coach_review", "workout_id": "w1-mon-swim", "text": "  Even splits.  ", "purpose_met": True})
+    w = plan_doc.find_workout(plan, "w1-mon-swim")[2]
+    assert w["purposeMet"] is True
+    (entry,) = w["coachReview"]
+    assert entry["text"] == "Even splits." and entry["by"] == "coach" and entry["at"].endswith("+00:00")
+    assert "purpose met" in messages[-1] and touched[-1] == "w1-mon-swim"
+
+
+def test_purpose_met_needs_a_purpose_and_reviews_have_limits():
+    with pytest.raises(PlanError, match="no purpose"):
+        _apply(sample_plan(), {"op": "add_coach_review", "workout_id": "w1-mon-swim", "text": "ok", "purpose_met": True})
+    with pytest.raises(PlanError, match="needs text"):
+        _apply(sample_plan(), {"op": "add_coach_review", "workout_id": "w1-mon-swim", "text": "  "})
+    with pytest.raises(PlanError, match="max 800"):
+        _apply(sample_plan(), {"op": "add_coach_review", "workout_id": "w1-mon-swim", "text": "x" * 801})
+    with pytest.raises(PlanError, match="add_coach_review"):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-mon-swim",
+                               "fields": {"coachReview": [{"text": "sneaky"}]}})
+
+
+def test_remove_coach_review_by_index():
+    ops = [{"op": "add_coach_review", "workout_id": "w1-mon-swim", "text": t} for t in ("one", "two")]
+    plan, _, _ = _apply(sample_plan(), *ops)
+    plan, _, _ = _apply(plan, {"op": "remove_coach_review", "workout_id": "w1-mon-swim", "index": 0})
+    assert [r["text"] for r in plan_doc.find_workout(plan, "w1-mon-swim")[2]["coachReview"]] == ["two"]
+    plan, _, _ = _apply(plan, {"op": "remove_coach_review", "workout_id": "w1-mon-swim"})
+    assert "coachReview" not in plan_doc.find_workout(plan, "w1-mon-swim")[2]
+    with pytest.raises(PlanError, match="index"):
+        _apply(plan, {"op": "remove_coach_review", "workout_id": "w1-mon-swim", "index": 0})
+
+
+def test_update_week_theme_and_key_sessions():
+    plan, _, _ = _apply(sample_plan(), {"op": "update_week", "week_number": 1, "fields": {
+        "theme": "  Raise bike power ", "keySessions": ["w1-thu-bike", "Sat long ride"]}})
+    week = plan["weeks"][0]
+    assert week["theme"] == "Raise bike power" and week["keySessions"] == ["w1-thu-bike", "Sat long ride"]
+    plan, _, _ = _apply(plan, {"op": "update_week", "week_number": 1, "fields": {"keySessions": [], "theme": None}})
+    assert "keySessions" not in plan["weeks"][0] and "theme" not in plan["weeks"][0]
+    with pytest.raises(PlanError, match="at most 6"):
+        _apply(plan, {"op": "update_week", "week_number": 1, "fields": {"keySessions": ["a"] * 7}})
+    with pytest.raises(PlanError, match="wrong type"):
+        _apply(plan, {"op": "update_week", "week_number": 1, "fields": {"keySessions": "Sat"}})
+
+
+def test_over_budget_coach_notes_come_back_as_warnings():
+    warnings = []
+    plan_doc.apply_operations(sample_plan(), [{"op": "update_workout", "workout_id": "w1-mon-swim",
+                                               "fields": {"purpose": "x" * 241}}], warnings)
+    assert warnings and "budget 240" in warnings[0]["message"]
+
+
+@pytest.mark.parametrize("mutate, message", [
+    (lambda w: w.update(tags="AE2"), "tags"),
+    (lambda w: w.update(tags=["x" * 41]), "Tag"),
+    (lambda w: w.update(purposeMet="yes"), "purposeMet"),
+    (lambda w: w.update(coachReview="nice"), "coachReview"),
+])
+def test_uploaded_plan_rejects_bad_new_fields(mutate, message):
+    plan = sample_plan()
+    mutate(plan["weeks"][0]["days"][0]["workouts"][0])
+    errors, _ = plan_doc.validate_plan(plan)
+    assert any(message in e for e in errors), errors
+
+
+def test_valid_new_fields_pass_and_reach_the_read_view():
+    from tools import plan_service
+    plan = sample_plan()
+    w = plan["weeks"][0]["days"][0]["workouts"][0]
+    w.update(tags=["25m", "AE2"], purpose="Aerobic base.", purposeMet=True, cues="Relax",
+             coachReview=[{"text": "Good.", "by": "coach", "at": "2026-01-01T00:00:00+00:00"}])
+    plan["weeks"][0].update(theme="Build volume", keySessions=[w["id"]])
+    errors, _ = plan_doc.validate_plan(plan)
+    assert errors == []
+    view = plan_service._workout_view(w, {"date": "2026-01-05"}, {}, True)
+    assert view["tags"] == ["25m", "AE2"] and view["purpose"] == "Aerobic base." and view["purposeMet"] is True
+    assert view["cues"] == "Relax" and view["coachReview"][0]["text"] == "Good."

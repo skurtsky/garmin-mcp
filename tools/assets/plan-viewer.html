@@ -930,6 +930,47 @@ function resolveTokens(text) {
   });
 }
 
+/* Week brief: the week's theme and its key sessions (ids resolved to the
+   workout so a rename follows). Falls back to the plain focus note when the
+   coach has set neither. */
+function weekBriefHtml(wk, focus) {
+  const theme = wk.theme || '';
+  const keys = (wk.keySessions || []).map(k => {
+    const hit = workoutById(k);
+    return hit ? { id: hit.wo.id, text: hit.wo.name || k, sport: hit.wo.sport } : { text: String(k) };
+  });
+  if (!theme && !keys.length) return '';
+  const phase = phaseForWeek(wk.weekNumber);
+  return '<div class="card week-brief"><div class="week-brief-head"><span class="t-kick">Week brief</span>'
+    + (wk.isRecoveryWeek ? '<span class="tag tag-accent-2">Recovery week</span>' : (phase && phase.name ? '<span class="tag">' + esc(phase.name) + ' · wk ' + esc(wk.weekNumber) + '</span>' : '')) + '</div>'
+    + (theme ? '<div class="wb-row"><div class="wb-k">Theme</div><div class="wb-v">' + esc(theme) + '</div></div>' : '')
+    + (keys.length ? '<div class="wb-row"><div class="wb-k">Key sessions</div><div class="wb-v"><ul class="wb-keys">'
+        + keys.map(k => '<li' + (k.id ? ' data-open="' + esc(k.id) + '" class="wb-link"' : '') + '>'
+            + (k.sport ? '<span class="wb-dot" style="background:' + (SPORT_COLORS[k.sport] || SPORT_COLORS.rest) + '"></span>' : '') + esc(k.text) + '</li>').join('')
+        + '</ul></div></div>' : '')
+    + '</div>';
+}
+/* Volume by sport: a stacked share bar and a table of sessions, time, distance. */
+function weekVolumeHtml(workouts) {
+  const by = {};
+  workouts.forEach(w => {
+    const r = by[w.sport] = by[w.sport] || { sport: w.sport, n: 0, min: 0, km: 0 };
+    r.n += 1; r.min += Number(w.durationMinutes) || 0;
+    r.km += w.distanceKm != null ? Number(w.distanceKm) : (Number(w.distanceMeters) || 0) / 1000;
+  });
+  const rows = Object.values(by).sort((a, b) => b.min - a.min);
+  const total = rows.reduce((t, r) => t + r.min, 0);
+  if (!rows.length || !total) return '';
+  const share = r => Math.round(r.min / total * 100);
+  const color = r => SPORT_COLORS[r.sport] || SPORT_COLORS.rest;
+  return '<div class="card week-vol"><div class="week-brief-head"><span class="t-kick">Volume by sport</span><span class="wb-total">' + esc(fmtDuration(total)) + '</span></div>'
+    + '<div class="vol-bar" role="img" aria-label="Share of time by sport">' + rows.map(r => '<span style="flex-grow:' + r.min + ';background:' + color(r) + '"></span>').join('') + '</div>'
+    + '<table class="vol-table"><thead><tr><th>Sport</th><th>Sessions</th><th>Time</th><th>Distance</th><th>Share</th></tr></thead><tbody>'
+    + rows.map(r => '<tr><td><span class="wb-dot" style="background:' + color(r) + '"></span>' + esc(capitalize(r.sport)) + '</td><td>' + r.n + '</td><td>' + esc(fmtDuration(r.min)) + '</td><td>'
+        + (r.km ? esc(Math.round(r.km * 10) / 10) + ' km' : '–') + '</td><td>' + share(r) + '%</td></tr>').join('')
+    + '</tbody></table></div>';
+}
+
 function planTab() {
   const month = isMonth();
   const n = month ? weekForMonth(state.monthKey) : state.planWeekNumber;
@@ -992,7 +1033,9 @@ function planTab() {
   if (month) return h + monthNeighborNote(state.monthKey) + monthGridHtml();
 
   const focus = wk ? wk.focus : phase.focus;
-  if (!month && (focus || (wk && wk.isRecoveryWeek))) {
+  const brief = wk ? weekBriefHtml(wk, focus) : '';
+  if (brief) h += brief;
+  else if (focus || (wk && wk.isRecoveryWeek)) {
     h += '<div class="plan-focus" data-act="toggle-focus" title="Show the whole note">' + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2" style="margin-right:8px;">Recovery week</span>' : '')
       + esc(focus || '') + '</div>';
   }
@@ -1020,6 +1063,7 @@ function planTab() {
       + (workouts.length ? workouts.map(w => workoutCard(w, day.date)).join('') : '<div class="rest-slot" data-day-date="' + esc(day.date) + '">Rest day</div>')
     + '</div>';
   }).join('') + '</div>';
+  h += weekVolumeHtml(weekWorkouts);
   if (n >= last) h += neighborCardHtml('next');
   if (n <= first) h += neighborCardHtml('prev');
   return h;
@@ -1638,7 +1682,7 @@ function workoutDistance(w, sport) {
   if (w.distanceKm != null) return w.distanceKm;
   return w.distanceMeters != null ? +(w.distanceMeters / 1000).toFixed(2) : '';
 }
-const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable','startTime','steps'];
+const FORM_FIELDS = ['id','completed','name','sport','type','durationMinutes','distanceKm','distanceMeters','primaryZone','description','keyTargets','humanReadable','startTime','steps','cues','purpose','tags','purposeMet','coachReview'];
 const STEP_SPORTS = ['run', 'bike', 'swim', 'strength'];
 
 /* ── Structured steps in the editor ──
@@ -1820,7 +1864,8 @@ function draftFor(w, date, mode) {
   if (mode === 'duplicate') Object.keys(w).forEach(k => { if (!FORM_FIELDS.includes(k)) extra[k] = w[k]; });
   return { mode, date, name: w.name || '', sport, type: w.type || '', durationMinutes: w.durationMinutes ?? '',
     distance: dist, distanceOrig: dist, sportOrig: sport, primaryZone: w.primaryZone || '', startTime: w.startTime || '',
-    description: w.description || '', keyTargets: w.keyTargets || '', humanReadable: w.humanReadable || '', extra,
+    description: w.description || '', keyTargets: w.keyTargets || '', cues: w.cues || '', purpose: w.purpose || '',
+    tags: Array.isArray(w.tags) ? w.tags.slice() : [], tagInput: '', humanReadable: w.humanReadable || '', extra,
     steps: (w.steps || []).map(s => stepToUI(s, sport)), preview: null };
 }
 const EDIT_TITLES = { add:'Add workout', duplicate:'Duplicate workout', edit:'Edit workout' };
@@ -1974,9 +2019,15 @@ function editModal() {
           + field('Primary zone', 'primaryZone', 'type="text" placeholder="e.g. Zone 2"')
         + '</section>'
         + '<section class="wd-card we-form" aria-label="Coach notes">'
-          + area('Description', 'description', 2, 'maxlength="120"')
-          + area('Key targets', 'keyTargets', 2, 'maxlength="120" placeholder="Separate with ; for a list"')
+          + area('Summary', 'description', 3, 'maxlength="400"')
+          + area('Key targets', 'keyTargets', 3, 'maxlength="240" placeholder="Separate with ; for a list"')
+          + area('Cues', 'cues', 2, 'maxlength="200" placeholder="Separate with ; for a list"')
         + '</section>'
+        + '<section class="wd-card we-form" aria-label="Purpose">'
+          + area('Purpose', 'purpose', 2, 'maxlength="240" placeholder="What this session is for"')
+          + '<div class="we-hint">Whether it was met is set by the coach when a review is added.</div>'
+        + '</section>'
+        + '<section class="wd-card we-form" aria-label="Tags">' + tagEditor(d) + '</section>'
         + (stepSport ? '<details class="wd-card wd-orig we-text"' + (d.steps.length ? '' : ' open') + '><summary class="wd-h">Text version</summary>'
           + '<div class="we-hint">Shown in the calendar, the PDF and anywhere steps aren\'t. Zone tokens like {{bike-ftp:88-92}} follow your thresholds.</div>'
           + area('', 'humanReadable', 7, 'aria-label="Text version"') + '</details>' : '')
@@ -1990,10 +2041,23 @@ function editModal() {
 const COMMON_EXERCISES = ['Barbell Back Squat', 'Goblet Squat', 'Romanian Deadlift', 'Barbell Deadlift', 'Bulgarian Split Squat',
   'Walking Lunge', 'Barbell Bench Press', 'Dumbbell Bench Press', 'Push Up', 'Pull Up', 'Bent Over Row', 'Dumbbell Row',
   'Overhead Press', 'Hip Thrust', 'Glute Bridge', 'Calf Raise', 'Step Up', 'Plank', 'Side Plank', 'Dead Bug', 'Bird Dog'];
+/* Tags are chips; "Add tag" lives here, on the edit page, only. */
+function tagEditor(d) {
+  return '<div class="field"><label for="we-tagInput">Tags</label><div class="we-tags">'
+    + (d.tags || []).map((t, i) => '<span class="wd-chip wd-tag">' + esc(t) + '<button type="button" class="we-tag-x" data-act="remove-tag" data-i="' + i + '" aria-label="Remove tag ' + esc(t) + '">' + icon('x', 12) + '</button></span>').join('')
+    + '</div><div class="we-tag-add"><input class="input" id="we-tagInput" data-edit-field="tagInput" type="text" maxlength="40" placeholder="e.g. AE2, 25m"'
+    + ' value="' + esc(d.tagInput || '') + '"><button type="button" class="wd-btn" data-act="add-tag"' + ((d.tags || []).length >= 8 ? ' disabled' : '') + '>Add tag</button></div></div>';
+}
+function addDraftTag(d) {
+  const t = String(d.tagInput || '').trim();
+  if (t && d.tags.length < 8 && !d.tags.some(x => x.toLowerCase() === t.toLowerCase())) d.tags.push(t);
+  d.tagInput = '';
+}
 function draftToFields(d) {
   const num = v => (v === '' || v == null) ? null : Number(v);
   const fields = { name: d.name.trim(), sport: d.sport, type: d.type.trim(), durationMinutes: num(d.durationMinutes),
     primaryZone: d.primaryZone.trim(), description: d.description.trim(), keyTargets: d.keyTargets.trim(), humanReadable: d.humanReadable,
+    cues: d.cues.trim(), purpose: d.purpose.trim(), tags: (d.tags || []).length ? d.tags : null,
     startTime: d.startTime || null };
   if (d.mode !== 'edit' || String(d.distance) !== String(d.distanceOrig) || d.sport !== d.sportOrig) {
     const dist = num(d.distance);
@@ -2317,6 +2381,12 @@ document.getElementById('app').addEventListener('click', e => {
     state.editDraft = draftFor({ sport: 'run' }, act.getAttribute('data-date'), 'add');
     return render();
   }
+  if ((a === 'add-tag' || a === 'remove-tag') && state.editDraft) {
+    if (a === 'add-tag') addDraftTag(state.editDraft); else state.editDraft.tags.splice(Number(act.getAttribute('data-i')), 1);
+    render();
+    const inp = document.getElementById('we-tagInput'); if (inp && a === 'add-tag') inp.focus();
+    return;
+  }
   if (a === 'cancel-edit') { state.editId = null; state.editDraft = null; return render(); }
   if (a === 'save-edit') {
     const d = state.editDraft;
@@ -2368,6 +2438,9 @@ document.getElementById('app').addEventListener('scroll', e => {
 document.getElementById('app').addEventListener('focusin', e => {
   const row = state.editDraft && e.target.closest && e.target.closest('[data-we-row]');
   if (row) weSelect(row.getAttribute('data-we-row'), false);
+});
+document.getElementById('app').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.id === 'we-tagInput' && state.editDraft) { e.preventDefault(); addDraftTag(state.editDraft); render(); const i = document.getElementById('we-tagInput'); if (i) i.focus(); }
 });
 document.getElementById('app').addEventListener('input', e => {
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
@@ -2764,6 +2837,31 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .month-more { font-size:11px; color:var(--color-neutral-500); padding-left:4px; width:fit-content; }
 .month-more:hover { color:var(--color-accent-300); text-decoration:underline; }
 .month-rest { font-size:11px; color:var(--color-neutral-600); padding-left:2px; }
+
+.week-brief, .week-vol { margin:0 24px 16px; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
+.week-brief-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.wb-row { display:grid; grid-template-columns:96px minmax(0,1fr); gap:12px; font-size:13px; }
+.wb-k { color:var(--color-neutral-500); }
+.wb-v { color:var(--color-text); }
+.wb-keys { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:4px; }
+.wb-link { cursor:pointer; }
+.wb-link:hover { color:var(--color-accent); }
+.wb-dot { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:8px; }
+.wb-total { font-size:13px; color:var(--color-neutral-400); }
+.vol-bar { display:flex; height:10px; gap:2px; border-radius:5px; overflow:hidden; }
+.vol-table { width:100%; border-collapse:collapse; font-size:13px; }
+.vol-table th { text-align:right; font-weight:400; color:var(--color-neutral-500); padding:4px 6px; }
+.vol-table td { text-align:right; padding:6px; border-top:1px solid var(--color-divider-soft); }
+.vol-table th:first-child, .vol-table td:first-child { text-align:left; }
+@media (max-width: 899px) {
+  .week-brief, .week-vol { margin:0 18px 14px; }
+  .wb-row { grid-template-columns:1fr; gap:2px; }
+}
+.we-tags { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+.we-tags .wd-tag { display:inline-flex; align-items:center; gap:6px; padding:3px 6px 3px 12px; border-radius:999px; background:var(--color-neutral-800); font-size:12px; }
+.we-tag-x { display:grid; place-items:center; width:18px; height:18px; padding:0; border:0; border-radius:50%; background:transparent; color:inherit; cursor:pointer; }
+.we-tag-x:hover { background:var(--color-neutral-700); }
+.we-tag-add { display:flex; gap:8px; }
 .view-seg { margin-right:6px; }
 .view-seg .seg-opt { background:transparent; border:0; color:inherit; font:inherit; font-size:13px; }
 .view-seg .seg-opt + .seg-opt { border-left:1px solid var(--color-divider); }

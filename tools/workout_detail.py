@@ -263,7 +263,7 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
         ramp = workout_steps.ramp_svg(b, f"{gid}{i}")
         html += (f'<button type="button" class="wd-bar{" ramp" if ramp else ""}" data-wg-i="{i}" '
                  f'aria-pressed="false" aria-label="{_e(kick)}: {_e(value)}" '
-                 f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(b["note"])}" data-c="{b["fill"]}" '
+                 f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(b["note"])}" data-c="{b["fill"]}" data-r="{_e(b["readout"])}" '
                  f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
                  f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
     total = resolved["total_s"]
@@ -282,11 +282,7 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
           <div class="wd-cardhead"><h3 class="wd-h">Structure</h3>
             <span class="wd-muted">{approx}{_dur(total / 60)} · {n} steps</span>
             <span class="wd-legend" aria-hidden="true">{legend}</span></div>
-          <div class="wd-strip" aria-live="polite" data-hint="{_e(_STRIP_HINT)}">
-            <span class="wd-strip-c" style="background:transparent"></span>
-            <div class="wd-strip-t"><div class="wd-kick wd-k">{_e(_STRIP_HINT)}</div><div class="wd-v"></div></div>
-            <div class="wd-n" hidden></div>
-          </div>
+          <div class="wro"><div class="wro-line" aria-live="polite" data-wro></div></div>
           <div class="wd-plot">
             <div class="wd-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_e(line)}</span></div>
             <div class="wd-bars" role="group" aria-label="Workout steps — select one to see it above">{html}</div>
@@ -437,6 +433,66 @@ def _send_button(w: dict, state: dict, steps, bar: bool) -> str:
             f'{_icon(_WATCH, 22, 1.7)}</button>')
 
 
+_I_CROSS = '<path d="M6 6l12 12M18 6L6 18"></path>'
+_I_CLOCK = '<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>'
+_PURPOSE_MET, _PURPOSE_NOT_MET, _PURPOSE_PENDING = "#7fb87a", "#e0736f", "#d9a441"
+
+
+def _purpose_badge(met) -> str:
+    """Green "Purpose met", red "Not met" or amber "Pending" — the icon and the
+    words carry the meaning too, not just the colour."""
+    if met is True:
+        color, icon, text = _PURPOSE_MET, _I_CHECK, "Purpose met"
+    elif met is False:
+        color, icon, text = _PURPOSE_NOT_MET, _I_CROSS, "Not met"
+    else:
+        color, icon, text = _PURPOSE_PENDING, _I_CLOCK, "Pending"
+    return (f'<span class="wd-badge wd-ink wd-purpose-badge" data-met="{"yes" if met is True else "no" if met is False else "pending"}" '
+            f'style="background:{_tint(color, 18)};{_ink(color)}">{_icon(icon, 14, 2.4)}{text}</span>')
+
+
+def _review_time(iso) -> str:
+    """"Fri Oct 30, 7:42 am" in the athlete's local time."""
+    from tools import local_time
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            return str(iso)[:10]
+        dt = local_time.to_local(dt)
+    except (TypeError, ValueError):
+        return ""
+    return f"{dt:%a %b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M} {'am' if dt.hour < 12 else 'pm'}"
+
+
+def _notes_cards(w: dict) -> str:
+    """The side column's coach cards: notes (summary, key targets, cues), the
+    purpose with its verdict, and the coach's dated review comments."""
+    out = ""
+    description = (w.get("description") or "").strip()
+    targets = [t.strip() for t in re.split(r"[;\n]", w.get("keyTargets") or "") if t.strip()]
+    cues = (w.get("cues") or "").strip()
+    if description or targets or cues:
+        out += ('<section class="wd-card wd-notes" aria-label="Coach notes"><h3 class="wd-h">Coach notes</h3>'
+                + (f'<p>{_e(description)}</p>' if description else "")
+                + (f'<div class="wd-kick">Key targets</div><ul>{"".join(f"<li>{_e(t)}</li>" for t in targets)}</ul>' if targets else "")
+                + (f'<div class="wd-kick">Cues</div><p>{_e(cues)}</p>' if cues else "")
+                + "</section>")
+    purpose = (w.get("purpose") or "").strip()
+    if purpose:
+        out += ('<section class="wd-card wd-purpose" aria-label="Purpose"><div class="wd-cardhead wd-purpose-head">'
+                f'<h3 class="wd-h">Purpose</h3>{_purpose_badge(w.get("purposeMet"))}</div><p>{_e(purpose)}</p></section>')
+    reviews = [r for r in w.get("coachReview") or [] if isinstance(r, dict) and str(r.get("text") or "").strip()]
+    if reviews:
+        rows = "".join(
+            f'<div class="wd-rev"><span class="wd-rev-av" aria-hidden="true">C</span><div><div class="wd-rev-meta">'
+            f'<b>Coach</b>{" · " + _e(_review_time(r.get("at"))) if _review_time(r.get("at")) else ""}</div>'
+            f'<div class="wd-rev-text">{_e(r["text"])}</div></div></div>'
+            for r in reviews)
+        out += ('<section class="wd-card wd-review" aria-label="Coach review"><div class="wd-cardhead wd-purpose-head">'
+                f'<h3 class="wd-h">Coach review</h3><span class="wd-badge wd-badge-mcp">Added via MCP</span></div>{rows}</section>')
+    return out
+
+
 def render(row: dict, workout_id: str, token: str | None = None) -> dict:
     """{"html", "id", "prev", "next"} for one workout of a stored plan row.
     LookupError if the plan has no such workout."""
@@ -476,6 +532,8 @@ def render(row: dict, workout_id: str, token: str | None = None) -> dict:
         chips.append(f'<span class="wd-chip wd-ink" style="background:{_tint(dc)};{_ink(dc)};box-shadow:none">{_e(str(w["difficulty"]).capitalize())}</span>')
     if w.get("trainingEffect"):
         chips.append(f'<span class="wd-chip">{_e(w["trainingEffect"])}</span>')
+    for tag in w.get("tags") or []:
+        chips.append(f'<span class="wd-chip wd-tag">{_e(tag)}</span>')
     badge = (f'<span class="wd-badge wd-ink" style="background:{_tint(_DONE)};{_ink(_DONE)}">{_icon(_I_CHECK, 14, 2.4)}Done</span>' if done
              else '<span class="wd-badge wd-badge-skip">Skipped</span>' if skipped else "")
 
@@ -537,14 +595,7 @@ def render(row: dict, workout_id: str, token: str | None = None) -> dict:
         main = '<section class="wd-card"><p class="wd-muted" style="margin:0">No details for this workout.</p></section>'
 
     # Side column
-    targets = [t.strip() for t in re.split(r"[;\n]", w.get("keyTargets") or "") if t.strip()]
-    notes = ""
-    if w.get("description") or targets:
-        notes = ('<section class="wd-card wd-notes"><h3 class="wd-h">Coach notes</h3>'
-                 + (f'<p>{_e(w["description"])}</p>' if w.get("description") else "")
-                 + (f'<div class="wd-kick">Key targets</div><ul>{"".join(f"<li>{_e(t)}</li>" for t in targets)}</ul>' if targets else "")
-                 + "</section>")
-    side = notes + _zones_card(plan, sport, steps, w.get("primaryZone"))
+    side = _notes_cards(w) + _zones_card(plan, sport, steps, w.get("primaryZone"))
     if text and steps:
         side += (f'<details class="wd-card wd-orig"><summary class="wd-h">Coach&rsquo;s original text</summary>'
                  f'<div class="wd-text">{_e(text)}</div></details>')
@@ -700,12 +751,6 @@ html.wd-lock, html.wd-lock body { overflow:hidden; }
 .wd-legend { margin-left:auto; display:flex; gap:10px; font-size:11px; color:var(--color-neutral-500); }
 .wd-legend span { display:flex; align-items:center; gap:4px; }
 .wd-legend i { width:8px; height:8px; border-radius:2px; }
-.wd-strip { display:flex; align-items:center; gap:14px; min-height:56px; padding:10px 14px; border-radius:10px; background:var(--wd-inset);
-  box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
-.wd-strip-c { width:8px; align-self:stretch; border-radius:3px; flex:0 0 auto; }
-.wd-strip-t { flex:1; min-width:0; }
-.wd-v { font-size:16px; font-weight:500; }
-.wd-n { font-size:13px; color:var(--color-neutral-300); max-width:260px; text-align:right; }
 .wd-plot { position:relative; height:200px; border-bottom:1px solid var(--color-neutral-800); }
 .wd-bars { position:absolute; inset:0; display:flex; align-items:flex-end; gap:3px; }
 .wd-bar { flex-basis:0; min-width:5px; padding:0; border:0; border-radius:4px 4px 0 0; cursor:pointer; opacity:.55; transition:opacity .12s ease; }
@@ -756,6 +801,19 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
 .wd-set small { font-size:11px; font-weight:400; color:var(--color-neutral-500); }
 /* side */
 .wd-notes { display:flex; flex-direction:column; gap:8px; }
+.wd-tag { border-radius:999px; padding:3px 12px; background:var(--color-neutral-800); box-shadow:none; color:var(--color-text); }
+.wd-notes .wd-kick { margin-top:4px; }
+.wd-purpose p, .wd-rev-text { margin:0; font-size:14px; }
+.wd-purpose-head { margin-bottom:10px; align-items:center; justify-content:space-between; }
+.wd-badge-mcp { background:var(--color-accent-2-800, #423e5d); color:var(--color-accent-2-100, #f5f4ff); font-size:11px; padding:3px 10px; border-radius:6px; }
+.wd-review { display:flex; flex-direction:column; gap:14px; }
+.wd-review .wd-cardhead { margin-bottom:0; }
+.wd-rev { display:flex; gap:12px; }
+.wd-rev + .wd-rev { padding-top:14px; border-top:1px solid var(--wd-line); }
+.wd-rev-av { flex:0 0 28px; width:28px; height:28px; border-radius:50%; display:grid; place-items:center; font-size:12px; font-weight:600;
+  background:var(--color-accent-800, #423a6a); color:var(--color-accent-100, #f5f4ff); }
+.wd-rev-meta { font-size:12px; color:var(--color-neutral-400); margin-bottom:3px; }
+.wd-rev-meta b { font-weight:500; color:var(--color-text); }
 .wd-notes p { margin:0; font-size:14px; color:var(--color-text); }
 .wd-notes ul { margin:0; padding-left:18px; font-size:13px; color:var(--color-text); display:flex; flex-direction:column; gap:3px; }
 .wd-orig summary { cursor:pointer; list-style:none; }
@@ -832,8 +890,6 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
   .wd-plot { height:120px; }
   .wd-bars { gap:2px; }
   .wd-n { max-width:none; text-align:left; }
-  .wd-strip { flex-wrap:wrap; }
-  .wd-strip .wd-n { flex-basis:100%; padding-left:22px; margin-top:-6px; }
   .wd-steps { padding:6px; }
   .wd-thead { display:none; }
   .wd-row { grid-template-columns:minmax(0,1fr) auto; grid-template-areas:"s t" "g t" "c c"; row-gap:0; min-height:48px; font-size:14px; }
@@ -848,6 +904,8 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
   .wd-done-top .wd-link { display:none; }
 }
 """
+WD_CSS += workout_steps.READOUT_CSS
+
 
 WD_JS = r"""
 (function () {
@@ -968,12 +1026,9 @@ WD_JS = r"""
       x.classList.remove('on');
       if (x.classList.contains('wd-bar')) x.setAttribute('aria-pressed', 'false');
     });
-    if (toggle && wasOn) {      // clicking the selected step again clears it
-      var s0 = panel.querySelector('.wd-strip');
-      s0.querySelector('.wd-k').textContent = s0.getAttribute('data-hint') || '';
-      s0.querySelector('.wd-v').textContent = '';
-      s0.querySelector('.wd-strip-c').style.background = 'transparent';
-      s0.querySelector('.wd-n').hidden = true;
+    var ro = panel.querySelector('[data-wro]');
+    if (toggle && wasOn) {      // clicking the selected step again clears it (the readout hides)
+      if (ro) ro.innerHTML = '';
       return;
     }
     bar.classList.add('on');
@@ -984,13 +1039,7 @@ WD_JS = r"""
       var b = panel.querySelector('.wd-bar[data-wg-i="' + r.getAttribute('data-wg-i') + '"]');
       if (r.getAttribute('data-wg-i') === String(i) || (b && sameStep(b, bar))) r.classList.add('on');
     });
-    var strip = panel.querySelector('.wd-strip');
-    strip.querySelector('.wd-k').textContent = k;
-    strip.querySelector('.wd-v').textContent = bar.getAttribute('data-v');
-    strip.querySelector('.wd-strip-c').style.background = bar.getAttribute('data-c');
-    var note = strip.querySelector('.wd-n');
-    note.textContent = bar.getAttribute('data-n');
-    note.hidden = !bar.getAttribute('data-n');
+    if (ro) ro.innerHTML = bar.getAttribute('data-r') || '';
     if (focus) bar.focus();
   }
   function sameStep(a, b) {
