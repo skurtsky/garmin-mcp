@@ -1702,7 +1702,7 @@ def test_desktop_session_hero_opens_its_workout_and_the_plan():
     hero = desk.split('class="t-card td-pad td-hero"', 1)[1]
     assert "FTP Field Test" in hero and "Main: 20 min @ 250W" in hero
     assert 'data-plan-workout="w2-fri-bike">Workout details' in hero
-    assert 'href="/training-plan?workout=w2-fri-bike&amp;token=t0k"' in hero
+    assert "Open in plan" not in hero            # just Workout details + send to watch
 
 
 def test_desktop_week_names_each_days_sessions():

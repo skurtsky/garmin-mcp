@@ -202,6 +202,23 @@ def _check_workout(report, plan, w, path, seen_ids, thresholds):
         text = w.get(field)
         if isinstance(text, str) and len(text) > budget:
             report.warn(f"{path}.{field}", f"{len(text)} characters (budget {budget}).")
+    if "tags" in w:
+        try:
+            plan_doc.clean_tags(w["tags"])
+        except PlanError as e:
+            report.error(f"{path}.tags", str(e))
+    if w.get("purposeMet") is not None and not isinstance(w["purposeMet"], bool):
+        report.error(f"{path}.purposeMet", "Must be true (met), false (not met) or omitted (not reviewed yet).")
+    elif isinstance(w.get("purposeMet"), bool) and not str(w.get("purpose") or "").strip():
+        report.warn(f"{path}.purposeMet", "Set without a purpose — add a purpose so the verdict has something to judge.")
+    if "coachReview" in w:
+        reviews = w["coachReview"]
+        if not isinstance(reviews, list):
+            report.error(f"{path}.coachReview", "Must be a list of {text, at, by} entries.")
+        else:
+            for i, entry in enumerate(reviews):
+                if not isinstance(entry, dict) or not str(entry.get("text") or "").strip():
+                    report.error(f"{path}.coachReview[{i}]", "Each review needs a text.")
     if w.get("steps") not in (None, []):
         try:
             workout_steps.clean_steps(sport, w["steps"])
@@ -287,6 +304,13 @@ def check_week(report: Report, plan: dict, week, index: int, seen_ids: dict, thr
     for key in ("targetHours", "targetRunKm"):
         if key in week and (not _is_number(week[key]) or week[key] < 0):
             report.error(f"{path}.{key}", f"{week[key]!r} must be a non-negative number.")
+    if "theme" in week and (not isinstance(week["theme"], str) or len(week["theme"]) > plan_doc.MAX_THEME_LENGTH):
+        report.error(f"{path}.theme", f"Must be text of at most {plan_doc.MAX_THEME_LENGTH} characters.")
+    if "keySessions" in week:
+        try:
+            plan_doc.clean_key_sessions(week["keySessions"], "keySessions")
+        except PlanError as e:
+            report.error(f"{path}.keySessions", str(e))
     expected = phases.get(number) if _is_int(number) else None
     if week.get("phase") is not None and expected and week["phase"] != expected:
         report.error(f"{path}.phase", f"{week['phase']!r}, but the phases block puts week {number} "

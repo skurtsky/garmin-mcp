@@ -467,16 +467,30 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
       {"op": "add_workout", "date": "YYYY-MM-DD", "workout": {"sport": "run",
           "name": "...", "type": "...", "durationMinutes": 45, "distanceKm": 8,
           "primaryZone": "Zone 2", "description": "...", "keyTargets": "...",
+          "cues": "...", "purpose": "...", "tags": ["25m", "AE2"],
           "humanReadable": "..."}}          — id is generated (w{week}-{day}-{sport})
       {"op": "update_workout", "workout_id": "w5-thu-run", "fields": {...}}
           — only the given fields change; null/"" removes a field; a "date"
             field moves the workout
       {"op": "move_workout", "workout_id": "...", "date": "YYYY-MM-DD"}
       {"op": "remove_workout", "workout_id": "..."}
+      {"op": "add_coach_review", "workout_id": "...", "text": "Held even splits…",
+          "purpose_met": true}
+          — append a dated coach comment (shown under "Coach review" in the
+            workout view; ≤ 800 characters, a few sentences). The optional
+            purpose_met true/false also records whether the workout's purpose
+            was met (the workout must already have a purpose); the timestamp
+            is added for you.
+      {"op": "remove_coach_review", "workout_id": "...", "index": -1}
+          — remove one review (0 = oldest, -1 = latest, the default)
       {"op": "update_week", "week_number": 5, "fields": {"focus": "...",
+          "theme": "...", "keySessions": ["w5-wed-bike", "Sat long ride"],
           "targetHours": 8.5, "isRecoveryWeek": true, "phase": "..."}}
           — any week field except weekNumber, startDate, endDate, days and
-            summary; null removes one
+            summary; null removes one. The Week brief shows `theme` (a
+            one-line aim for the week, ≤ 240 characters; falls back to
+            `focus`) and `keySessions` (up to 6 workout ids — shown as
+            "Wed · name · duration" — or short text lines, in order)
       {"op": "replace_week", "week_number": 5, "week": {...}}
           — swap in a whole week, e.g. to fill a skeleton week. The week
             keeps its slot: startDate/endDate default to the plan's (and
@@ -514,8 +528,17 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     A workout may carry "startTime": "HH:MM" (24-hour) — the calendar feed
     uses it instead of the athlete's weekly schedule; set it only for one-off
     times (a race start, a group ride), and "" removes it.
-    Follow the coach skill's field budgets (description/keyTargets ≤ 120
-    characters) and humanReadable template with zone tokens — live, they
+    Coach-notes fields on a workout (all optional): `description` (the
+    summary, ≤ 400 characters), `keyTargets` (";"-separated bullets, ≤ 240),
+    `cues` (≤ 200), `purpose` (one line on why the session is in the plan,
+    ≤ 240), `purposeMet` (true/false once reviewed — the viewer shows a
+    green "Purpose met" / red "Not met" badge, amber "Pending" while it is
+    unset; it needs a purpose; null clears it) and `tags` (up to 8 short
+    labels, ≤ 40 characters each, e.g. a coach or group name, the pool
+    length "25m", an intensity label "AE2"; case-insensitive duplicates are
+    dropped; null or [] removes them). Over-budget text is saved and returned
+    as a warning. Coach review comments are only added through add_coach_review.
+    Follow the coach skill's humanReadable template with zone tokens — live, they
     follow the plan's thresholds: {{run-pace:N}}, {{run-hr:N}},
     {{bike-watts:N}}, {{bike-hr:N}} (N = 1-4, 5a, 5b, 5c), {{swim-pace:N}}
     (N = 1-5), plus {{bike-watts:ss}} (sweet spot, 88-94% of FTP) and

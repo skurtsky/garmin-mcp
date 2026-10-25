@@ -42,6 +42,9 @@ This module is pure: :func:`clean_steps` validates (raising ``PlanError``),
 :func:`resolve` turns steps into what Today shows, and :func:`to_garmin`
 into the step list ``tools.workout.create_workout`` takes.
 """
+import html
+import re
+
 from tools import plan_doc
 from tools.plan_doc import PlanError
 
@@ -390,6 +393,73 @@ _KIND_LABEL = {"warmup": "Warm-up", "work": "Work", "recovery": "Recovery", "res
 _STROKE_LABEL = {"im": "IM", "pullbuoy": "pull buoy"}
 
 
+# ── THE ONE-LINE STEP READOUT ─────────────────────────────────────────────────
+# Selecting a bar shows "Z3 · ⚡ 209–219 W · ⏱ 12:00" on one line above the
+# graph (hidden until a step is selected). The icon says what the target is
+# measured in: power, heart rate, pace, effort (RPE) or distance.
+
+def _icon(paths: str, fill: bool = False) -> str:
+    attrs = ('fill="currentColor"' if fill else
+             'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"')
+    return f'<svg width="14" height="14" viewBox="0 0 24 24" {attrs} aria-hidden="true">{paths}</svg>'
+
+
+_READOUT_ICONS = {
+    "power": _icon('<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>', fill=True),
+    "hr": _icon('<path d="M12 20.5s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.5 2.9c0 5.4-7.5 10-7.5 10z"/>'),
+    "pace": _icon('<path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4-5"/>'),
+    "rpe": _icon('<path d="M12 3c1 4 5 5 5 10a5 5 0 0 1-10 0c0-2 1-3 2-4 0 2 1 3 2 3 0-3-1-6 1-9z"/>'),
+    "dist": _icon('<rect x="2" y="8" width="20" height="8" rx="1.5"/><path d="M6 8v3M10 8v4M14 8v3M18 8v4"/>'),
+    "time": _icon('<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>'),
+}
+
+# Shared by the workout view and Today (each puts it in its own stylesheet).
+READOUT_CSS = """
+.wro { min-height:22px; display:flex; align-items:center; justify-content:center; }
+.wro-line { display:flex; flex-wrap:wrap; justify-content:center; gap:4px 16px; font-size:14px; font-weight:500;
+  color:var(--color-neutral-400); }
+.wro-line > span { display:inline-flex; align-items:center; gap:6px; }
+.wro-z { color:var(--color-text); font-weight:600; }
+.wro-z i { width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
+"""
+
+
+def _target_kind(sport: str, target: dict | None) -> str:
+    """What a step's target is measured in: power, hr, pace, rpe — or '' for none."""
+    if not target:
+        return ""
+    if "pctFtp" in target:
+        return "power"
+    if "hrZone" in target:
+        return "hr"
+    if "rpe" in target:
+        return "rpe"
+    return "power" if sport == "bike" else "pace"
+
+
+def _short_target(text: str) -> str:
+    """The figure part of a target's text ("209–219 W · 88–92% FTP" → "209–219 W");
+    a bare zone label says nothing the zone chip doesn't."""
+    first = (text or "").split(" · ")[0].strip()
+    return "" if re.fullmatch(r"Z\d[\w–-]*|Sweet spot|Strides", first) else first
+
+
+def readout_html(bar: dict) -> str:
+    """The one-line readout for a bar, as safe HTML (every text is escaped)."""
+    esc = html.escape
+    parts = []
+    if bar.get("band"):
+        parts.append(f'<span class="wro-z"><i style="background:{esc(bar["color"])}"></i>{esc(bar["band"])}</span>')
+    short = _short_target(bar.get("target", ""))
+    if short:
+        parts.append(f'<span>{_READOUT_ICONS.get(bar.get("tkind"), "")}{esc(short)}</span>')
+    if bar.get("dist"):
+        parts.append(f'<span>{_READOUT_ICONS["dist"]}{esc(bar["dist"])}</span>')
+    if bar.get("time"):
+        parts.append(f'<span>{_READOUT_ICONS["time"]}{esc(bar["time"])}</span>')
+    return "".join(parts)
+
+
 def _endurance_bar(sport: str, step: dict, t: dict) -> dict:
     target = _resolve_target(sport, step.get("target"), t)
     intensity = target["intensity"] if target["intensity"] is not None else _KIND_DEFAULT[step["kind"]]
@@ -412,9 +482,13 @@ def _endurance_bar(sport: str, step: dict, t: dict) -> dict:
     bar = {"kind": step["kind"], "label": _KIND_LABEL[step["kind"]], "amount": amount, "approx": approx,
            "target": target["text"], "extras": " · ".join(extras), "note": step.get("note") or "",
            "seconds": seconds, "estimated": estimated, "intensity": round(min(max(intensity, .15), 1.6), 3),
-           "color": color, "fill": color, "band": zone, "ramp": None}
+           "color": color, "fill": color, "band": zone, "ramp": None,
+           "tkind": _target_kind(sport, step.get("target")),
+           "dist": _fmt_dist(step["distanceM"]) if step.get("distanceM") else "",
+           "time": (_fmt_dur(step["durationS"]) if step.get("durationS") else approx or "Until lap")}
     if step.get("ramp") in RAMPS and target.get("pct"):
         _ramp(bar, step["ramp"], target)
+    bar["readout"] = readout_html(bar)
     return bar
 
 

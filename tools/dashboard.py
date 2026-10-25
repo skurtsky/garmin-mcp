@@ -1287,6 +1287,12 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 .wg-more { padding:8px 10px; font-size:12px; color:var(--color-neutral-500); }
 .td-hero-side { flex:2 1 240px; min-width:0; display:flex; flex-direction:column; gap:10px; }
 .td-title { font-size:24px; font-weight:500; letter-spacing:-.01em; line-height:1.25; }
+.td-tiles { display:flex; flex-wrap:wrap; gap:8px; }
+.td-tile { min-width:84px; padding:8px 12px; border-radius:8px; background:var(--color-inset);
+  box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
+.td-tile-v { font-size:14px; font-weight:500; margin-top:2px; }
+.td-ptags { display:flex; flex-wrap:wrap; gap:6px; }
+.td-ptag { padding:3px 12px; border-radius:999px; font-size:12px; background:var(--color-neutral-800); color:var(--color-text); }
 .td-desc { margin:0; font-size:14px; color:var(--color-neutral-300); max-width:62ch; }
 .td-steps { font-size:13px; line-height:1.7; white-space:pre-wrap; padding:12px 14px; border-radius:8px;
   background:var(--color-inset); color:var(--color-neutral-200); }
@@ -1351,10 +1357,6 @@ input.hide { position:absolute; opacity:0; width:0; height:0; pointer-events:non
 
 /* ── Desktop Today: the workout graph and step list (workout_steps.py) ── */
 .wg { display:flex; flex-direction:column; gap:8px; }
-.wg-info { min-height:58px; padding:10px 12px; border-radius:8px; background:var(--color-inset);
-  box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
-.wg-v { font-size:15px; font-weight:500; }
-.wg-n { font-size:12px; color:var(--color-neutral-400); margin-top:2px; }
 .wg-plot { position:relative; height:110px; padding:0 2px; border-bottom:1px solid var(--color-neutral-800); }
 .wg-bars { position:absolute; inset:0 2px; display:flex; align-items:flex-end; gap:2px; }
 .wg-bar { flex:1 1 0; min-width:4px; padding:0; border:0; border-radius:3px 3px 0 0; cursor:pointer; opacity:.55;
@@ -2345,9 +2347,6 @@ def _wg_text(bar: dict, i: int, n: int) -> tuple[str, str, str]:
     return kick, value, bar["note"]
 
 
-_WG_HINT = "Select a step to see its details"
-
-
 def _workout_graph(steps: dict, sport: str) -> str:
     """The workout as bars — width is time, height is intensity against the
     sport's threshold — with a detail strip above that shows the step a bar
@@ -2361,18 +2360,14 @@ def _workout_graph(steps: dict, sport: str) -> str:
         ramp = workout_steps.ramp_svg(b, f"wgr-{i}")
         html += (f'<button type="button" class="wg-bar{" ramp" if ramp else ""}" data-wg-i="{i}" '
                  f'aria-pressed="false" aria-label="{_e(kick)}: {_e(value)}" '
-                 f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(note)}" '
+                 f'data-r="{_e(b["readout"])}" '
                  f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
                  f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
     total = steps["total_s"]
     approx = "~" if steps.get("estimated") else ""
     return f"""
         <div class="wg">
-          <div class="wg-info" aria-live="polite" data-hint="{_e(_WG_HINT)}">
-            <div class="t-kick wg-k">{_e(_WG_HINT)}</div>
-            <div class="wg-v"></div>
-            <div class="wg-n" hidden></div>
-          </div>
+          <div class="wro"><div class="wro-line" aria-live="polite" data-wro></div></div>
           <div class="wg-plot">
             <div class="wg-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_WG_THRESHOLD.get(sport, "Threshold")}</span></div>
             <div class="wg-bars" role="group" aria-label="Workout steps">{html}</div>
@@ -2458,6 +2453,18 @@ def _garmin_button(w: dict) -> str:
             f'title="{label}">{_GSEND_ICON}</button>')
 
 
+def _desk_brief_tiles(w: dict) -> str:
+    """Type / time / distance / zone as small tiles under the title."""
+    kind = (w.get("type") or w.get("sport") or "")
+    items = [("Type", str(kind).replace("_", " ").capitalize() if kind else None),
+             ("Time", _fmt_session_dur(w.get("durationMinutes"))),
+             ("Distance", _workout_distance(w)),
+             ("Zone", None if w.get("is_test") else w.get("primaryZone"))]
+    cells = "".join(f'<div class="td-tile"><div class="t-kick">{k}</div><div class="td-tile-v">{_e(v)}</div></div>'
+                    for k, v in items if v)
+    return f'<div class="td-tiles">{cells}</div>' if cells else ""
+
+
 _DESK_STEPS_MAX_LINES = 6   # longer step lists are cut here; the rest is in Workout details
 
 
@@ -2467,12 +2474,15 @@ def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: 
     done = (f'<span style="display:flex;align-items:center;gap:5px;font-size:12px;color:{_DONE_COLOR}">'
             f'{_ph("check-circle", 15)}Done</span>') if w.get("completed") else ""
     desc = f'<p class="td-desc">{_e(w["description"])}</p>' if w.get("description") else ""
+    tags = "".join(f'<span class="td-ptag">{_e(t)}</span>' for t in (w.get("tags") or []))
+    tags = f'<div class="td-ptags">{tags}</div>' if tags else ""
+    tiles = _desk_brief_tiles(w)
     actions = ""
     if w.get("id"):
         blocker = None if w.get("completed") or w.get("garmin_workout_id") else w.get("garmin_blocker")
         actions = (f'<div class="td-actions-wrap"><div class="td-actions">'
                    f'<button type="button" class="t-btn td-btn-primary" data-plan-workout="{_e(w["id"])}">Workout details</button>'
-                   f'<a class="t-btn" href="{_e(_plan_link(token, w["id"]))}">Open in plan</a>{_garmin_button(w)}</div>'
+                   f'{_garmin_button(w)}</div>'
                    f'<div class="td-send-msg" role="status">{_e(blocker) if blocker and w["sport"] == "swim" else ""}</div></div>')
     steps = w.get("steps")
     graph = ""
@@ -2497,7 +2507,7 @@ def _desk_session_hero(w: dict, ftp_test: dict | None, token: str | None, kick: 
         <div class="td-hero-main">
           <div><h2 class="td-title">{_e(w.get("name"))}</h2>
             <div class="t-sub" style="font-size:13px;margin-top:2px">{_session_line(w, planned_prefix=bool(act))}</div></div>
-          {desc}{graph}{_session_activity_row(act)}{_session_ftp_row(w, ftp_test)}{main_actions}
+          {tiles}{tags}{desc}{graph}{_session_activity_row(act)}{_session_ftp_row(w, ftp_test)}{main_actions}
         </div>
         {side}
       </div>"""
@@ -3976,7 +3986,7 @@ _ACTIVITY_MODAL_JS = """
   });
 
   // ── Today (desktop): the workout graph — a bar or step row shows its
-  // step in the strip above the graph; arrow keys walk the bars. ──
+  // step as a one-line readout above the graph; arrow keys walk the bars. ──
   function wgSelect(scope, i, focus, toggle) {
     var bar = scope.querySelector('.wg-bar[data-wg-i="' + i + '"]');
     if (!bar) return;
@@ -3985,22 +3995,15 @@ _ACTIVITY_MODAL_JS = """
       x.classList.remove('on');
       if (x.classList.contains('wg-bar')) x.setAttribute('aria-pressed', 'false');
     });
+    var ro = scope.querySelector('[data-wro]');
     if (toggle && wasOn) {      // clicking the selected step again clears it
-      var info0 = scope.querySelector('.wg-info');
-      info0.querySelector('.wg-k').textContent = info0.getAttribute('data-hint') || '';
-      info0.querySelector('.wg-v').textContent = '';
-      info0.querySelector('.wg-n').hidden = true;
+      if (ro) ro.innerHTML = '';
       return;
     }
     bar.classList.add('on');
     bar.setAttribute('aria-pressed', 'true');
     scope.querySelectorAll('.wg-row[data-wg-i="' + i + '"]').forEach(function (r) { r.classList.add('on'); });
-    var info = scope.querySelector('.wg-info');
-    info.querySelector('.wg-k').textContent = bar.getAttribute('data-k');
-    info.querySelector('.wg-v').textContent = bar.getAttribute('data-v');
-    var note = info.querySelector('.wg-n');
-    note.textContent = bar.getAttribute('data-n');
-    note.hidden = !bar.getAttribute('data-n');
+    if (ro) ro.innerHTML = bar.getAttribute('data-r') || '';
     if (focus) bar.focus();
   }
   document.addEventListener('click', function (e) {

@@ -44,7 +44,9 @@ def test_a_planned_workout_with_steps(plan):
     assert 'data-id="w1-thu-bike"' in html and "Thu 17 Sep · Week 1 · Base" in html
     # No step is selected to begin with; every rep is a bar carrying its details.
     assert html.count('<button type="button" class="wd-bar') == 8 and 'wd-bar on' not in html and 'wd-row on' not in html
-    assert "Select a step to see its details" in html
+    # The one-line readout is empty until a step is selected, and each bar carries it.
+    assert 'class="wro-line" aria-live="polite" data-wro></div>' in html and "Select a step" not in html
+    assert html.count('data-r="') == 8 and "wro-z" in html
     assert "Step 2 of 8 · Work · Rep 1 of 3" in html and "8:00 · 220–230 W · 88–92% FTP" in html
     assert "FTP 250 W" in html and "0:15" in html
     # The step table keeps the repeat together.
@@ -155,7 +157,9 @@ def test_the_editor_builds_steps(plan):
     assert "'<div class=\"wd-overlay we-overlay\">" in viewer and "function stepsBuilder(d)" in viewer
     assert "api('steps/preview', { sport: d.sport, steps })" in viewer
     assert "fields.steps = steps.length ? steps : null;" in viewer
-    assert "'steps'];" in viewer       # FORM_FIELDS: a duplicate copies them through the form
+    assert "'steps'," in viewer        # FORM_FIELDS: a duplicate copies them through the form
+    # Tags, purpose and cues are edited here; "Add tag" exists only in the editor.
+    assert "function tagEditor(d)" in viewer and 'data-act="add-tag"' in viewer and "function weekBriefHtml" in viewer
 
 
 def test_coloured_text_has_a_light_mode_shade(plan):
@@ -182,3 +186,35 @@ def test_ramps_in_the_view_and_the_editor(plan):
     assert "function shapePicker(u, path, last)" in viewer and "data-we-ramp" in viewer
     assert "if (isRange(u) && (u.ramp === 'build' || u.ramp === 'recover')) out.ramp = u.ramp;" in viewer
     assert "function weDecorate()" in viewer and "function weSelect(path, fromBar)" in viewer
+
+
+NOTES_FIELDS = {"description": "Hold form.", "keyTargets": "3 x 8 min; 85-95 rpm", "cues": "Smooth pedal stroke",
+                "purpose": "Raise sustained power.", "tags": ["Trainer", "AE3"]}
+
+
+def test_coach_cards_tags_and_purpose_badge(plan):
+    plan_service.apply_operations(PLAN_ID, [
+        {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": NOTES_FIELDS}], "test", "notes")
+    html = _view("w1-thu-bike")["html"]
+    assert 'class="wd-chip wd-tag">Trainer</span>' in html and 'wd-tag">AE3</span>' in html
+    assert "Coach notes" in html and "Smooth pedal stroke" in html and "<li>85-95 rpm</li>" in html
+    # No verdict yet: amber Pending; no review card without a review.
+    assert 'data-met="pending"' in html and ">Pending</span>" in html.replace("</svg>", "") or "Pending" in html
+    assert "Coach review" not in html
+
+
+@pytest.mark.parametrize("met, attr, text", [(True, "yes", "Purpose met"), (False, "no", "Not met")])
+def test_purpose_verdict_and_coach_review(plan, met, attr, text):
+    plan_service.apply_operations(PLAN_ID, [
+        {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": NOTES_FIELDS},
+        {"op": "add_coach_review", "workout_id": "w1-thu-bike", "text": "Even power <b>throughout</b>.",
+         "purpose_met": met}], "test", "review")
+    html = _view("w1-thu-bike")["html"]
+    assert f'data-met="{attr}"' in html and text in html
+    assert "Coach review" in html and "Added via MCP" in html
+    assert "Even power &lt;b&gt;throughout&lt;/b&gt;." in html      # escaped, never raw markup
+
+
+def test_workout_without_notes_has_no_coach_cards(plan):
+    html = _view("w1-mon-swim")["html"]
+    assert "Coach notes" not in html and "Purpose" not in html.replace("Purposeful", "") and "Coach review" not in html
