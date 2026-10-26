@@ -57,7 +57,11 @@ UNITS = ("metric", "imperial")
 # theme is the week brief's one-liner (the viewer falls back to focus) and
 # keySessions its short list: workout ids (shown as "Wed · name") or free text.
 WEEK_FIELDS = {"focus": str, "targetHours": (int, float), "targetRunKm": (int, float),
-               "isRecoveryWeek": bool, "phase": str, "theme": str, "keySessions": list}
+               "isRecoveryWeek": bool, "phase": str, "theme": str, "keySessions": list,
+               "sportTargets": dict}
+# A week's per-sport targets (what a skeleton week's Volume by sport shows):
+# {sport: {"sessions": n, "hours": h, "km": k}}, every number optional.
+SPORT_TARGET_KEYS = ("sessions", "hours", "km")
 # Week fields update_week can't change: identity, dates (the days hang off
 # them), the workouts (workout ops) and the recomputed summary.
 WEEK_LOCKED = ("weekNumber", "startDate", "endDate", "days", "summary")
@@ -360,6 +364,25 @@ def clean_tags(value, what="tags") -> list[str] | None:
     return out or None
 
 
+def clean_sport_targets(value, what="sportTargets") -> dict:
+    """``value`` as {sport: {sessions?, hours?, km?}}, or PlanError."""
+    if not isinstance(value, dict):
+        raise PlanError(f"{what} must be an object of sport -> {{sessions, hours, km}}.")
+    out = {}
+    for sport, t in value.items():
+        if sport not in SPORTS:
+            raise PlanError(f"{what}: {sport!r} isn't a sport — use one of {', '.join(SPORTS)}.")
+        if not isinstance(t, dict) or not t:
+            raise PlanError(f"{what}.{sport} must be an object with sessions, hours and/or km.")
+        for k, n in t.items():
+            if k not in SPORT_TARGET_KEYS:
+                raise PlanError(f"{what}.{sport}: {k!r} isn't a target — use {', '.join(SPORT_TARGET_KEYS)}.")
+            if isinstance(n, bool) or not isinstance(n, (int, float)) or n < 0:
+                raise PlanError(f"{what}.{sport}.{k} must be a non-negative number.")
+        out[sport] = dict(t)
+    return out
+
+
 def clean_key_sessions(value, what="keySessions") -> list[str]:
     """A week's key sessions: workout ids or short free text, in order."""
     if not isinstance(value, list):
@@ -557,6 +580,8 @@ def _op_update_week(plan, op):
             raise PlanError(f"Week field {key!r} has the wrong type.")
         if key == "keySessions":
             value = clean_key_sessions(value) or None
+        elif key == "sportTargets":
+            value = clean_sport_targets(value) or None
         elif key == "theme":
             value = " ".join(value.split())
             if len(value) > MAX_THEME_LENGTH:
@@ -898,7 +923,7 @@ BIKE_POWER_PCT_TABLE = (
 )
 # Seconds per km from threshold pace (positive = slower).
 RUN_PACE_OFFSET_TABLE = (
-    ("1", "Recovery", 70, 90), ("2", "Aerobic", 50, 70), ("3", "Tempo", 15, 25),
+    ("1", "Recovery", 70, 150), ("2", "Aerobic", 50, 70), ("3", "Tempo", 15, 25),
     ("4", "Sub-threshold", 5, 15), ("5a", "Threshold", -2, 2),
     ("5b", "VO2max", -20, -15), ("5c", "Anaerobic", -35, -25),
 )

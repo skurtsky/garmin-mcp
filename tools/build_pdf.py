@@ -464,7 +464,7 @@ BIKE_POWER_PCT_TABLE = [
 ]
 # Run pace offsets in seconds/km from threshold pace (positive = slower).
 RUN_PACE_OFFSET_TABLE = [
-    {"zone": "1",  "low": 70,  "high": 90},
+    {"zone": "1",  "low": 70,  "high": 150},
     {"zone": "2",  "low": 50,  "high": 70},
     {"zone": "3",  "low": 15,  "high": 25},
     {"zone": "4",  "low": 5,   "high": 15},

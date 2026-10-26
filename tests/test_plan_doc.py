@@ -391,3 +391,16 @@ def test_valid_new_fields_pass_and_reach_the_read_view():
     view = plan_service._workout_view(w, {"date": "2026-01-05"}, {}, True)
     assert view["tags"] == ["25m", "AE2"] and view["purpose"] == "Aerobic base." and view["purposeMet"] is True
     assert view["cues"] == "Relax" and view["coachReview"][0]["text"] == "Good."
+
+
+def test_update_week_sport_targets():
+    plan, _, _ = _apply(sample_plan(), {"op": "update_week", "week_number": 1, "fields": {
+        "sportTargets": {"run": {"sessions": 4, "hours": 3.5, "km": 40}}}})
+    assert plan["weeks"][0]["sportTargets"] == {"run": {"sessions": 4, "hours": 3.5, "km": 40}}
+    for bad in ({"golf": {"hours": 1}}, {"run": {"miles": 3}}, {"run": {"hours": -1}}, {"run": {}}):
+        with pytest.raises(plan_doc.PlanError):
+            _apply(plan, {"op": "update_week", "week_number": 1, "fields": {"sportTargets": bad}})
+
+
+def test_run_z1_pace_has_no_tight_upper_limit():
+    assert plan_doc.RUN_PACE_OFFSET_TABLE[0] == ("1", "Recovery", 70, 150)   # 4:15 threshold -> 5:25-6:45

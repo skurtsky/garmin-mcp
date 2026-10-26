@@ -304,6 +304,11 @@ def check_week(report: Report, plan: dict, week, index: int, seen_ids: dict, thr
     for key in ("targetHours", "targetRunKm"):
         if key in week and (not _is_number(week[key]) or week[key] < 0):
             report.error(f"{path}.{key}", f"{week[key]!r} must be a non-negative number.")
+    if "sportTargets" in week:
+        try:
+            plan_doc.clean_sport_targets(week["sportTargets"])
+        except PlanError as e:
+            report.error(f"{path}.sportTargets", str(e))
     if "theme" in week and (not isinstance(week["theme"], str) or len(week["theme"]) > plan_doc.MAX_THEME_LENGTH):
         report.error(f"{path}.theme", f"Must be text of at most {plan_doc.MAX_THEME_LENGTH} characters.")
     if "keySessions" in week:
