@@ -50,7 +50,9 @@ def test_a_planned_workout_with_steps(plan):
     assert "Step 2 of 8 · Work · Rep 1 of 3" in html and "8:00 · 220–230 W · 88–92% FTP" in html
     assert "FTP 250 W" in html and "0:15" in html
     # The step table keeps the repeat together.
-    assert "3 &times; repeat" in html and html.count('class="wd-row') == 4
+    assert html.count('class="wd-block"') == 1 and "Repeat 3 times" in html and html.count('class="wd-row"') == 4
+    assert "12:00 per round · 36:00 total" in html and ">2.1<" in html and ">2.2<" in html
+    assert "Skipping last rest" not in html and "wd-skipchip" not in html.split("</style>")[-1]
     # Coach notes split key targets; the original text is kept, resolved.
     assert "<li>3 x 8 min</li><li>85-95 rpm</li>" in html
     assert "Coach&rsquo;s original text" in html and "220–230 W" in html
@@ -61,6 +63,17 @@ def test_a_planned_workout_with_steps(plan):
     assert 'data-wd-act="edit"' in html and 'data-wd-act="delete"' in html
     assert v["prev"] == "w1-tue-strength" and v["next"] == "w2-tue-run"
     assert "Open in plan" in html and "/training-plan?workout=w1-thu-bike" in html
+
+
+def test_a_repeat_that_skips_its_last_rest_says_so(plan):
+    skipping = [BIKE[0], {**BIKE[1], "skipLastRest": True}, BIKE[2]]
+    plan_service.apply_operations(PLAN_ID, [
+        {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"steps": skipping}}], "test", "skip")
+    html = _view("w1-thu-bike")["html"]
+    assert html.count('<button type="button" class="wd-bar') == 7          # the final recovery has no bar
+    assert "Skipping last rest" in html and "Skipped in round 3" in html and "2 of 3 rounds" in html
+    assert "12:00 per round · 32:00 total" in html
+    assert 'type="checkbox"' not in html                                   # editing happens in the plan editor
 
 
 def test_a_completed_workout_compares_plan_and_activity(plan):

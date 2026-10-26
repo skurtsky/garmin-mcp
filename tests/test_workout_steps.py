@@ -65,6 +65,29 @@ def test_clean_steps_rejects_with_the_step_named(sport, steps, message):
         workout_steps.clean_steps(sport, steps)
 
 
+def test_skip_last_rest_is_kept_only_on_a_repeat_that_ends_in_a_rest():
+    rep = {"kind": "repeat", "count": 3, "skipLastRest": True, "steps": BIKE[1]["steps"]}
+    assert workout_steps.clean_steps("bike", [rep])[0]["skipLastRest"] is True
+    off = workout_steps.clean_steps("bike", [{**rep, "skipLastRest": False}])[0]
+    assert "skipLastRest" not in off
+    with pytest.raises(PlanError, match="end with a recovery or rest"):
+        workout_steps.clean_steps("bike", [{**rep, "steps": [{"kind": "work", "durationS": 60}]}])
+    with pytest.raises(PlanError, match="true or false"):
+        workout_steps.clean_steps("bike", [{**rep, "skipLastRest": "yes"}])
+
+
+def test_resolve_drops_the_last_rest_bar_and_reports_the_block_times():
+    rep = {**BIKE[1], "skipLastRest": True}
+    r = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", [BIKE[0], rep, BIKE[3]]))
+    assert len(r["bars"]) == 1 + 5 + 1 and r["total_s"] == 900 + 3 * 720 - 240 + 600
+    g = r["groups"][1]
+    assert g["skipLastRest"] and g["per_round_s"] == 720 and g["total_s"] == 3 * 720 - 240
+    assert [c["skipped_last"] for c in g["children"]] == [False, True]
+    assert r["bars"][5]["rep"] == "3 of 3"                                  # the last bar is round 3's work
+    plain = workout_steps.resolve(PLAN, "bike", workout_steps.clean_steps("bike", BIKE))["groups"][1]
+    assert not plain["skipLastRest"] and plain["total_s"] == 3 * 720
+
+
 # ── what Today shows ──────────────────────────────────────────────────────────
 
 def test_resolve_bike_expands_repeats_into_bars_from_the_plan_ftp():
@@ -111,6 +134,25 @@ def test_to_garmin_bike_collapses_a_simple_repeat_and_builds():
     assert steps[0]["type"] == "warmup" and steps[0]["power_watts_min"] == 113   # zone 1 has no floor: 45%
     payload = build_workout_payload("Sweet spot", sport, steps)
     assert len(payload["workoutSegments"][0]["workoutSteps"]) == 4
+
+
+def test_to_garmin_skip_last_rest_runs_the_last_round_after_a_shorter_repeat():
+    def send(count, **extra):
+        steps = workout_steps.clean_steps("bike", [{**BIKE[1], "count": count, **extra}])
+        return workout_steps.to_garmin(PLAN, "bike", steps)[1]
+    out = send(3, skipLastRest=True)
+    assert [s["type"] for s in out] == ["repeat", "interval"]
+    assert out[0]["sets"] == 2 and out[0]["rest_duration_s"] == 240 and out[1]["duration_s"] == 480
+    assert [s["type"] for s in send(1, skipLastRest=True)] == ["interval"]    # one round: just the work
+    assert send(3)[0]["sets"] == 3                                            # unchanged without the flag
+    # a repeat with several steps keeps the group, then the last round's steps minus the rest
+    rep = {"kind": "repeat", "count": 2, "skipLastRest": True, "steps": [
+        {"kind": "work", "durationS": 60, "target": {"zone": "4"}},
+        {"kind": "work", "durationS": 30, "target": {"zone": "5a"}},
+        {"kind": "recovery", "durationS": 90, "target": {"zone": "1"}}]}
+    out = workout_steps.to_garmin(PLAN, "bike", workout_steps.clean_steps("bike", [rep]))[1]
+    assert [s["type"] for s in out] == ["repeat", "interval", "interval"] and out[0]["sets"] == 1
+    assert len(out[0]["steps"]) == 3
 
 
 def test_to_garmin_run_pace_is_slow_then_fast_and_keeps_other_repeats_as_groups():

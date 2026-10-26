@@ -564,7 +564,9 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
           {"kind": "recovery", "durationS": 240, "target": {"zone": "1"}}]},
        {"kind": "cooldown", "durationS": 600}]
       kind: warmup | work | recovery | rest | cooldown | repeat (count 1-50
-        and steps; no repeat inside a repeat).
+        and steps; no repeat inside a repeat). A repeat ending on a recovery or
+        rest step may set "skipLastRest": true to drop that step from its
+        final round.
       durationS or distanceM (not both; neither = until lap).
       target (optional), exactly one of: {"zone": …} — bike power / run pace /
         swim CSS-pace zone: 1-4, 5a, 5b, 5c ("ss" bike sweet spot, "strides"

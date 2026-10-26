@@ -92,6 +92,8 @@ _I_CHEV = '<path d="M6 9l6 6 6-6"></path>'
 _I_MORE = ('<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8">'
            '</circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>')
 _I_SKIP = '<circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path>'
+_I_LOOP = ('<path d="M17 2l4 4-4 4"></path><path d="M3 11V9a3 3 0 0 1 3-3h15"></path>'
+           '<path d="M7 22l-4-4 4-4"></path><path d="M21 13v2a3 3 0 0 1-3 3H3"></path>')
 # Send to Garmin: an arrow going into a watch; a tick on the watch once sent
 # (the same icon as Today's hero, optically centred).
 _WATCH = ('<g transform="translate(-1.6 0)"><rect x="10" y="6" width="12" height="12" rx="3"></rect>'
@@ -272,6 +274,10 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
     ticks = "".join(f'<span style="left:{t / total * 100:.2f}%">{_hm(t)}</span>'
                     for t in range(0, int(total), step) if total - t > step * .45)
     approx = "~" if resolved.get("estimated") else ""
+    # A purple bracket under each repeat, labelled with its count.
+    brackets = "".join(
+        f'<span class="wd-brk" style="left:{g["start_s"] / total * 100:.2f}%;width:{g["total_s"] / total * 100:.2f}%">'
+        f'<b>{g["repeat"]}&times;</b></span>' for g in resolved["groups"] if "repeat" in g and total)
     t = plan_doc.effective_thresholds(plan)
     line = {"bike": f"FTP {t['ftp']} W" if t.get("ftp") else "FTP",
             "run": f"Threshold {t['thresholdPace']}" if t.get("thresholdPace") else "Threshold",
@@ -287,30 +293,46 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
             <div class="wd-line" style="bottom:{workout_steps.THRESHOLD_AT}%"><span>{_e(line)}</span></div>
             <div class="wd-bars" role="group" aria-label="Workout steps — select one to see it above">{html}</div>
           </div>
+          {f'<div class="wd-brackets" aria-hidden="true">{brackets}</div>' if brackets else ''}
           <div class="wd-ticks">{ticks}<span style="left:100%">{approx}{_hm(total)}</span></div>
         </section>"""
 
 
 def _step_table(resolved: dict) -> str:
-    rows, n = "", 0
+    """The step list. A repeat is a boxed block: a header (count, one round at
+    a glance, time per round and in total), its steps numbered 2.1, 2.2…, and a
+    footer saying so when its last rest is skipped."""
+    rows = ""
 
-    def row(item, indent=False):
-        nonlocal n
-        n += 1
+    def row(item, number, dropped_in=None, rounds=0):
         amount = item["amount"] + (f' <span class="wd-muted">{_e(item["approx"])}</span>' if item.get("approx") else "")
+        if dropped_in:
+            amount += f'<small class="wd-rsub">{rounds - 1} of {rounds} rounds</small>'
         target = " · ".join(p for p in (item["target"], item["extras"]) if p) or '<span class="wd-muted">—</span>'
-        return (f'<button type="button" class="wd-row{" in" if indent else ""}" data-wg-i="{item["index"]}">'
-                f'<span class="wd-rn">{n}</span>'
-                f'<span class="wd-rs"><i style="background:{item["fill"]}"></i>{_e(item["label"])}</span>'
+        chip = f'<span class="wd-skipchip">Skipped in round {dropped_in}</span>' if dropped_in else ""
+        return (f'<button type="button" class="wd-row" data-wg-i="{item["index"]}">'
+                f'<span class="wd-rn">{number}</span>'
+                f'<span class="wd-rs"><i style="background:{item["fill"]}"></i>{_e(item["label"])}{chip}</span>'
                 f'<span class="wd-rt">{amount}</span><span class="wd-rg">{target if "<span" in target else _e(target)}</span>'
                 f'<span class="wd-rc">{_e(item["note"])}</span></button>')
-    for g in resolved["groups"]:
-        if "repeat" in g:
-            note = f" · {_e(g['note'])}" if g["note"] else ""
-            rows += f'<div class="wd-rep">{g["repeat"]} &times; repeat{note}</div>'
-            rows += "".join(row(c, indent=True) for c in g["children"])
-        else:
-            rows += row(g)
+
+    def block(g, n):
+        count, kids = g["repeat"], g["children"]
+        approx = "~" if any(c.get("estimated") for c in kids) else ""
+        title = f"Repeat {count} times" + (f" · {_e(g['note'])}" if g["note"] else "")
+        summary = f"{approx}{_clock(g['per_round_s'])} per round · {approx}{_clock(g['total_s'])} total"
+        mini = "".join(f'<i style="flex-grow:{max(1, round(c["seconds"]))};background:{c["fill"]}"></i>' for c in kids)
+        body = "".join(row(c, f"{n}.{j + 1}", count if c.get("skipped_last") else None, count) for j, c in enumerate(kids))
+        foot = (f'<div class="wd-bfoot"><span class="wd-skipind">{_icon(_I_SKIP, 16, 2.2)}Skipping last rest</span></div>'
+                if g.get("skipLastRest") else "")
+        label = f"Repeat {count} times, {_clock(g['per_round_s'])} per round"
+        return (f'<div class="wd-block" role="group" aria-label="{_e(label)}">'
+                f'<div class="wd-bhead"><span class="wd-rn wd-bn">{n}</span>'
+                f'<span class="wd-pill">{_icon(_I_LOOP, 18, 2.2)}{count}&times;</span>'
+                f'<span class="wd-btitle">{title}<span class="wd-bmini" aria-hidden="true">{mini}</span></span>'
+                f'<span class="wd-bsum">{summary}</span></div>{body}{foot}</div>')
+    for n, g in enumerate(resolved["groups"], 1):
+        rows += block(g, n) if "repeat" in g else row(g, n)
     return f"""
         <section class="wd-card wd-steps" aria-label="Steps">
           <div class="wd-thead" aria-hidden="true"><span>#</span><span>Step</span><span>Time</span><span>Target</span><span>Cues</span></div>
@@ -765,13 +787,17 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
 .wd-line { position:absolute; left:0; right:0; border-top:1px dashed var(--color-neutral-600); pointer-events:none; }
 .wd-line span { position:absolute; left:0; top:-9px; padding:0 6px 0 0; font-size:11px; line-height:18px; color:var(--color-neutral-400);
   background:var(--color-surface); z-index:1; }
+.wd-brackets { position:relative; height:30px; margin-top:-4px; }
+.wd-brk { position:absolute; top:0; height:8px; box-sizing:border-box; border:1.5px solid var(--color-accent); border-top:0; border-radius:0 0 5px 5px; }
+.wd-brk b { position:absolute; top:12px; left:50%; transform:translateX(-50%); font-size:12px; font-weight:600; color:var(--color-accent-400); white-space:nowrap; }
+html[data-theme=light] .wd-brk b { color:var(--color-accent); }
 .wd-ticks { position:relative; height:14px; font-size:11px; color:var(--color-neutral-500); }
 .wd-ticks span { position:absolute; transform:translateX(-50%); white-space:nowrap; }
 .wd-ticks span:first-child { transform:none; }
 .wd-ticks span:last-child { transform:translateX(-100%); }
 /* step table */
 .wd-steps { padding:10px; display:flex; flex-direction:column; }
-.wd-thead, .wd-row { display:grid; grid-template-columns:26px minmax(0,1.1fr) 96px minmax(0,1.5fr) minmax(0,1.2fr); gap:12px; align-items:center; }
+.wd-thead, .wd-row { display:grid; grid-template-columns:34px minmax(0,1.1fr) 96px minmax(0,1.5fr) minmax(0,1.2fr); gap:12px; align-items:center; }
 .wd-thead { padding:4px 12px 10px; font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--color-neutral-500);
   border-bottom:1px solid var(--wd-line); margin-bottom:4px; }
 .wd-row { width:100%; min-height:42px; padding:8px 12px; border:0; border-radius:8px; background:none; color:inherit; font:inherit; font-size:13px;
@@ -781,11 +807,26 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
 .wd-rn { color:var(--color-neutral-500); font-variant-numeric:tabular-nums; }
 .wd-rs { display:flex; align-items:center; gap:10px; }
 .wd-rs i { width:8px; height:8px; border-radius:2px; flex:0 0 auto; }
-.wd-row.in .wd-rs { padding-left:14px; }
 .wd-rt { font-variant-numeric:tabular-nums; }
+.wd-rsub { display:block; font-size:11px; color:var(--color-neutral-500); }
 .wd-rg { color:var(--color-neutral-300); }
 .wd-rc { color:var(--color-neutral-500); }
-.wd-rep { padding:10px 12px 4px 50px; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--color-accent-400); }
+/* a repeat: one boxed block, header to footer */
+.wd-block { margin:8px 0; border-radius:12px; overflow:hidden; background:var(--wd-inset); box-shadow:0 0 0 1.5px var(--color-accent-700); }
+.wd-block .wd-row { border-radius:0; }
+.wd-bhead { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:12px; background:color-mix(in srgb, var(--color-accent) 16%, var(--color-surface)); }
+.wd-bn { width:34px; font-weight:600; color:var(--color-accent-400); }
+.wd-pill { display:inline-flex; align-items:center; gap:6px; height:34px; padding:0 14px 0 10px; border-radius:999px; background:var(--color-accent);
+  color:var(--color-bg); font-size:18px; font-weight:600; }
+.wd-btitle { display:flex; flex-direction:column; gap:5px; min-width:150px; font-size:14px; font-weight:500; }
+.wd-bmini { display:flex; gap:2px; width:150px; height:6px; }
+.wd-bmini i { height:6px; border-radius:2px; }
+.wd-bsum { margin-left:auto; font-size:13px; color:var(--color-neutral-300); font-variant-numeric:tabular-nums; }
+.wd-bfoot { display:flex; align-items:center; min-height:40px; padding:0 12px 0 58px; border-top:1px dashed var(--color-neutral-800); }
+.wd-skipind { display:inline-flex; align-items:center; gap:8px; font-size:13px; font-weight:500; color:var(--color-skip, #d9a441); }
+html[data-theme=light] .wd-skipind, html[data-theme=light] .wd-skipchip { color:#7d6210; }
+.wd-skipchip { font-size:11px; font-weight:500; padding:2px 8px; border-radius:999px; color:var(--color-skip, #d9a441);
+  background:color-mix(in srgb, var(--color-skip, #d9a441) 16%, transparent); }
 /* strength */
 .wd-strength { display:flex; flex-direction:column; gap:10px; }
 .wd-strength .wd-cardhead { margin-bottom:2px; }
@@ -862,7 +903,7 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
   .wd-body { grid-template-columns:minmax(0,1fr) 300px; }
   .wd-headacts .wd-sep, .wd-headacts [data-wd-go] { display:none; }
   .wd-rc { display:none; }
-  .wd-thead, .wd-row { grid-template-columns:26px minmax(0,1.1fr) 90px minmax(0,1.6fr); }
+  .wd-thead, .wd-row { grid-template-columns:34px minmax(0,1.1fr) 90px minmax(0,1.6fr); }
   .wd-thead span:last-child { display:none; }
 }
 
@@ -899,7 +940,10 @@ html[data-theme=light] .wd-bar:not(.on) { opacity:.72; }
   .wd-rg { grid-area:g; font-size:12px; color:var(--color-neutral-500); padding-left:18px; }
   .wd-rc { grid-area:c; font-size:12px; padding-left:18px; }
   .wd-rc:empty { display:none; }
-  .wd-rep { padding-left:12px; }
+  .wd-bhead { padding:12px 14px; }
+  .wd-bn { display:none; }
+  .wd-bsum { margin-left:0; flex-basis:100%; font-size:12px; }
+  .wd-bfoot { padding:0 14px; }
   .wd-stats { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   .wd-done-top .wd-link { display:none; }
 }
