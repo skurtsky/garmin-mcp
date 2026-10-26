@@ -263,21 +263,28 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
         kick, value = _bar_text(b, i, n)
         height = workout_steps.graph_height(b["intensity"])
         ramp = workout_steps.ramp_svg(b, f"{gid}{i}")
+        gj = f' data-gj="{b["gj"]}"' if b.get("gj") else ""      # step of a repeat: highlights its row, not look-alikes
         html += (f'<button type="button" class="wd-bar{" ramp" if ramp else ""}" data-wg-i="{i}" '
                  f'aria-pressed="false" aria-label="{_e(kick)}: {_e(value)}" '
                  f'data-k="{_e(kick)}" data-v="{_e(value)}" data-n="{_e(b["note"])}" data-c="{b["fill"]}" data-r="{_e(b["readout"])}" '
+                 f'data-s="{b["seconds"]:.2f}"{gj} '
                  f'style="flex-grow:{max(1, round(b["seconds"]))};height:{height}%'
                  f'{"" if ramp else ";background:" + b["color"]}">{ramp}</button>')
     total = resolved["total_s"]
     step = 300 if total <= 1800 else 900 if total <= 7200 else 1800 if total <= 14400 else 3600
     # h:mm ticks; the last one is the total, so drop a tick crowding it.
-    ticks = "".join(f'<span style="left:{t / total * 100:.2f}%">{_hm(t)}</span>'
+    # Ticks and brackets carry what they mark (a time, a run of bars) so the page
+    # can place them over the bars as drawn: a bar never gets narrower than its
+    # minimum, so a plain % of the total drifts out of line on busy sessions.
+    ticks = "".join(f'<span data-t="{t}" style="left:{t / total * 100:.2f}%">{_hm(t)}</span>'
                     for t in range(0, int(total), step) if total - t > step * .45)
     approx = "~" if resolved.get("estimated") else ""
     # A purple bracket under each repeat, labelled with its count.
     brackets = "".join(
-        f'<span class="wd-brk" style="left:{g["start_s"] / total * 100:.2f}%;width:{g["total_s"] / total * 100:.2f}%">'
-        f'<b>{g["repeat"]}&times;</b></span>' for g in resolved["groups"] if "repeat" in g and total)
+        f'<span class="wd-brk" data-a="{g["index"]}" data-b="{g["last"]}" '
+        f'style="left:{g["start_s"] / total * 100:.2f}%;width:{g["total_s"] / total * 100:.2f}%">'
+        f'<b>{g["repeat"]}&times;</b></span>'
+        for g in resolved["groups"] if "repeat" in g and total and g["last"] >= g["index"])
     t = plan_doc.effective_thresholds(plan)
     line = {"bike": f"FTP {t['ftp']} W" if t.get("ftp") else "FTP",
             "run": f"Threshold {t['thresholdPace']}" if t.get("thresholdPace") else "Threshold",
@@ -294,7 +301,7 @@ def _structure(resolved: dict, sport: str, plan: dict) -> str:
             <div class="wd-bars" role="group" aria-label="Workout steps — select one to see it above">{html}</div>
           </div>
           {f'<div class="wd-brackets" aria-hidden="true">{brackets}</div>' if brackets else ''}
-          <div class="wd-ticks">{ticks}<span style="left:100%">{approx}{_hm(total)}</span></div>
+          <div class="wd-ticks">{ticks}<span data-t="{total:.2f}" style="left:100%">{approx}{_hm(total)}</span></div>
         </section>"""
 
 
@@ -310,7 +317,8 @@ def _step_table(resolved: dict) -> str:
             amount += f'<small class="wd-rsub">{rounds - 1} of {rounds} rounds</small>'
         target = " · ".join(p for p in (item["target"], item["extras"]) if p) or '<span class="wd-muted">—</span>'
         chip = f'<span class="wd-skipchip">Skipped in round {dropped_in}</span>' if dropped_in else ""
-        return (f'<button type="button" class="wd-row" data-wg-i="{item["index"]}">'
+        gj = f' data-gj="{item["gj"]}"' if item.get("gj") else ""
+        return (f'<button type="button" class="wd-row" data-wg-i="{item["index"]}"{gj}>'
                 f'<span class="wd-rn">{number}</span>'
                 f'<span class="wd-rs"><i style="background:{item["fill"]}"></i>{_e(item["label"])}{chip}</span>'
                 f'<span class="wd-rt">{amount}</span><span class="wd-rg">{target if "<span" in target else _e(target)}</span>'
@@ -1002,6 +1010,7 @@ WD_JS = r"""
       panel.innerHTML = j.html;
       var zones = panel.querySelector('[data-wd-zones]');
       if (zones) zones.open = desktop.matches;
+      layout(panel);
       if (opts.inPlan) panel.querySelectorAll('.wd-open-plan').forEach(function (a) { a.remove(); });
       var scroller = panel.querySelector(desktop.matches ? '.wd-body' : '.wd');
       if (scroller) scroller.scrollTop = top;
@@ -1077,19 +1086,47 @@ WD_JS = r"""
     }
     bar.classList.add('on');
     bar.setAttribute('aria-pressed', 'true');
-    // A repeat's rows stand for every rep: light the row of the same step.
-    var k = bar.getAttribute('data-k');
+    // A repeat's rows stand for every rep: light the row for this bar's step of
+    // this repeat (data-gj), never another repeat that happens to look the same.
+    var gj = bar.getAttribute('data-gj');
     panel.querySelectorAll('.wd-row').forEach(function (r) {
-      var b = panel.querySelector('.wd-bar[data-wg-i="' + r.getAttribute('data-wg-i') + '"]');
-      if (r.getAttribute('data-wg-i') === String(i) || (b && sameStep(b, bar))) r.classList.add('on');
+      if (r.getAttribute('data-wg-i') === String(i) || (gj && r.getAttribute('data-gj') === gj)) r.classList.add('on');
     });
     if (ro) ro.innerHTML = bar.getAttribute('data-r') || '';
     if (focus) bar.focus();
   }
-  function sameStep(a, b) {
-    var strip = function (x) { return x.getAttribute('data-k').replace(/^Step \d+ of \d+ · /, '').replace(/ · Rep \d+ of \d+$/, ''); };
-    return /Rep /.test(a.getAttribute('data-k')) && /Rep /.test(b.getAttribute('data-k'))
-      && strip(a) === strip(b) && a.getAttribute('data-v') === b.getAttribute('data-v');
+
+  // Put the time ticks and repeat brackets under the bars as drawn. A bar is
+  // never narrower than its minimum (and bars have gaps), so on a busy session
+  // — a swim of short rests — a plain % of the total time drifts out of line.
+  function layout(root) {
+    if (!root) return;
+    root.querySelectorAll('.wd-plot').forEach(function (plot) {
+      var s = plot.closest('.wd-struct');
+      if (!s) return;
+      var place = function () {
+        var bars = plot.querySelectorAll('.wd-bar'), pr = plot.getBoundingClientRect();
+        if (!bars.length || !pr.width) return;
+        var rects = [], start = [], t = 0;
+        [].forEach.call(bars, function (b) { rects.push(b.getBoundingClientRect()); start.push(t); t += +b.getAttribute('data-s') || 0; });
+        var x = function (time) {
+          var k = bars.length - 1;
+          while (k > 0 && start[k] > time) k--;
+          var dur = +bars[k].getAttribute('data-s') || 0;
+          var frac = dur ? Math.max(0, Math.min(1, (time - start[k]) / dur)) : 0;
+          return rects[k].left + frac * rects[k].width - pr.left;
+        };
+        s.querySelectorAll('.wd-ticks span[data-t]').forEach(function (sp) { sp.style.left = x(+sp.getAttribute('data-t')) + 'px'; });
+        s.querySelectorAll('.wd-brk[data-a]').forEach(function (b) {
+          var a = rects[+b.getAttribute('data-a')], z = rects[+b.getAttribute('data-b')];
+          if (!a || !z) return;
+          b.style.left = (a.left - pr.left) + 'px';
+          b.style.width = (z.right - a.left) + 'px';
+        });
+      };
+      place();
+      if (window.ResizeObserver && !plot._wdRO) { plot._wdRO = new ResizeObserver(place); plot._wdRO.observe(plot); }
+    });
   }
 
   function menu(show) {
@@ -1212,6 +1249,6 @@ WD_JS = r"""
     if (overlay && !overlay.hidden && !overlay.contains(e.target) && e.key === 'Escape') { e.stopPropagation(); close(); }
   }, true);
 
-  window.WD = { open: open, close: close, isOpen: function () { return !!overlay && !overlay.hidden; } };
+  window.WD = { open: open, close: close, layout: layout, isOpen: function () { return !!overlay && !overlay.hidden; } };
 })();
 """

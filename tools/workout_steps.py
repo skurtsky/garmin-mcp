@@ -573,6 +573,7 @@ def resolve(plan: dict, sport: str, steps: list[dict] | None) -> dict | None:
                     for j, child in enumerate(inner):
                         dropped = skip and rep == step["count"] - 1 and j == len(inner) - 1
                         bar = _endurance_bar(sport, child, t)
+                        bar["gj"] = f"{len(groups)}.{j}"     # which step of which repeat this bar is, in every round
                         if rep == 0:
                             per_round += bar["seconds"]
                         if not dropped:
@@ -585,7 +586,8 @@ def resolve(plan: dict, sport: str, steps: list[dict] | None) -> dict | None:
                                              "skipped_last": skip and j == len(inner) - 1})
                 groups.append({"repeat": step["count"], "index": first, "children": children,
                                "note": step.get("note") or "", "skipLastRest": skip,
-                               "per_round_s": per_round, "total_s": round_total, "start_s": start_s})
+                               "per_round_s": per_round, "total_s": round_total, "start_s": start_s,
+                               "last": len(bars) - 1})
             else:
                 bars.append(_endurance_bar(sport, step, t))
                 groups.append({**bars[-1], "index": len(bars) - 1})

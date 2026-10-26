@@ -2125,6 +2125,7 @@ function barPaths(d) {
 function weDecorate() {
   const d = state.editDraft;
   if (!d || d.sport === 'strength') return;
+  if (window.WD && WD.layout) WD.layout(document.querySelector('.we-graph'));   // ticks and repeat brackets under the bars
   const paths = barPaths(d);
   const bars = document.querySelectorAll('.we-graph .wd-bar');
   const fill = {};
