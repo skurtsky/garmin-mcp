@@ -76,6 +76,20 @@ def test_a_repeat_that_skips_its_last_rest_says_so(plan):
     assert 'type="checkbox"' not in html                                   # editing happens in the plan editor
 
 
+def test_repeat_bars_and_rows_are_tied_by_repeat_and_step_not_by_look(plan):
+    twin = {"kind": "repeat", "count": 2, "steps": [{"kind": "work", "durationS": 300, "target": {"zone": "3"}},
+                                                    {"kind": "recovery", "durationS": 60}]}
+    plan_service.apply_operations(PLAN_ID, [
+        {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"steps": [twin, twin, BIKE[2]]}}], "test", "twins")
+    html = _view("w1-thu-bike")["html"]
+    # two look-alike repeats: bars carry "repeat.step", and so does each row, once per repeat
+    assert html.count('data-gj="0.0"') == 3 and html.count('data-gj="1.1"') == 3      # 2 bars + 1 row each
+    assert html.count('class="wd-row" data-wg-i="0" data-gj="0.0"') == 1
+    # ticks and brackets say what they mark, so the page can line them up with the bars
+    assert 'class="wd-brk" data-a="0" data-b="3"' in html and 'class="wd-brk" data-a="4" data-b="7"' in html
+    assert 'data-t="0"' in html and 'data-s="300.00"' in html
+
+
 def test_a_completed_workout_compares_plan_and_activity(plan):
     plan.add_activity(77, "2026-09-15", "running", "Orléans Running", 50.2, 9.1, avg_hr=148)
     plan_service.complete_from_activity(PLAN_ID, 77)
