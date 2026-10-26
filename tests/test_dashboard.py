@@ -1648,6 +1648,8 @@ def test_a_past_day_reads_that_days_metrics_and_plan(monkeypatch):
                         {"readiness_data": {}, "health_data": {}, "sleep_data": {}, "training_data": {},
                          "training_status_data": {}})
     monkeypatch.setattr(dashboard, "_local_now", lambda: datetime(2026, 10, 20, 9, tzinfo=timezone.utc))
+    from tools import activities
+    monkeypatch.setattr(activities, "local_today", lambda: date(2026, 10, 20))   # week_bounds reads its own clock
     monkeypatch.setattr(db, "get_trend_metrics", lambda s, e: asked.update(trend=(s, e)) or [])
     monkeypatch.setattr(db, "get_recent_activities", lambda limit=20: [])
     monkeypatch.setattr(db, "get_weekly_activities", lambda ws, we: asked.setdefault("weeks", []).append(ws) or [])

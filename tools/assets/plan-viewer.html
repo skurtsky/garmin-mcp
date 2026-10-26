@@ -401,7 +401,7 @@ const BIKE_POWER_PCT_TABLE = [
    reference/zones.md; 1, 3, 4 and 5a are interpolated onto the same 7 zones
    as the HR table above so every row lines up. */
 const RUN_PACE_OFFSET_TABLE = [
-  { zone:'1',  name:'Recovery',      low:70,  high:90  },
+  { zone:'1',  name:'Recovery',      low:70,  high:150 },
   { zone:'2',  name:'Aerobic',       low:50,  high:70  },
   { zone:'3',  name:'Tempo',         low:15,  high:25  },
   { zone:'4',  name:'Sub-threshold', low:5,   high:15  },
@@ -950,20 +950,25 @@ function weekBriefHtml(wk, focus) {
         + '</ul></div></div>' : '')
     + '</div>';
 }
-/* Volume by sport: a stacked share bar and a table of sessions, time, distance. */
-function weekVolumeHtml(workouts) {
+/* Volume by sport: a stacked share bar and a table of sessions, time, distance.
+   A week with no workouts yet (a skeleton) shows its sportTargets instead. */
+function weekVolumeHtml(workouts, wk) {
   const by = {};
   workouts.forEach(w => {
     const r = by[w.sport] = by[w.sport] || { sport: w.sport, n: 0, min: 0, km: 0 };
     r.n += 1; r.min += Number(w.durationMinutes) || 0;
     r.km += w.distanceKm != null ? Number(w.distanceKm) : (Number(w.distanceMeters) || 0) / 1000;
   });
+  const isTarget = !workouts.length && wk && wk.sportTargets;
+  if (isTarget) Object.entries(wk.sportTargets).forEach(([sport, t]) => {
+    by[sport] = { sport, n: Number(t.sessions) || 0, min: (Number(t.hours) || 0) * 60, km: Number(t.km) || 0 };
+  });
   const rows = Object.values(by).sort((a, b) => b.min - a.min);
   const total = rows.reduce((t, r) => t + r.min, 0);
   if (!rows.length || !total) return '';
   const share = r => Math.round(r.min / total * 100);
   const color = r => SPORT_COLORS[r.sport] || SPORT_COLORS.rest;
-  return '<div class="card week-vol"><div class="week-brief-head"><span class="t-kick">Volume by sport</span><span class="wb-total">' + esc(fmtDuration(total)) + '</span></div>'
+  return '<div class="card week-vol"><div class="week-brief-head"><span class="t-kick">Volume by sport</span>' + (isTarget ? '<span class="tag">Target</span>' : '') + '<span class="wb-total">' + esc(fmtDuration(total)) + '</span></div>'
     + '<div class="vol-bar" role="img" aria-label="Share of time by sport">' + rows.map(r => '<span style="flex-grow:' + r.min + ';background:' + color(r) + '"></span>').join('') + '</div>'
     + '<table class="vol-table"><thead><tr><th>Sport</th><th>Sessions</th><th>Time</th><th>Distance</th><th>Share</th></tr></thead><tbody>'
     + rows.map(r => '<tr><td><span class="wb-dot" style="background:' + color(r) + '"></span>' + esc(capitalize(r.sport)) + '</td><td>' + r.n + '</td><td>' + esc(fmtDuration(r.min)) + '</td><td>'
@@ -1034,11 +1039,14 @@ function planTab() {
 
   const focus = wk ? wk.focus : phase.focus;
   const brief = wk ? weekBriefHtml(wk, focus) : '';
-  if (brief) h += brief;
-  else if (focus || (wk && wk.isRecoveryWeek)) {
-    h += '<div class="plan-focus" data-act="toggle-focus" title="Show the whole note">' + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2" style="margin-right:8px;">Recovery week</span>' : '')
+  const volume = wk ? weekVolumeHtml(weekWorkouts, wk) : '';
+  let focusHtml = '';
+  if (!brief && (focus || (wk && wk.isRecoveryWeek))) {
+    focusHtml = '<div class="plan-focus" data-act="toggle-focus" title="Show the whole note">' + (wk && wk.isRecoveryWeek ? '<span class="tag tag-accent-2" style="margin-right:8px;">Recovery week</span>' : '')
       + esc(focus || '') + '</div>';
   }
+  /* Week brief on the left, Volume by sport beside it (stacked on a phone). */
+  h += (brief && volume) ? '<div class="week-top">' + brief + volume + '</div>' : (brief || focusHtml) + volume;
 
   if (!wk) {
     h += '<div style="margin:0 18px; padding:32px 20px; text-align:center; border:1px dashed var(--color-neutral-700); border-radius:var(--radius-lg); color:var(--color-neutral-400);">'
@@ -1063,7 +1071,6 @@ function planTab() {
       + (workouts.length ? workouts.map(w => workoutCard(w, day.date)).join('') : '<div class="rest-slot" data-day-date="' + esc(day.date) + '">Rest day</div>')
     + '</div>';
   }).join('') + '</div>';
-  h += weekVolumeHtml(weekWorkouts);
   if (n >= last) h += neighborCardHtml('next');
   if (n <= first) h += neighborCardHtml('prev');
   return h;
@@ -2838,6 +2845,8 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .month-more:hover { color:var(--color-accent-300); text-decoration:underline; }
 .month-rest { font-size:11px; color:var(--color-neutral-600); padding-left:2px; }
 
+.week-top { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; margin:0 24px 16px; }
+.week-top > .week-brief, .week-top > .week-vol { margin:0; }
 .week-brief, .week-vol { margin:0 24px 16px; padding:14px 16px; display:flex; flex-direction:column; gap:10px; }
 .week-brief-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .wb-row { display:grid; grid-template-columns:96px minmax(0,1fr); gap:12px; font-size:13px; }
@@ -2855,6 +2864,7 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .vol-table th:first-child, .vol-table td:first-child { text-align:left; }
 @media (max-width: 899px) {
   .week-brief, .week-vol { margin:0 18px 14px; }
+  .week-top { grid-template-columns:1fr; gap:14px; margin:0 18px 14px; }
   .wb-row { grid-template-columns:1fr; gap:2px; }
 }
 .we-tags { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }

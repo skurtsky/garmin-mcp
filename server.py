@@ -485,7 +485,9 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
           — remove one review (0 = oldest, -1 = latest, the default)
       {"op": "update_week", "week_number": 5, "fields": {"focus": "...",
           "theme": "...", "keySessions": ["w5-wed-bike", "Sat long ride"],
-          "targetHours": 8.5, "isRecoveryWeek": true, "phase": "..."}}
+          "targetHours": 8.5, "isRecoveryWeek": true, "phase": "...",
+          "sportTargets": {"run": {"sessions": 4, "hours": 4, "km": 40},
+          "bike": {"sessions": 2, "hours": 3}}}}
           — any week field except weekNumber, startDate, endDate, days and
             summary; null removes one. The Week brief shows `theme` (a
             one-line aim for the week, ≤ 240 characters; falls back to
@@ -636,7 +638,9 @@ def create_training_plan(
 
     Skeleton plans: a week with no workouts is an error unless it is flagged
     "status": "skeleton" on the week (or "skeleton": true on the plan). Give a
-    skeleton week its targetHours and optional targetRunKm, then fill it later
+    skeleton week its targetHours and optional targetRunKm, plus optional
+    sportTargets ({sport: {sessions, hours, km}} — the viewer's Volume by sport
+    for a week with no workouts yet), then fill it later
     with amend_training_plan's replace_week.
 
     Summaries are computed by the server: each filled week's `summary`
