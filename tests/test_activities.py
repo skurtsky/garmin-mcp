@@ -326,8 +326,9 @@ def test_extract_laps_cycling_uses_bike_cadence():
         'averageSpeed': 5000 / 600, 'intensityType': 'ACTIVE',
         'averageBikeCadence': 87.6,
     }]}
-    rows = _extract_laps(laps_data, weight_kg=70, sport='road_biking')
-    assert rows[0]['avg_cadence'] == 88
+    for sport in ('road_biking', 'indoor_cycling', 'virtual_ride'):
+        rows = _extract_laps(laps_data, weight_kg=70, sport=sport)
+        assert rows[0]['avg_cadence'] == 88, sport
 
 
 # ── MULTISPORT SUB-ACTIVITIES (issue #37) ─────────────────────────────────────

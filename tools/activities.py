@@ -133,6 +133,11 @@ def _extract_activity_summary(activity: dict) -> dict:
     return base
 
 
+def _is_bike_sport(sport: str) -> bool:
+    """True for any cycling type, incl. virtual_ride (Rouvy/Zwift), which has no 'bik'/'cycl'."""
+    return 'bik' in sport or 'cycl' in sport or 'ride' in sport
+
+
 def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[dict]:
     """Extract per-lap data from Garmin splits response.
 
@@ -140,7 +145,7 @@ def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[di
     (e.g. '2:16/100m'), everything else reports per-km pace (e.g. '5:30/km').
     """
     is_swim = 'swim' in sport
-    is_bike = 'bik' in sport or 'cycl' in sport
+    is_bike = _is_bike_sport(sport)
     rows = []
     interval_counter = 0
     cumulative_secs = 0
@@ -368,7 +373,7 @@ def _discipline_label(sport: str) -> str:
     """Short human label for a sub-activity sport ('road_biking' -> 'Bike')."""
     if 'swim' in sport:
         return 'Swim'
-    if 'bik' in sport or 'cycl' in sport:
+    if _is_bike_sport(sport):
         return 'Bike'
     if 'run' in sport:
         return 'Run'
@@ -462,7 +467,7 @@ def _extract_sub_activity(activity: dict, laps_raw: dict | None,
             'avg_stroke_cadence': summary.get('averageSwimCadence'),
             'total_strokes':      summary.get('totalNumberOfStrokes'),
         })
-    elif 'bik' in sport or 'cycl' in sport:
+    elif _is_bike_sport(sport):
         sub.update({
             'avg_speed_kmh':    round((summary.get('averageSpeed') or 0) * 3.6, 1),
             'avg_power':        summary.get('averagePower'),
