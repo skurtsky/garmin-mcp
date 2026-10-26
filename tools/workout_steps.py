@@ -17,7 +17,9 @@ plan's current thresholds::
      {"kind": "cooldown", "durationS": 600}]
 
 * ``kind``: warmup, work, recovery, rest, cooldown — or repeat, with ``count``
-  and ``steps`` (one level; no repeat inside a repeat).
+  and ``steps`` (one level; no repeat inside a repeat). A repeat that ends on a
+  recovery or rest step may set ``"skipLastRest": true`` to drop that step from
+  its final round (an 8 min / 4 min rest ×4 then ends after the 4th effort).
 * At most one of ``durationS`` / ``distanceM``; neither means "until lap".
 * ``target`` (optional), exactly one of: ``zone`` (bike power, run pace or
   swim CSS-pace zone: 1–4, 5a–5c, ss for bike sweet spot, strides for run;
@@ -67,7 +69,8 @@ GARMIN_SPORT = {"run": "running", "bike": "cycling", "strength": "strength_train
 
 _ENDURANCE_KEYS = {"kind", "durationS", "distanceM", "target", "ramp", "note", "stroke", "equipment"}
 RAMPS = ("build", "recover")
-_REPEAT_KEYS = {"kind", "count", "steps", "note"}
+_REPEAT_KEYS = {"kind", "count", "steps", "note", "skipLastRest"}
+_REST_KINDS = ("recovery", "rest")
 _EXERCISE_KEYS = {"kind", "exercise", "sets", "reps", "durationS", "weightKg", "weightLb",
                   "setWeightsKg", "setWeightsLb", "restS", "warmup", "note"}
 _STRENGTH_REST_KEYS = {"kind", "durationS", "note"}
@@ -265,6 +268,13 @@ def clean_steps(sport: str | None, steps) -> list[dict] | None:
                    "steps": [_clean_endurance_step(sport, s, f"{where}.steps[{j}]") for j, s in enumerate(inner)]}
             if step.get("note"):
                 rep["note"] = str(step["note"])
+            skip = step.get("skipLastRest")
+            if skip is not None and not isinstance(skip, bool):
+                raise PlanError(f"{where}.skipLastRest must be true or false.")
+            if skip:
+                if rep["steps"][-1]["kind"] not in _REST_KINDS:
+                    raise PlanError(f"{where}.skipLastRest needs the repeat to end with a recovery or rest step.")
+                rep["skipLastRest"] = True
             out.append(rep)
             total += count * len(inner)
         else:
@@ -555,15 +565,27 @@ def resolve(plan: dict, sport: str, steps: list[dict] | None) -> dict | None:
         for step in steps:
             if step.get("kind") == "repeat":
                 first, children = len(bars), []
+                start_s = sum(b["seconds"] for b in bars)
+                inner = step["steps"]
+                skip = bool(step.get("skipLastRest")) and inner[-1].get("kind") in _REST_KINDS
+                per_round = round_total = 0
                 for rep in range(step["count"]):
-                    for child in step["steps"]:
+                    for j, child in enumerate(inner):
+                        dropped = skip and rep == step["count"] - 1 and j == len(inner) - 1
                         bar = _endurance_bar(sport, child, t)
-                        bar["rep"] = f"{rep + 1} of {step['count']}"
-                        bars.append(bar)
                         if rep == 0:
-                            children.append({**bar, "index": len(bars) - 1})
+                            per_round += bar["seconds"]
+                        if not dropped:
+                            bar["rep"] = f"{rep + 1} of {step['count']}"
+                            bars.append(bar)
+                            round_total += bar["seconds"]
+                        if rep == 0:
+                            # a rest dropped from a one-round repeat has no bar of its own
+                            children.append({**bar, "index": max(len(bars) - 1, 0),
+                                             "skipped_last": skip and j == len(inner) - 1})
                 groups.append({"repeat": step["count"], "index": first, "children": children,
-                               "note": step.get("note") or ""})
+                               "note": step.get("note") or "", "skipLastRest": skip,
+                               "per_round_s": per_round, "total_s": round_total, "start_s": start_s})
             else:
                 bars.append(_endurance_bar(sport, step, t))
                 groups.append({**bars[-1], "index": len(bars) - 1})
@@ -689,20 +711,31 @@ def to_garmin(plan: dict, sport: str, steps: list[dict]) -> tuple[str, list[dict
             out.append(_garmin_step(sport, step, t, where))
             continue
         inner = step["steps"]
-        rest = inner[1] if len(inner) == 2 else None
-        simple = (inner[0]["kind"] == "work" and len(inner) <= 2
-                  and (rest is None or (rest["kind"] in ("recovery", "rest") and not rest.get("distanceM")
-                                        and not rest.get("target"))))
-        if simple:
-            work = _garmin_step(sport, inner[0], t, f"{where} (repeat)")
-            work.update(type="repeat", sets=step["count"])
-            if rest and rest.get("durationS"):
-                work["rest_duration_s"] = int(round(rest["durationS"]))
-            out.append(work)
+        if step.get("skipLastRest") and inner[-1]["kind"] in _REST_KINDS:
+            # Garmin repeats always run every step each round, so the last
+            # round is written out after a shorter repeat, minus its rest.
+            tail = inner[:-1]
+            if step["count"] > 1:
+                out.append(_garmin_repeat(sport, inner, step["count"] - 1, t, where))
+            out.extend(_garmin_step(sport, s, t, f"{where} (last round)") for s in tail)
         else:
-            out.append({"type": "repeat", "sets": step["count"],
-                        "steps": [_garmin_step(sport, s, t, f"{where} (repeat)") for s in inner]})
+            out.append(_garmin_repeat(sport, inner, step["count"], t, where))
     return GARMIN_SPORT[sport], out
+
+
+def _garmin_repeat(sport: str, inner: list[dict], sets: int, t: dict, where: str) -> dict:
+    rest = inner[1] if len(inner) == 2 else None
+    simple = (inner[0]["kind"] == "work" and len(inner) <= 2
+              and (rest is None or (rest["kind"] in _REST_KINDS and not rest.get("distanceM")
+                                    and not rest.get("target"))))
+    if simple:
+        work = _garmin_step(sport, inner[0], t, f"{where} (repeat)")
+        work.update(type="repeat", sets=sets)
+        if rest and rest.get("durationS"):
+            work["rest_duration_s"] = int(round(rest["durationS"]))
+        return work
+    return {"type": "repeat", "sets": sets,
+            "steps": [_garmin_step(sport, s, t, f"{where} (repeat)") for s in inner]}
 
 
 def _garmin_strength(step: dict) -> dict:

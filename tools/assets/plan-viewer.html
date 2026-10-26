@@ -1716,7 +1716,7 @@ function clockSeconds(text, bare) {
   return isNaN(n) ? null : Math.round(n * (bare === 'min' ? 60 : 1));
 }
 function stepToUI(s, sport) {
-  if (s.kind === 'repeat') return { kind: 'repeat', count: String(s.count || 2), note: s.note || '', steps: (s.steps || []).map(c => stepToUI(c, sport)) };
+  if (s.kind === 'repeat') return { kind: 'repeat', count: String(s.count || 2), note: s.note || '', skipLastRest: !!s.skipLastRest, steps: (s.steps || []).map(c => stepToUI(c, sport)) };
   if (s.kind === 'exercise') {
     const wave = s.setWeightsKg || s.setWeightsLb;
     return { kind: 'exercise', exercise: (s.exercise || '').replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()),
@@ -1734,10 +1734,16 @@ function stepToUI(s, sport) {
     dist: s.distanceM != null ? String(sport === 'swim' ? s.distanceM : +(s.distanceM / 1000).toFixed(3)) : '',
     tgt, tv, ramp: s.ramp || 'sustain', note: s.note || '', stroke: s.stroke || '', equip: (s.equipment || []).join(', ') };
 }
+/* "Skip last rest" only means something when the repeat ends on a recovery or rest step. */
+function endsWithRest(u) {
+  const last = u.steps && u.steps[u.steps.length - 1];
+  return !!last && (last.kind === 'recovery' || last.kind === 'rest');
+}
 function stepFromUI(u, sport) {
   if (u.kind === 'repeat') {
     const out = { kind: 'repeat', count: parseInt(u.count, 10) || 1, steps: u.steps.map(c => stepFromUI(c, sport)) };
     if (u.note && u.note.trim()) out.note = u.note.trim();
+    if (u.skipLastRest && endsWithRest(u)) out.skipLastRest = true;
     return out;
   }
   if (u.kind === 'exercise') {
@@ -1975,7 +1981,11 @@ function stepsBuilder(d) {
     if (u.kind === 'repeat') {
       rows += '<div class="we-rep" data-path="' + i + '"><div class="we-rephead"><span class="we-replbl">Repeat</span>'
         + '<input class="input we-tiny" type="number" min="1" max="50" value="' + esc(u.count) + '" data-step="' + i + '" data-sk="count" aria-label="Repeat count"><span>×</span>'
-        + '<span class="we-grow"></span>' + stepBtns(String(i), 'repeat') + '</div>'
+        + '<span class="we-grow"></span>'
+        + '<label class="we-check we-skiprest' + (endsWithRest(u) ? '' : ' off') + '"' + (endsWithRest(u) ? '' : ' title="This repeat has no rest step to skip"') + '>'
+        + '<input type="checkbox" data-step="' + i + '" data-sk="skipLastRest" aria-label="Skip last rest"'
+        + (u.skipLastRest && endsWithRest(u) ? ' checked' : '') + (endsWithRest(u) ? '' : ' disabled') + '> Skip last rest</label>'
+        + stepBtns(String(i), 'repeat') + '</div>'
         + u.steps.map((c, j) => enduranceRow(c, i + '.' + j, ++n, d.sport, n >= total - 1)).join('')
         + '<button type="button" class="link-btn we-addin" data-step-act="add-in" data-path="' + i + '">+ Step in this repeat</button></div>';
     } else {
@@ -2077,7 +2087,7 @@ function draftToFields(d) {
 }
 /* Editing a step: typing updates the draft and the preview; a select that
    changes the row's shape re-renders it; the buttons add, move and remove. */
-const STEP_SHAPE_KEYS = ['kind', 'amt', 'tgt', 'mode', 'unit', 'stroke', 'warmup'];
+const STEP_SHAPE_KEYS = ['kind', 'amt', 'tgt', 'mode', 'unit', 'stroke', 'warmup', 'skipLastRest'];
 function editStepField(el, rerender) {
   const d = state.editDraft;
   const u = d && stepAt(d, el.getAttribute('data-step'));
@@ -2105,7 +2115,10 @@ function barPaths(d) {
   d.steps.forEach((u, i) => {
     if (u.kind !== 'repeat') return out.push(String(i));
     const count = Math.max(1, parseInt(u.count, 10) || 1);
-    for (let r = 0; r < count; r++) u.steps.forEach((_, j) => out.push(i + '.' + j));
+    const dropLast = !!u.skipLastRest && endsWithRest(u);
+    for (let r = 0; r < count; r++) u.steps.forEach((_, j) => {
+      if (!(dropLast && r === count - 1 && j === u.steps.length - 1)) out.push(i + '.' + j);
+    });
   });
   return out;
 }
@@ -2947,6 +2960,8 @@ html { -webkit-tap-highlight-color: transparent; }
 .we-lap, .we-rest, .we-lbl { font-size:13px; color:var(--color-neutral-500); }
 .we-lap { width:78px; }
 .we-check { display:inline-flex; align-items:center; gap:6px; font-size:13px; }
+.we-skiprest { min-height:32px; cursor:pointer; }
+.we-skiprest.off { opacity:.5; cursor:not-allowed; }
 .we-grow { flex:1; }
 .we-btns { display:inline-flex; gap:2px; margin-left:auto; }
 .we-btns .btn-icon { width:30px; height:30px; min-height:30px; padding:0; display:grid; place-items:center; }
