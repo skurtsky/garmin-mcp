@@ -140,6 +140,7 @@ def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[di
     (e.g. '2:16/100m'), everything else reports per-km pace (e.g. '5:30/km').
     """
     is_swim = 'swim' in sport
+    is_bike = 'bik' in sport or 'cycl' in sport
     rows = []
     interval_counter = 0
     cumulative_secs = 0
@@ -153,6 +154,8 @@ def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[di
         avg_moving_speed = lap.get('averageMovingSpeed') or 0
         gap_speed = lap.get('avgGradeAdjustedSpeed') or 0
         avg_power = lap.get('averagePower') or 0
+        # Bike laps carry averageBikeCadence; averageRunCadence is absent there.
+        cadence = lap.get('averageBikeCadence' if is_bike else 'averageRunCadence')
         cumulative_secs += duration
 
         if intensity == 'ACTIVE':
@@ -182,7 +185,7 @@ def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[di
             'avg_moving_pace':       avg_moving_pace,
             'avg_hr':                lap.get('averageHR'),
             'max_hr':                lap.get('maxHR'),
-            'avg_cadence':           round(lap.get('averageRunCadence') or 0),
+            'avg_cadence':           round(cadence or 0),
             'avg_power_w':           avg_power,
             'normalized_power_w':    lap.get('normalizedPower'),
             'max_power_w':           lap.get('maxPower'),

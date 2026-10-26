@@ -319,6 +319,17 @@ def test_extract_laps_run_pace_is_per_km_labelled():
     assert rows[0]['avg_pace'] == "5:00/km"
 
 
+def test_extract_laps_cycling_uses_bike_cadence():
+    """Bike laps report averageBikeCadence; reading the run field gave 0."""
+    laps_data = {'lapDTOs': [{
+        'lapIndex': 1, 'distance': 5000, 'duration': 600,
+        'averageSpeed': 5000 / 600, 'intensityType': 'ACTIVE',
+        'averageBikeCadence': 87.6,
+    }]}
+    rows = _extract_laps(laps_data, weight_kg=70, sport='road_biking')
+    assert rows[0]['avg_cadence'] == 88
+
+
 # ── MULTISPORT SUB-ACTIVITIES (issue #37) ─────────────────────────────────────
 
 def test_is_transition_matches_both_garmin_spellings():
