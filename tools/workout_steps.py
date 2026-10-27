@@ -291,9 +291,20 @@ def clean_steps(sport: str | None, steps) -> list[dict] | None:
 # itself isn't set, so the graph's shape still reads right.
 # Pace zones also use it for bar height: speed ratios bunch every zone
 # between ~0.9 and 1.05, which hides the shape of the session.
-_GENERIC = {"1": .6, "2": .72, "3": .84, "4": .95, "5a": 1.0, "5b": 1.08, "5c": 1.18,
+_GENERIC = {"1": .5, "2": .72, "3": .84, "4": .95, "5a": 1.0, "5b": 1.08, "5c": 1.18,
             "ss": .91, "strides": 1.15}
-_GENERIC_SWIM = {"1": .6, "2": .72, "3": .86, "4": 1.0, "5": 1.08}
+
+# RPE → zone, per the training intensity overview (Table 4.1): 1 = Z1,
+# 2–3 = Z2, 4–5 = Z3, 6–7 = Z4, 8 = Z5a, 9 = Z5b, 10 = Z5c. A fractional RPE
+# rounds to the nearest whole rating.
+_RPE_ZONES = ("1", "2", "2", "3", "3", "4", "4", "5a", "5b", "5c")
+
+
+def _rpe_zone(rpe: float) -> str:
+    return _RPE_ZONES[min(10, max(1, int(rpe + .5))) - 1]
+
+
+_GENERIC_SWIM = {"1": .5, "2": .72, "3": .86, "4": 1.0, "5": 1.08}
 _KIND_DEFAULT = {"warmup": .6, "work": .8, "recovery": .5, "rest": .3, "cooldown": .55}
 # Fallback speeds when a distance step's pace can't be worked out.
 _DEFAULT_SEC_PER_KM = {"run": 360, "bike": 120, "swim": 1200}
@@ -334,7 +345,8 @@ def _resolve_target(sport: str, target: dict | None, t: dict) -> dict:
         return {"text": "", "intensity": None, "sec_per_km": None}
     ftp = t.get("ftp")
     if "rpe" in target:
-        return {"text": f"RPE {plan_doc._tidy(target['rpe'], 1)}", "intensity": target["rpe"] / 9, "sec_per_km": None}
+        return {"text": f"RPE {plan_doc._tidy(target['rpe'], 1)}", "intensity": _GENERIC[_rpe_zone(target["rpe"])],
+                "sec_per_km": None}
     if "pctFtp" in target:
         pair = target["pctFtp"] if isinstance(target["pctFtp"], list) else [target["pctFtp"]] * 2
         pct = _span(pair[0], pair[1], str, "% FTP")
@@ -349,8 +361,10 @@ def _resolve_target(sport: str, target: dict | None, t: dict) -> dict:
         a, b = _row(plan_doc.HR_PCT_TABLE, lo), _row(plan_doc.HR_PCT_TABLE, hi)
         low = a[2] or 70      # zone 1 has no floor
         text = _span(plan_doc._pct(lthr, low), plan_doc._pct(lthr, b[3]), str, " bpm") if lthr else ""
+        # Bar colour/height come from the zone itself: % of LTHR bunches the
+        # zones above where the power/pace-based bands expect them.
         return {"text": f"{text} · {label} HR" if text else f"{label} HR",
-                "intensity": _mid(low, b[3]) / 100, "sec_per_km": None}
+                "intensity": _mid(_GENERIC[lo], _GENERIC[hi]), "sec_per_km": None}
     if sport == "bike":
         if lo == "ss":
             a_pct, b_pct = plan_doc.BIKE_SWEET_SPOT_PCT
