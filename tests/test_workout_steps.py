@@ -124,6 +124,25 @@ def test_resolve_without_thresholds_still_draws():
     assert r["bars"][0]["target"] == "Z5a" and r["bars"][0]["intensity"] == 1.0
 
 
+def test_hr_zone_bars_take_their_own_zones_colour_like_pace_zones():
+    for code, band in (("1", "Z1"), ("2", "Z2"), ("3", "Z3"), ("4", "Z4"), ("5a", "Z5")):
+        hr, pace = (workout_steps.resolve(PLAN, "run", [{"kind": "work", "durationS": 300, "target": {key: code}}])["bars"][0]
+                    for key in ("hrZone", "zone"))
+        assert hr["band"] == pace["band"] == band and hr["color"] == pace["color"]
+        assert hr["intensity"] == pace["intensity"]
+
+
+def test_rpe_bars_follow_the_training_intensity_table():
+    # Table 4.1: RPE 1 = Z1, 2–3 = Z2, 4–5 = Z3, 6–7 = Z4, 8 = Z5a, 9 = Z5b, 10 = Z5c
+    expected = ["Z1", "Z2", "Z2", "Z3", "Z3", "Z4", "Z4", "Z5", "Z6", "Z7"]
+    for rpe, band in enumerate(expected, start=1):
+        bar = workout_steps.resolve(PLAN, "run", [{"kind": "work", "durationS": 300, "target": {"rpe": rpe}}])["bars"][0]
+        assert bar["band"] == band, rpe
+    heights = [workout_steps.graph_height(workout_steps.resolve(
+        PLAN, "run", [{"kind": "work", "durationS": 300, "target": {"rpe": r}}])["bars"][0]["intensity"]) for r in range(1, 11)]
+    assert heights == sorted(heights) and heights[1] == heights[2] and heights[3] == heights[4]
+
+
 # ── Garmin ────────────────────────────────────────────────────────────────────
 
 def test_to_garmin_bike_collapses_a_simple_repeat_and_builds():

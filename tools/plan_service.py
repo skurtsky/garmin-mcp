@@ -470,7 +470,9 @@ def _timeline_plan(row: dict, done_ids: set[str]) -> dict:
         target = w.get("targetHours")
         weeks.append({
             "weekNumber": w.get("weekNumber"), "start": str(w["startDate"])[:10], "end": str(w["endDate"])[:10],
-            "phase": w.get("phase") or phase_of.get(w.get("weekNumber")) or "",
+            # the phases block is the source of truth (as on Today); a week's own
+            # phase is only a fallback, since it goes stale when the phases are edited
+            "phase": phase_of.get(w.get("weekNumber")) or w.get("phase") or "",
             "recovery": bool(w.get("isRecoveryWeek")), "plannedMin": round(planned), "doneMin": round(done),
             "workouts": count, "doneWorkouts": done_count,
             "targetHours": float(target) if isinstance(target, (int, float)) and not isinstance(target, bool) else None,

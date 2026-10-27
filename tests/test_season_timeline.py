@@ -287,6 +287,17 @@ def test_timeline_plans_report_workouts_done_and_target_hours(fake_db):
     assert (p["id"], p["event"], p["start"], p["end"], p["status"]) == ("test-block-2026", "Test Block", "2026-09-14", "2026-09-27", "active")
 
 
+def test_the_phases_block_wins_over_a_weeks_stale_own_phase():
+    plan = sample_plan()
+    plan["phases"] = [{"name": "Base 1", "startWeek": 1, "endWeek": 1}, {"name": "Base 2", "startWeek": 2, "endWeek": 2}]
+    plan["weeks"][0]["phase"] = "Base 2"      # left over from before the phases were edited
+    plan["weeks"][1].pop("phase", None)
+
+    p = plan_service._timeline_plan({"id": "test-block-2026", "plan": plan, "status": "active"}, set())
+
+    assert [w["phase"] for w in p["weeks"]] == ["Base 1", "Base 2"]
+
+
 def test_a_skeleton_week_has_no_workouts_and_keeps_its_target(fake_db):
     skeleton = sample_plan()
     skeleton["weeks"][1]["days"] = []
