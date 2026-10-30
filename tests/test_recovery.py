@@ -257,3 +257,11 @@ def test_recovery_route_serves_the_page(monkeypatch):
     response = TestClient(server.build_asgi_app()).get("/recovery?date=2026-10-12")
     assert response.status_code == 200 and response.text == "<html>recovery</html>"
     assert seen == {"day": "2026-10-12", "token": None}
+
+
+def test_picking_a_day_swaps_the_page_in_place():
+    js = recovery._RECOVERY_JS
+    assert "function swapDay" in js and "swapDay(u.toString(), true)" in js
+    assert "window.location.href = u.toString()" not in js          # no full navigation / scroll reset
+    assert "window.scrollTo(0, y)" in js and "popstate" in js       # scroll kept, Back still works
+    assert "window.location.href = url" in js                       # fallback if the fetch fails

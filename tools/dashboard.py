@@ -3942,7 +3942,7 @@ _ACTIVITY_MODAL_JS = """
     if (window.WD) {
       return window.WD.open(id, {
         fallback: function (wid) { return openPlanTemplate(wid); },
-        onClose: function (changed) { if (changed) location.reload(); }
+        onClose: function (changed) { if (changed) window.__reloadKeepingScroll(); }
       });
     }
     openPlanTemplate(id);
@@ -4238,6 +4238,7 @@ _APP_JS = """
     var dpGo = function (day) {
       var url = new URL(location.href);
       if (day === DP.today) url.searchParams.delete('date'); else url.searchParams.set('date', day);
+      try { sessionStorage.setItem('dash-scroll', String(window.scrollY)); } catch (e) {}   // land back where you were
       location.href = url.toString();
     };
     var dpRender = function () {
@@ -4407,12 +4408,28 @@ _APP_JS = """
   var renderedAt = cfg.renderedAt || Date.now();
   var refreshing = false;
   function age() { return Date.now() - renderedAt; }
+  // Anything the reader has open on top of the page: a reload would close it.
+  var OVERLAYS = '.activity-modal.open, .gear-modal:target, .ftp-dialog:not([hidden]), .wd-overlay:not([hidden]), '
+    + '.thr-modal:not([hidden]), .act-cal:not([hidden]), .dp-cal:not([hidden]), #gm-nav-more:checked';
   function busy() {
-    return !!document.querySelector('.activity-modal.open, .gear-modal:target, .ftp-dialog:not([hidden])')
+    return !!document.querySelector(OVERLAYS)
       || /^(INPUT|SELECT|TEXTAREA)$/.test((document.activeElement || {}).tagName || '');
   }
   function remember(key, value) { try { sessionStorage.setItem(key, value); } catch (e) {} }
   function recall(key) { try { return sessionStorage.getItem(key); } catch (e) { return null; } }
+
+  // Reload, putting the page back at the same scroll position afterwards.
+  window.__reloadKeepingScroll = function () {
+    remember('dash-scroll', String(window.scrollY));
+    location.reload();
+  };
+  // The fresh copy is already cached; if something is open, wait until it's
+  // closed before swapping it in, rather than pulling it out from under the reader.
+  var applyTimer = null;
+  function applyWhenIdle() {
+    if (!busy()) { clearInterval(applyTimer); window.__reloadKeepingScroll(); return; }
+    if (!applyTimer) applyTimer = setInterval(applyWhenIdle, 1000);
+  }
 
   function refresh() {
     if (refreshing || busy()) return;
@@ -4429,7 +4446,11 @@ _APP_JS = """
       done = true;
       navigator.serviceWorker.removeEventListener('message', onMessage);
       if (ok && same) { renderedAt = Date.now(); refreshing = false; if (chip) chip.hidden = true; return; }   // nothing changed: no reload
-      if (ok) { location.reload(); return; }        // now served, fresh, from the SW cache
+      if (ok) {                                     // now served, fresh, from the SW cache
+        if (chip) chip.hidden = true;
+        applyWhenIdle();
+        return;
+      }
       refreshing = false;
       if (chip) chip.hidden = true;                 // offline / failed: keep what's shown
     }
@@ -4591,7 +4612,7 @@ _TODAY_JS = """
     }).then(function (res) {
       return res.json().catch(function () { return {}; }).then(function (data) {
         if (!res.ok) throw new Error(data.error || ('Server returned ' + res.status));
-        location.reload();
+        window.__reloadKeepingScroll();
       });
     }).catch(function (err) {
       error.textContent = 'Could not save: ' + err.message;

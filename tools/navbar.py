@@ -82,6 +82,19 @@ THEME_BOOT = (
     "document.documentElement.dataset.theme=v==='system'?(m.matches?'light':'dark'):v;}"
     "a();if(t==='system')m.addEventListener('change',a);}catch(e){}})();</script>"
 )
+# A form that POSTs and redirects back reloads its page at the top. Remember
+# where the reader was when they submitted, and put them back once the same
+# page has loaded again.
+_FORM_SCROLL_JS = (
+    "<script>(function(){var K='gm-form-scroll';"
+    "document.addEventListener('submit',function(e){var f=e.target;"
+    "if(e.defaultPrevented||!f||String(f.method).toLowerCase()!=='post')return;"
+    "try{sessionStorage.setItem(K,JSON.stringify({p:location.pathname,y:window.scrollY,t:Date.now()}));}catch(x){}});"
+    "window.addEventListener('load',function(){try{var s=JSON.parse(sessionStorage.getItem(K)||'null');"
+    "sessionStorage.removeItem(K);"
+    "if(s&&s.p===location.pathname&&Date.now()-s.t<15000&&!location.hash)window.scrollTo(0,s.y);}catch(x){}});"
+    "})();</script>"
+)
 _NO_ZOOM_META = '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">'
 
 # Phosphor icons (regular, plus the filled variant shown while active).
@@ -340,6 +353,7 @@ def render_nav_html(active: str | None = None, token: str | None = None, *,
         "</div></nav>"
         f'<label for="{_MORE_TOGGLE_ID}" class="gm-nav-more-backdrop" aria-hidden="true"></label>'
         f'<div class="gm-nav-more-sheet" role="dialog" aria-modal="true" aria-label="More">{more_items}</div>'
+        f"{_FORM_SCROLL_JS}"
     )
 
 
