@@ -7,7 +7,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from tests.plan_fakes import fake_db, sample_plan  # noqa: F401 — fixture
-from tools import dashboard, plan_doc, plan_service, training_plan, workout_detail
+from tools import dashboard, plan_doc, plan_service, training_plan, workout_detail, workout_steps
 
 PLAN_ID = "test-block-2026"
 # sample_plan: FTP 250, run threshold pace 4:17/km, run LTHR 170, CSS 2:05.
@@ -111,11 +111,41 @@ def test_a_skipped_workout_shows_why_and_offers_unskip(plan):
     assert "data-wd-send " not in html and "Send to Garmin — Swim workouts" in html
 
 
-def test_strength_is_exercise_cards_not_a_graph(plan):
+def test_strength_is_exercise_blocks_not_a_graph(plan):
     html = _view("w1-tue-strength")["html"]
-    assert 'wd-bars' not in html and ">Exercises<" in html and "3 exercises · 7 sets" in html
-    assert "Barbell Back Squat" in html and "60 – 65 – 70 kg" in html and "65 kg</small>" in html
-    assert ">Warm-up</div>" in html and "Bodyweight" in html and "0:45<small>hold</small>" in html
+    assert 'wd-bars' not in html and ">Exercises<" in html and "3 exercises · 5 working sets · 2 warm-up" in html
+    assert "Barbell Back Squat" in html and "60 – 70 kg" in html and ">65 kg<" in html
+    assert "Bodyweight" in html and "0:45 hold" in html and ">Brace<" in html
+
+
+def _strength_html(steps):
+    return workout_detail._strength(workout_steps.clean_steps("strength", steps))
+
+
+def test_strength_follows_the_order_of_the_steps():
+    html = _strength_html([
+        {"kind": "exercise", "exercise": "BARBELL_BACK_SQUAT", "sets": 2, "reps": 8, "weightLb": 95, "warmup": True},
+        {"kind": "exercise", "exercise": "BARBELL_BACK_SQUAT", "sets": 3, "reps": 5, "setWeightsLb": [135, 145, 155],
+         "restS": 90},
+        {"kind": "exercise", "exercise": "ROMANIAN_DEADLIFT", "sets": 3, "reps": 8, "weightLb": 115, "restS": 90}])
+    # One block per exercise: the squat's warm-ups come right before its working sets, then the deadlift.
+    assert html.count('class="wd-ex"') == 2 and html.count("Barbell Back Squat") == 2   # block + glance strip
+    order = [html.index(x) for x in (">W1<", ">W2<", "Working sets", ">155 lb<", "Romanian Deadlift</div>")]
+    assert order == sorted(order)
+    assert "135 – 155 lb" in html and "rest 1:30" in html and "2 warm-up" in html and "6 working sets" in html
+
+
+def test_strength_rests_show_timed_or_until_lap():
+    html = _strength_html([
+        {"kind": "exercise", "exercise": "GOBLET_SQUAT", "sets": 1, "reps": 8, "weightLb": 45, "warmup": True},
+        {"kind": "rest"},                                                   # between warm-up and working: lap button
+        {"kind": "exercise", "exercise": "GOBLET_SQUAT", "sets": 2, "reps": 8, "weightLb": 70, "restS": 60},
+        {"kind": "rest", "durationS": 120},                                 # between exercises: timed
+        {"kind": "exercise", "exercise": "PLANK", "sets": 2, "durationS": 45}])
+    assert html.count("Rest until lap") == 1 and "Rest 2:00" in html
+    assert html.index("Rest until lap") < html.index("Working sets") < html.index("Rest 2:00") < html.index("Plank</div>")
+    # A set with no rest given is followed by the lap button on the watch, so it says so.
+    assert html.count("rest · lap") == 3 and "rest 1:00" in html
 
 
 def test_without_steps_the_text_is_the_workout(plan):

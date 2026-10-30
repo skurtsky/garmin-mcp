@@ -348,43 +348,174 @@ def _step_table(resolved: dict) -> str:
         </section>"""
 
 
+_SVG = ('<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+        'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{}</svg>')
+_I_FLAG = _SVG.format('<path d="M5 22V3"/><path d="M5 4h13l-3 4 3 4H5"/>')
+_I_CLOCK = _SVG.format('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>')
+_I_NOTE = _SVG.format('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>')
+
+
+def _strength_flow(steps: list[dict]) -> list[tuple[str, object]]:
+    """The strength steps in the order they're done: ("block", exercise) for
+    each run of steps on one exercise (its warm-up and working sets together,
+    with any rest between them), ("rest", step) for a rest between exercises."""
+    flow: list[tuple[str, object]] = []
+    cur, pending = None, []
+
+    def close():
+        nonlocal cur, pending
+        if cur:
+            flow.append(("block", cur))
+        flow.extend(("rest", r) for r in pending)
+        cur, pending = None, []
+
+    for s in steps:
+        if s.get("kind") == "rest":
+            pending.append(s)
+        elif s.get("kind") == "exercise":
+            if cur and cur["exercise"] == s.get("exercise"):
+                cur["items"].extend(("rest", r) for r in pending)
+                pending = []
+            else:
+                close()
+                cur = {"exercise": s.get("exercise"), "items": []}
+            cur["items"].append(("sets", s))
+    close()
+    return flow
+
+
+def _load_at(step: dict, i: int):
+    """(weight, unit) of set ``i``, or None for bodyweight."""
+    for key, unit in (("setWeightsKg", "kg"), ("setWeightsLb", "lb")):
+        if step.get(key):
+            return step[key][i], unit
+    for key, unit in (("weightKg", "kg"), ("weightLb", "lb")):
+        if step.get(key) is not None:
+            return step[key], unit
+    return None
+
+
+def _load_text(load) -> str:
+    return f"{plan_doc._tidy(load[0], 1)} {load[1]}" if load else "Bodyweight"
+
+
+def _load_range(steps: list[dict]) -> str:
+    """The exercise's load in one phrase: 115 lb, 135 – 155 lb, Bodyweight."""
+    loads = [l for s in steps for i in range(s.get("sets", 1)) if (l := _load_at(s, i))]
+    if not loads:
+        return "Bodyweight"
+    out = []
+    for unit in dict.fromkeys(u for _, u in loads):
+        vals = [v for v, u in loads if u == unit]
+        lo, hi = min(vals), max(vals)
+        out.append(f"{plan_doc._tidy(lo, 1)} – {plan_doc._tidy(hi, 1)} {unit}" if lo != hi
+                   else f"{plan_doc._tidy(lo, 1)} {unit}")
+    return " · ".join(out)
+
+
+def _rest_divider(step: dict) -> str:
+    """A rest step: timed, or until the lap button when it has no duration."""
+    note = f'<span class="wd-rest-note">{_e(step["note"])}</span>' if step.get("note") else ""
+    if step.get("durationS"):
+        return (f'<div class="wd-rest">{_I_CLOCK}<span>Rest {_clock(step["durationS"])}</span>{note}</div>')
+    return f'<div class="wd-rest lap">{_I_FLAG}<span>Rest until lap</span>{note}</div>'
+
+
+def _set_row(label: str, warm: bool, step: dict, i: int) -> str:
+    if step.get("reps"):
+        amount = f'{step["reps"]} reps'
+    elif step.get("durationS"):
+        amount = f'{_clock(step["durationS"])} hold'
+    else:
+        amount = "—"
+    rest, rest_s = step.get("restS"), ""
+    if rest is None:                      # no rest given: Garmin waits for the lap button
+        rest, rest_s = "rest · lap", " lap"
+    elif rest:
+        rest = f"rest {_clock(rest)}"
+    else:
+        rest = ""
+    return (f'<div class="wd-srow{" warm" if warm else ""}"><span class="wd-sl">{_e(label)}</span>'
+            f'<span class="wd-sr">{_e(amount)}</span><span class="wd-sw">{_e(_load_text(_load_at(step, i)))}</span>'
+            f'<span class="wd-sx{rest_s}">{_e(rest)}</span></div>')
+
+
+def _exercise_block(n: int, block: dict) -> str:
+    sets = [s for kind, s in block["items"] if kind == "sets"]
+    has_warm = any(s.get("warmup") for s in sets)
+    work = [s for s in sets if not s.get("warmup")]
+    n_work = sum(s.get("sets", 1) for s in work)
+    n_warm = sum(s.get("sets", 1) for s in sets if s.get("warmup"))
+    name = str(block["exercise"] or "").replace("_", " ").title()
+    meta = f'{n_work} working set{"" if n_work == 1 else "s"}' + (f" · {n_warm} warm-up" if n_warm else "")
+    body, w, k, last = "", 0, 0, None
+    for kind, s in block["items"]:
+        if kind == "rest":
+            body += _rest_divider(s)
+            continue
+        warm = bool(s.get("warmup"))
+        if has_warm and warm != last:
+            body += f'<div class="wd-cap">{"Warm-up" if warm else "Working sets"}</div>'
+        last = warm
+        for i in range(s.get("sets", 1)):
+            if warm:
+                w += 1
+            else:
+                k += 1
+            body += _set_row(f"W{w}" if warm else str(k), warm, s, i)
+        if s.get("note"):
+            body += f'<div class="wd-cue">{_I_NOTE}<span>{_e(s["note"])}</span></div>'
+    return (f'<div class="wd-ex"><div class="wd-ex-top"><span class="wd-ex-num">{n}</span>'
+            f'<div class="wd-ex-id"><div class="wd-ex-n">{_e(name)}</div><div class="wd-muted wd-small">{_e(meta)}</div></div>'
+            f'<span class="wd-ex-l">{_e(_load_range(work or sets))}</span></div>{body}</div>')
+
+
+def _strength_glance(blocks: list[dict]) -> str:
+    """The whole session on one line: per exercise, a dot per set in order
+    (hollow = warm-up, filled = working)."""
+    cells = ""
+    for n, b in enumerate(blocks, 1):
+        dots, nw, nk = "", 0, 0
+        for kind, s in b["items"]:
+            if kind != "sets":
+                continue
+            warm = bool(s.get("warmup"))
+            dots += f'<i class="wd-dot{" warm" if warm else ""}"></i>' * s.get("sets", 1)
+            nw, nk = (nw + s.get("sets", 1), nk) if warm else (nw, nk + s.get("sets", 1))
+        label = f"{nk} working set{'' if nk == 1 else 's'}" + (f", {nw} warm-up" if nw else "")
+        name = str(b["exercise"] or "").replace("_", " ").title()
+        cells += (f'<div class="wd-gl"><span class="wd-dots" role="img" aria-label="{_e(label)}">{dots}</span>'
+                  f'<span class="wd-gl-n"><b>{n}</b> {_e(name)}</span></div>')
+    return f'<div class="wd-glance">{cells}</div>'
+
+
 def _strength(steps: list[dict]) -> str:
-    def card(s):
-        name = str(s.get("exercise") or "").replace("_", " ").title()
-        sets = s.get("sets", 1)
-        wave_kg, wave_lb = s.get("setWeightsKg"), s.get("setWeightsLb")
-        unit = "kg" if wave_kg or s.get("weightKg") is not None else "lb"
-        wave = wave_kg or wave_lb
-        if wave:
-            load = " – ".join(str(plan_doc._tidy(w, 1)) for w in wave) + f" {unit}"
-        elif s.get("weightKg") is not None or s.get("weightLb") is not None:
-            load = f"{plan_doc._tidy(s.get('weightKg', s.get('weightLb')), 1)} {unit}"
+    """Exercises in the order they're done. Each exercise is one block with its
+    warm-up and working sets together, a row per set (reps, load, rest after it);
+    a rest step shows where it falls — timed, or "until lap" when it has no
+    duration — and a rest between exercises sits between their blocks."""
+    flow = _strength_flow(steps)
+    blocks = [b for kind, b in flow if kind == "block"]
+    n_work = n_warm = 0
+    for b in blocks:
+        for kind, s in b["items"]:
+            if kind == "sets":
+                if s.get("warmup"):
+                    n_warm += s.get("sets", 1)
+                else:
+                    n_work += s.get("sets", 1)
+    out, n = "", 0
+    for kind, item in flow:
+        if kind == "block":
+            n += 1
+            out += _exercise_block(n, item)
         else:
-            load = "Bodyweight"
-        each = (str(s["reps"]) if s.get("reps") else _clock(s["durationS"]) if s.get("durationS") else "—")
-        chips = "".join(
-            f'<span class="wd-set">{_e(each)}<small>{_e(f"{plan_doc._tidy(wave[i], 1)} {unit}" if wave else ("hold" if s.get("durationS") else "reps"))}</small></span>'
-            for i in range(sets))
-        meta = " · ".join(p for p in (
-            f"{sets} × {s['reps']} reps" if s.get("reps") else f"{sets} × {_clock(s['durationS'])}" if s.get("durationS") else f"{sets} sets",
-            f"rest {_clock(s['restS'])}" if s.get("restS") else "", s.get("note") or "") if p)
-        return (f'<div class="wd-ex"><div class="wd-ex-top"><span class="wd-ex-n">{_e(name)}</span>'
-                f'<span class="wd-ex-l">{_e(load)}</span></div><div class="wd-sets">{chips}</div>'
-                f'<div class="wd-muted wd-small">{_e(meta)}</div></div>')
-    warm = [s for s in steps if s.get("kind") == "exercise" and s.get("warmup")]
-    main = [s for s in steps if s.get("kind") == "exercise" and not s.get("warmup")]
-    rests = [s for s in steps if s.get("kind") == "rest"]
-    out = ""
-    if warm:
-        out += '<div class="wd-sec">Warm-up</div>' + "".join(card(s) for s in warm)
-    out += ('<div class="wd-sec">Main</div>' if warm else "") + "".join(card(s) for s in main)
-    if rests:
-        total = sum(s.get("durationS") or 0 for s in rests)
-        out += f'<div class="wd-muted wd-small">Plus {len(rests)} rest break{"s" if len(rests) > 1 else ""}' + \
-               (f" ({_clock(total)})" if total else "") + "</div>"
-    n_sets = sum(s.get("sets", 1) for s in warm + main)
+            out += _rest_divider(item)
+    summary = (f'{len(blocks)} exercise{"" if len(blocks) == 1 else "s"} · {n_work} working set{"" if n_work == 1 else "s"}'
+               + (f" · {n_warm} warm-up" if n_warm else ""))
     return (f'<section class="wd-card wd-strength" aria-label="Exercises"><div class="wd-cardhead"><h3 class="wd-h">Exercises</h3>'
-            f'<span class="wd-muted">{len(warm) + len(main)} exercises · {n_sets} sets</span></div>{out}</section>')
+            f'<span class="wd-muted">{summary}</span></div>'
+            f'{_strength_glance(blocks) if len(blocks) > 1 else ""}{out}</section>')
 
 
 # ── the view ──────────────────────────────────────────────────────────────────
@@ -838,16 +969,43 @@ html[data-theme=light] .wd-skipind, html[data-theme=light] .wd-skipchip { color:
 /* strength */
 .wd-strength { display:flex; flex-direction:column; gap:10px; }
 .wd-strength .wd-cardhead { margin-bottom:2px; }
-.wd-sec { display:flex; align-items:center; gap:8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
-.wd-sec::after { content:""; flex:1; height:1px; background:var(--color-neutral-800); }
-.wd-ex { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-radius:10px; background:var(--wd-inset); }
-.wd-ex-top { display:flex; align-items:baseline; justify-content:space-between; gap:10px; }
-.wd-ex-n { font-size:15px; font-weight:500; }
+.wd-glance { display:grid; grid-template-columns:repeat(auto-fit, minmax(130px, 1fr)); gap:12px 10px; padding:12px 14px; border-radius:10px; background:var(--wd-inset); }
+.wd-gl { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.wd-dots { display:flex; align-items:center; gap:4px; height:12px; }
+.wd-dot { width:10px; height:10px; border-radius:50%; background:var(--color-accent); }
+.wd-dot.warm { background:none; box-sizing:border-box; border:1.5px dashed var(--color-neutral-500); }
+.wd-gl-n { font-size:12px; color:var(--color-neutral-300); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.wd-gl-n b { font-weight:400; color:var(--color-neutral-500); margin-right:4px; }
+.wd-ex { display:flex; flex-direction:column; padding:14px 16px 6px; border-radius:10px; background:var(--wd-inset); }
+.wd-ex-top { display:flex; align-items:center; gap:12px; padding-bottom:10px; }
+.wd-ex-num { flex:0 0 auto; width:30px; height:30px; border-radius:50%; display:grid; place-items:center; font-size:14px; font-weight:600;
+  background:color-mix(in srgb, var(--color-accent) 24%, var(--color-surface)); color:var(--color-accent-200); }
+.wd-ex-id { flex:1; min-width:0; display:flex; flex-direction:column; gap:2px; }
+.wd-ex-n { font-size:16px; font-weight:500; }
 .wd-ex-l { font-size:15px; font-weight:500; color:var(--color-accent-300); white-space:nowrap; }
-.wd-sets { display:flex; gap:6px; flex-wrap:wrap; }
-.wd-set { flex:1 1 56px; max-width:120px; display:flex; flex-direction:column; align-items:center; padding:6px 0; border-radius:8px;
-  background:var(--color-surface); font-size:14px; font-weight:500; }
-.wd-set small { font-size:11px; font-weight:400; color:var(--color-neutral-500); }
+.wd-cap { padding:6px 0 4px; border-top:1px solid var(--wd-line); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--color-neutral-500); }
+.wd-srow { display:grid; grid-template-columns:44px minmax(0, 1fr) minmax(0, 1fr) 90px; align-items:center; gap:12px; min-height:40px; border-top:1px solid var(--wd-line); }
+.wd-ex-top + .wd-srow, .wd-cap + .wd-srow, .wd-rest + .wd-srow { border-top:0; }
+.wd-sl { width:32px; height:26px; box-sizing:border-box; border-radius:6px; display:grid; place-items:center; font-size:13px; font-weight:600;
+  background:color-mix(in srgb, var(--color-accent) 24%, var(--color-surface)); color:var(--color-accent-200); }
+.wd-sr, .wd-sw { font-size:15px; font-weight:500; }
+.wd-sx { font-size:12px; color:var(--color-neutral-500); text-align:right; }
+.wd-sx.lap { color:var(--color-accent-400); }
+.wd-srow.warm { min-height:36px; }
+.wd-srow.warm .wd-sl { background:none; border:1px dashed var(--color-neutral-600); color:var(--color-neutral-400); font-weight:500; font-size:12px; }
+.wd-srow.warm .wd-sr, .wd-srow.warm .wd-sw { font-size:14px; font-weight:400; color:var(--color-neutral-400); }
+.wd-cue { display:flex; align-items:center; gap:8px; padding:8px 0 10px; border-top:1px solid var(--wd-line); font-size:13px; color:var(--color-neutral-300); }
+.wd-cue svg { flex:0 0 auto; color:var(--color-accent-400); }
+.wd-rest { display:flex; align-items:center; gap:8px; min-height:32px; font-size:12px; color:var(--color-neutral-500); }
+.wd-rest::before, .wd-rest::after { content:""; flex:1; height:0; border-top:1px solid var(--color-neutral-800); }
+.wd-rest.lap { color:var(--color-accent-400); font-weight:500; }
+.wd-rest.lap::before, .wd-rest.lap::after { border-top:1px dashed var(--color-accent-700); }
+.wd-rest svg { flex:0 0 auto; }
+.wd-rest-note { color:var(--color-neutral-500); font-weight:400; }
+@media (max-width: 560px) {
+  .wd-srow { grid-template-columns:36px minmax(0, 1fr) minmax(0, 1fr) 62px; gap:8px; min-height:44px; }
+  .wd-ex { padding:12px 12px 4px; }
+}
 /* side */
 .wd-notes { display:flex; flex-direction:column; gap:8px; }
 .wd-tag { border-radius:999px; padding:3px 12px; background:var(--color-neutral-800); box-shadow:none; color:var(--color-text); }
