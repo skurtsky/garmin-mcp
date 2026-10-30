@@ -238,3 +238,8 @@ def test_inject_nav_adds_theme_boot_once_and_is_idempotent():
     assert once.index(navbar.THEME_BOOT) < once.index("<title>")
     assert navbar.inject_nav(once, "plan") == once
     assert navbar.inject_theme_boot(once).count(navbar.THEME_BOOT) == 1
+
+
+def test_nav_remembers_scroll_across_form_posts():
+    nav = navbar.render_nav_html("today")
+    assert "gm-form-scroll" in nav and "scrollTo(0,s.y)" in nav

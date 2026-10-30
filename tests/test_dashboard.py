@@ -1746,3 +1746,13 @@ def test_desktop_header_sums_up_the_day():
     html = dashboard.render_dashboard_html(_with_plan())
     assert '<span class="tb-today-desk">1 session · 40 min planned' in html
     assert 'id="dash-date"' in html   # the date picker stays
+
+
+def test_stale_refresh_waits_for_every_open_overlay():
+    js = dashboard._APP_JS
+    for sel in (".wd-overlay:not([hidden])", ".thr-modal:not([hidden])", ".act-cal:not([hidden])",
+                ".dp-cal:not([hidden])", "#gm-nav-more:checked", ".activity-modal.open"):
+        assert sel in js
+    assert "applyWhenIdle" in js and "location.reload(); return; }        // now served" not in js
+    source = open(dashboard.__file__, encoding="utf-8").read()
+    assert source.count("__reloadKeepingScroll()") >= 3             # refresh, workout close, FTP save

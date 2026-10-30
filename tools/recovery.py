@@ -1006,6 +1006,31 @@ RECOVERY_CSS = """
 
 _RECOVERY_JS = r"""
 (function () {
+  // Picking another day swaps the page's content in place (no reload, so the
+  // scroll position stays); the page script below runs again on the new copy.
+  var swapSeq = 0;
+  function swapDay(url, push) {
+    var seq = ++swapSeq, y = window.scrollY;
+    function fallback() { window.location.href = url; }
+    fetch(url, { credentials: 'same-origin' }).then(function (res) {
+      if (!res.ok) throw new Error('status ' + res.status);
+      return res.text();
+    }).then(function (text) {
+      if (seq !== swapSeq) return;                       // a newer pick superseded this one
+      var m = /window\.__RC\s*=\s*(\{[^\n]*\});/.exec(text);
+      var doc = new DOMParser().parseFromString(text, 'text/html');
+      var next = doc.querySelector('main.rc'), cur = document.querySelector('main.rc');
+      if (!m || !next || !cur || !next.querySelector('#rc-date-btn')) throw new Error('unexpected page');
+      window.__RC = JSON.parse(m[1]);
+      cur.replaceWith(document.importNode(next, true));
+      if (push) history.pushState({ rc: 1 }, '', url);
+      window.__rcInit();
+      window.scrollTo(0, y);
+    }).catch(fallback);
+  }
+  window.addEventListener('popstate', function () { if (window.__RC) swapDay(window.location.href, false); });
+
+  function init() {
   var C = window.__RC;
   if (!C) return;
   function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }
@@ -1080,7 +1105,8 @@ _RECOVERY_JS = r"""
   function go(day) {
     var u = new URL(window.location.href);
     if (day === C.today) u.searchParams.delete('date'); else u.searchParams.set('date', day);
-    window.location.href = u.toString();
+    if (day === C.date) { open(false); return; }
+    swapDay(u.toString(), true);
   }
   // The HRV dots and the resting HR / respiration bars each pick a day for the whole page.
   all('[data-go]').forEach(function (b) {
@@ -1130,11 +1156,16 @@ _RECOVERY_JS = r"""
   });
   one('[data-cal-today]', cal).addEventListener('click', function () { go(C.today); });
   one('[data-cal-close]', cal).addEventListener('click', function () { open(false); btn.focus(); });
-  document.addEventListener('click', function (e) {
+  if (window.__rcOutside) document.removeEventListener('click', window.__rcOutside);
+  window.__rcOutside = function (e) {
     if (!cal.hidden && !cal.contains(e.target) && !btn.contains(e.target)) open(false);
-  });
+  };
+  document.addEventListener('click', window.__rcOutside);
   cal.addEventListener('keydown', function (e) {
     if (e.key === 'Escape') { open(false); btn.focus(); }
   });
+  }
+  window.__rcInit = init;
+  init();
 })();
 """
