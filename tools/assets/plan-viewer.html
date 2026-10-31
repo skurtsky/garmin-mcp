@@ -2602,7 +2602,24 @@ function inSideScroller(el) {
   }
   return false;
 }
+/* The week follows the finger. The first few pixels decide the axis: sideways
+   locks the gesture (and cancels the page's vertical scroll for its duration),
+   vertical hands it back to normal scrolling. Release past a distance — or
+   with a quick flick — slides the week out and the next one in; otherwise it
+   springs back. At the plan's first / last week the drag is stiff. */
+function canStepWeek(delta) {
+  const target = state.planWeekNumber + delta;
+  if (target > PLAN.meta.totalWeeks) return !!NEIGHBORS.next;
+  if (target < 1) return !!NEIGHBORS.prev;
+  return true;
+}
+const SWIPE_LOCK_PX = 6, SWIPE_COMMIT_PX = 80, SWIPE_FLICK_PX = 30, SWIPE_FLICK_SPEED = 0.45;
 let swipe = null;
+function swipeReset(wrap, animate) {
+  if (!wrap) return;
+  wrap.style.transition = animate ? 'transform .2s ease-out, opacity .2s ease-out' : 'none';
+  wrap.style.transform = ''; wrap.style.opacity = '';
+}
 document.addEventListener('touchstart', e => {
   swipe = null;
   if (e.touches.length !== 1 || state.tab !== 'plan' || (window.WD && window.WD.isOpen()) || state.editId) return;
@@ -2610,16 +2627,38 @@ document.addEventListener('touchstart', e => {
   if (t.clientX < 24 || t.clientX > window.innerWidth - 24) return;   // leave the screen edges to iOS
   if (!e.target.closest || !e.target.closest('.scroller') || e.target.closest('input, select, textarea')) return;
   if (inSideScroller(e.target)) return;
-  swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+  swipe = { x: t.clientX, y: t.clientY, at: Date.now(), axis: null, wrap: document.querySelector('#app .content-wrap') };
 }, { passive: true });
-document.addEventListener('touchcancel', () => { swipe = null; }, { passive: true });
+document.addEventListener('touchmove', e => {
+  if (!swipe || !swipe.wrap) return;
+  const t = e.touches[0];
+  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y;
+  if (!swipe.axis) {
+    if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_LOCK_PX) return;
+    swipe.axis = Math.abs(dx) > Math.abs(dy) * 1.2 ? 'x' : 'y';
+    if (swipe.axis === 'x') swipe.wrap.style.transition = 'none';
+  }
+  if (swipe.axis === 'y') { swipe = null; return; }
+  if (e.cancelable) e.preventDefault();             // no vertical scroll while paging
+  const shown = canStepWeek(dx < 0 ? 1 : -1) ? dx : dx * 0.25;
+  swipe.wrap.style.transform = 'translateX(' + shown + 'px)';
+  swipe.wrap.style.opacity = String(1 - Math.min(Math.abs(shown) / window.innerWidth, 0.5));
+}, { passive: false });
+document.addEventListener('touchcancel', () => { if (swipe) swipeReset(swipe.wrap, true); swipe = null; }, { passive: true });
 document.addEventListener('touchend', e => {
   if (!swipe) return;
-  const t = e.changedTouches[0];
-  const dx = t.clientX - swipe.x, dy = t.clientY - swipe.y, took = Date.now() - swipe.at;
+  const s = swipe;
   swipe = null;
-  if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2 || took > 700) return;
-  stepWeek(dx < 0 ? 1 : -1);                        // swipe left → next week
+  if (s.axis !== 'x') return;
+  const dx = e.changedTouches[0].clientX - s.x, took = Math.max(Date.now() - s.at, 1);
+  const delta = dx < 0 ? 1 : -1;                    // swipe left → next week
+  const flick = Math.abs(dx) >= SWIPE_FLICK_PX && Math.abs(dx) / took >= SWIPE_FLICK_SPEED;
+  if ((Math.abs(dx) < SWIPE_COMMIT_PX && !flick) || !canStepWeek(delta)) return swipeReset(s.wrap, true);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return stepWeek(delta);
+  s.wrap.style.transition = 'transform .14s ease-in, opacity .14s ease-in';
+  s.wrap.style.transform = 'translateX(' + (delta > 0 ? -1 : 1) * window.innerWidth * 0.3 + 'px)';
+  s.wrap.style.opacity = '0';
+  setTimeout(() => stepWeek(delta), 140);           // the new week then slides in from the far side
 }, { passive: true });
 
 document.addEventListener('keydown', e => {
@@ -2809,8 +2848,8 @@ if (state.tab === 'settings') setView('settings');
 .saving-pill { position:fixed; top:calc(14px + env(safe-area-inset-top, 0px)); left:50%; transform:translateX(-50%); z-index:50; padding:6px 14px; border-radius:999px;
   font-size:12px; background: var(--color-surface); box-shadow: var(--shadow-md); color: var(--color-accent-200); }
 select.input { appearance:auto; }
-@keyframes pv-from-left { from { opacity:0; transform:translateX(-28px); } to { opacity:1; transform:none; } }
-@keyframes pv-from-right { from { opacity:0; transform:translateX(28px); } to { opacity:1; transform:none; } }
+@keyframes pv-from-left { from { opacity:0; transform:translateX(-72px); } to { opacity:1; transform:none; } }
+@keyframes pv-from-right { from { opacity:0; transform:translateX(72px); } to { opacity:1; transform:none; } }
 /* — month view (desktop) — */
 .month { display:flex; flex-direction:column; gap:8px; padding:0 18px 24px; }
 .month-row { display:grid; grid-template-columns:48px repeat(7, minmax(0,1fr)); gap:6px; }
@@ -2892,8 +2931,8 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .view-seg .seg-opt.on { color:var(--color-accent); box-shadow:inset 0 0 0 1px var(--color-accent); }
 .plan-head-nav { align-items:center; }
 @media (max-width: 899px) { .view-seg { display:none; } }
-.slide-from-left { animation: pv-from-left .22s ease-out; }
-.slide-from-right { animation: pv-from-right .22s ease-out; }
+.slide-from-left { animation: pv-from-left .3s cubic-bezier(.2,.8,.2,1); }
+.slide-from-right { animation: pv-from-right .3s cubic-bezier(.2,.8,.2,1); }
 /* Tap feedback: a quick press so a tap visibly registered. */
 html { -webkit-tap-highlight-color: transparent; }
 .btn, .seg-opt, .wcard { transition: transform .12s ease, opacity .12s ease; }
