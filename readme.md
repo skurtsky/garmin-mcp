@@ -653,6 +653,12 @@ npx @modelcontextprotocol/inspector
 - **URL:** `http://localhost:8000/mcp?token=YOUR_TOKEN`
 - **Connection Type:** `Via Proxy`
 
+`/mcp` also accepts the token the standard way, as an `Authorization: Bearer
+YOUR_TOKEN` header (preferred — it keeps the secret out of URLs and access
+logs). The header is checked first; `?token=` is used only when no Bearer
+header is sent, so a wrong Bearer token is rejected even with a valid
+`?token=`. The dashboard and other pages still use `?token=` only.
+
 **Step 4** — Click **Connect**, navigate to **Tools**, and run any tool.
 
 ## Project Structure
