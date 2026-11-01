@@ -75,6 +75,52 @@ from starlette.types import ASGIApp
 
 BEARER_TOKEN = os.environ.get("MCP_BEARER_TOKEN")
 
+MCP_PATH = "/mcp"
+
+
+def validate_token(provided, secret=None) -> bool:
+    """True when `provided` matches the configured secret (MCP_BEARER_TOKEN
+    unless `secret` is given). Constant-time; never logs either value."""
+    if secret is None:
+        secret = BEARER_TOKEN
+    if not provided or not secret:
+        return False
+    # Bytes, so a non-ASCII token is a mismatch rather than a TypeError.
+    return secrets.compare_digest(provided.encode("utf-8"), secret.encode("utf-8"))
+
+
+def _is_mcp_path(path: str) -> bool:
+    return path == MCP_PATH or path.startswith(MCP_PATH + "/")
+
+
+def _bearer_from_headers(scope):
+    """The token from an `Authorization: Bearer <token>` header, or None if
+    there is no Bearer header (other schemes are ignored)."""
+    for name, value in scope.get("headers", []):
+        if name == b"authorization":
+            scheme, _, credentials = value.decode("latin-1").partition(" ")
+            if scheme.lower() == "bearer":
+                return credentials.strip()
+    return None
+
+
+def _token_from_query(scope):
+    from urllib.parse import parse_qs
+    query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
+    return query.get("token", [None])[0]
+
+
+def request_is_authorized(scope, secret=None) -> bool:
+    """The auth gate for an HTTP request. /mcp accepts `Authorization: Bearer`
+    first and falls back to ?token= only when no Bearer header is sent (a
+    wrong Bearer token is not rescued by a good ?token=). Every other route,
+    the dashboard included, takes ?token= only, as before."""
+    if _is_mcp_path(scope.get("path", "")):
+        bearer = _bearer_from_headers(scope)
+        if bearer is not None:
+            return validate_token(bearer, secret)
+    return validate_token(_token_from_query(scope), secret)
+
 
 # ── TOOLS ─────────────────────────────────────────────────────────────────────
 
@@ -1573,11 +1619,10 @@ def build_asgi_app():
             return
 
         if bearer and scope["type"] == "http":
-            query_string = scope.get("query_string", b"").decode()
-            params = dict(p.split("=") for p in query_string.split("&") if "=" in p)
-            token = params.get("token", "")
-            if not secrets.compare_digest(token, bearer):
-                response = StarletteResponse("Unauthorized", status_code=401)
+            if not request_is_authorized(scope, bearer):
+                response = StarletteResponse(
+                    "Unauthorized", status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"} if _is_mcp_path(scope.get("path", "")) else None)
                 await response(scope, receive, send)
                 return
 
