@@ -514,6 +514,7 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
           "name": "...", "type": "...", "durationMinutes": 45, "distanceKm": 8,
           "primaryZone": "Zone 2", "description": "...", "keyTargets": "...",
           "cues": "...", "purpose": "...", "tags": ["25m", "AE2"],
+          "rouvy": {"routes": [{"name": "...", "url": "https://rouvy.com/..."}]},
           "humanReadable": "..."}}          — id is generated (w{week}-{day}-{sport})
       {"op": "update_workout", "workout_id": "w5-thu-run", "fields": {...}}
           — only the given fields change; null/"" removes a field; a "date"
@@ -586,6 +587,18 @@ def amend_training_plan(operations: list[dict], reason: str, plan_id: Optional[s
     length "25m", an intensity label "AE2"; case-insensitive duplicates are
     dropped; null or [] removes them). Over-budget text is saved and returned
     as a warning. Coach review comments are only added through add_coach_review.
+    Rouvy links (bike workouts only; rejected on swims, runs and every other
+    sport) go in `rouvy`: {"workout": {"name": "Climbing Tempo", "url":
+    "https://rouvy.com/…"}, "routes": [{"name": "Alpe d'Huez", "url":
+    "https://rouvy.com/…", "distanceKm": 13.8, "elevationM": 1071, "eta":
+    "01:05:00"}]}. Names and rouvy.com links are required; a route's
+    distanceKm, elevationM and eta (hh:mm:ss) are optional. At most one Rouvy
+    workout; with a workout linked a session takes one route, without one up
+    to two (a session that plans for two). The workout view shows them as
+    links, and a bike ride with no steps shows "Ride <route>". The field
+    replaces the whole value, so send everything that should stay (read it
+    from get_training_plan); null or {} removes all Rouvy links. Changing a
+    workout away from bike needs `"rouvy": null` in the same update.
     Follow the coach skill's humanReadable template with zone tokens — live, they
     follow the plan's thresholds: {{run-pace:N}}, {{run-hr:N}},
     {{bike-watts:N}}, {{bike-hr:N}} (N = 1-4, 5a, 5b, 5c), {{swim-pace:N}}

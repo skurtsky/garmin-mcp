@@ -1194,7 +1194,7 @@ def unsend_from_garmin(plan_id: str | None, workout_id: str) -> dict:
 def _workout_view(workout: dict, day: dict, state: dict, include_details: bool) -> dict:
     keys = ["id", "sport", "type", "name", "durationMinutes", "distanceKm", "distanceMeters",
             "distanceKmRange", "primaryZone", "keyTargets", "terrain", "difficulty", "trainingEffect",
-            "startTime", "tags", "purpose", "purposeMet"]
+            "startTime", "tags", "purpose", "purposeMet", "rouvy"]
     if include_details:
         keys += ["description", "cues", "humanReadable", "steps", "coachReview"]
     out = {k: workout[k] for k in keys if workout.get(k) not in (None, "")}

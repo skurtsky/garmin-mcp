@@ -625,10 +625,77 @@ def _review_time(iso) -> str:
     return f"{dt:%a %b} {dt.day}, {dt.hour % 12 or 12}:{dt:%M} {'am' if dt.hour < 12 else 'pm'}"
 
 
-def _notes_cards(w: dict) -> str:
+# ── Rouvy links (bike workouts) ────────────────────────────────────────────────
+_I_ROUTE = ('<circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="6" r="2"></circle>'
+            '<path d="M8 18h6a3 3 0 0 0 0-6h-4a3 3 0 0 1 0-6h6"></path>')
+_I_TREND = '<path d="M3 17l6-6 4 4 8-8"></path><path d="M15 7h6v6"></path>'
+_I_RWORKOUT = '<path d="M3 17h4V9l4 5 3-8 3 6h4"></path>'
+_I_EXT = ('<path d="M14 4h6v6"></path><path d="M20 4l-9 9"></path>'
+          '<path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"></path>')
+
+
+def _rouvy(w: dict, sport: str) -> dict:
+    """The workout's Rouvy links — only a bike workout has any."""
+    r = w.get("rouvy")
+    return r if sport == "bike" and isinstance(r, dict) else {}
+
+
+def _rouvy_stats(route: dict) -> str:
+    """One line of a route's distance, elevation gain and ETA (each optional)."""
+    parts = []
+    if route.get("distanceKm") is not None:
+        parts.append(f'<span>{_icon(_I_ROUTE, 16)}<span class="wd-vh">Distance </span>{float(route["distanceKm"]):,.1f} km</span>')
+    if route.get("elevationM") is not None:
+        parts.append(f'<span>{_icon(_I_TREND, 16)}<span class="wd-vh">Elevation gain </span>{float(route["elevationM"]):,.0f} m</span>')
+    if route.get("eta"):
+        parts.append(f'<span><b class="wd-eta" aria-hidden="true">ETA</b><span class="wd-vh">Estimated time </span>{_e(route["eta"])}</span>')
+    return f'<div class="wd-rstats">{"".join(parts)}</div>' if parts else ""
+
+
+def _rouvy_link(item: dict, kind: str, stats: str = "") -> str:
+    icon = _I_ROUTE if kind == "Route" else _I_RWORKOUT
+    return (f'<a class="wd-rlink" href="{_e(item["url"])}" target="_blank" rel="noopener noreferrer">'
+            f'<span class="wd-ricon" aria-hidden="true">{_icon(icon, 18)}</span>'
+            f'<span class="wd-rtext"><span class="wd-kick">{kind}</span><span class="wd-rname">{_e(item["name"])}</span></span>'
+            f'<span class="wd-rext" aria-hidden="true">{_icon(_I_EXT, 18)}</span>{stats}</a>')
+
+
+def _rouvy_card(links: dict) -> str:
+    """The side column's "Rouvy" card: the linked workout, then the routes."""
+    rows = ""
+    if links.get("workout"):
+        rows += _rouvy_link(links["workout"], "Workout")
+    for route in links.get("routes") or []:
+        rows += _rouvy_link(route, "Route", _rouvy_stats(route))
+    if not rows:
+        return ""
+    return f'<section class="wd-card wd-rouvy" aria-label="Rouvy"><h3 class="wd-h">Rouvy</h3><div class="wd-rlinks">{rows}</div></section>'
+
+
+def _plan_card(links: dict, can_edit: bool) -> str:
+    """A bike ride with no steps has no shape to draw, so the main column says
+    what the plan is: ride the linked route(s), or asks for one."""
+    routes = links.get("routes") or []
+    if routes:
+        body = "".join(f'<div class="wd-plan-route"><div class="wd-plan-name">Ride {_e(r["name"])}</div>{_rouvy_stats(r)}</div>'
+                       for r in routes)
+        return (f'<section class="wd-card wd-plan" aria-label="Plan"><span class="wd-ricon" aria-hidden="true">{_icon(_I_ROUTE, 22)}</span>'
+                f'<div class="wd-plan-body"><div class="wd-kick">Plan</div>{body}</div></section>')
+    ask = ('<button type="button" class="wd-linkbtn" data-wd-act="edit">Link a route</button> to say where to ride.'
+           if can_edit else "")
+    return (f'<section class="wd-card wd-plan wd-plan-empty" aria-label="Plan"><span class="wd-ricon wd-ricon-off" aria-hidden="true">'
+            f'{_icon(_I_ROUTE, 22)}</span><div class="wd-plan-body"><div class="wd-kick">Plan</div>'
+            f'<div class="wd-plan-name">No route linked yet. {ask}</div></div></section>')
+
+
+def _notes_cards(w: dict, after_notes: str = "") -> str:
     """The side column's coach cards: notes (summary, key targets, cues), the
     purpose with its verdict, and the coach's dated review comments."""
     out = ""
+    purpose = (w.get("purpose") or "").strip()
+    if purpose:
+        out += ('<section class="wd-card wd-purpose" aria-label="Purpose"><div class="wd-cardhead wd-purpose-head">'
+                f'<h3 class="wd-h">Purpose</h3>{_purpose_badge(w.get("purposeMet"))}</div><p>{_e(purpose)}</p></section>')
     description = (w.get("description") or "").strip()
     targets = [t.strip() for t in re.split(r"[;\n]", w.get("keyTargets") or "") if t.strip()]
     cues = (w.get("cues") or "").strip()
@@ -638,10 +705,7 @@ def _notes_cards(w: dict) -> str:
                 + (f'<div class="wd-kick">Key targets</div><ul>{"".join(f"<li>{_e(t)}</li>" for t in targets)}</ul>' if targets else "")
                 + (f'<div class="wd-kick">Cues</div><p>{_e(cues)}</p>' if cues else "")
                 + "</section>")
-    purpose = (w.get("purpose") or "").strip()
-    if purpose:
-        out += ('<section class="wd-card wd-purpose" aria-label="Purpose"><div class="wd-cardhead wd-purpose-head">'
-                f'<h3 class="wd-h">Purpose</h3>{_purpose_badge(w.get("purposeMet"))}</div><p>{_e(purpose)}</p></section>')
+    out += after_notes
     reviews = [r for r in w.get("coachReview") or [] if isinstance(r, dict) and str(r.get("text") or "").strip()]
     if reviews:
         rows = "".join(
@@ -749,14 +813,17 @@ def render(row: dict, workout_id: str, token: str | None = None) -> dict:
     elif steps and sport == "strength":
         main += _strength(steps)
     text = plan_doc.resolve_tokens(plan, w.get("humanReadable")) if w.get("humanReadable") else ""
+    links = _rouvy(w, sport)
+    if sport == "bike" and not steps:
+        main += _plan_card(links, can_edit)
     if text and not steps:
-        main += (f'<section class="wd-card"><div class="wd-cardhead"><h3 class="wd-h">Workout</h3></div>'
+        main += (f'<section class="wd-card wd-textcard"><div class="wd-cardhead"><h3 class="wd-h">Workout</h3></div>'
                  f'<div class="wd-text">{_e(text)}</div></section>')
     if not main.strip():
         main = '<section class="wd-card"><p class="wd-muted" style="margin:0">No details for this workout.</p></section>'
 
     # Side column
-    side = _notes_cards(w) + _zones_card(plan, sport, steps, w.get("primaryZone"))
+    side = _notes_cards(w, _rouvy_card(links)) + _zones_card(plan, sport, steps, w.get("primaryZone"))
     if text and steps:
         side += (f'<details class="wd-card wd-orig"><summary class="wd-h">Coach&rsquo;s original text</summary>'
                  f'<div class="wd-text">{_e(text)}</div></details>')
@@ -1025,6 +1092,33 @@ html[data-theme=light] .wd-skipind, html[data-theme=light] .wd-skipchip { color:
 .wd-notes ul { margin:0; padding-left:18px; font-size:13px; color:var(--color-text); display:flex; flex-direction:column; gap:3px; }
 .wd-orig summary { cursor:pointer; list-style:none; }
 .wd-orig .wd-text { margin-top:10px; }
+/* Rouvy links: a bike workout's workout/route, and the plan card of a ride with no steps */
+.wd-vh { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
+.wd-rouvy { display:flex; flex-direction:column; gap:12px; }
+.wd-rlinks { display:flex; flex-direction:column; gap:8px; }
+.wd-rlink { display:flex; flex-wrap:wrap; align-items:center; gap:14px; min-height:56px; padding:10px 14px; border-radius:10px; color:inherit; text-decoration:none;
+  background:var(--wd-inset); box-shadow:inset 0 0 0 1px var(--color-neutral-800); }
+.wd-rlink:hover { box-shadow:inset 0 0 0 1px var(--color-accent); }
+.wd-rlink:focus-visible { outline:2px solid var(--color-accent); outline-offset:2px; }
+.wd-ricon { flex:0 0 auto; width:36px; height:36px; border-radius:8px; display:grid; place-items:center;
+  background:color-mix(in srgb, var(--color-accent) 16%, transparent); color:var(--color-accent-400); }
+.wd-plan .wd-ricon { width:44px; height:44px; border-radius:10px; }
+.wd-ricon-off { background:color-mix(in srgb, var(--color-text) 8%, transparent); color:var(--color-neutral-400); }
+.wd-rtext { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+.wd-rname { font-size:16px; font-weight:500; overflow-wrap:anywhere; }
+.wd-rext { flex:0 0 auto; color:var(--color-accent-400); display:grid; }
+.wd-rstats { flex:1 1 100%; display:flex; flex-wrap:nowrap; align-items:center; gap:14px; margin-top:2px; padding-top:12px;
+  border-top:1px solid var(--wd-line); font-size:13px; font-weight:500; white-space:nowrap; }
+.wd-rstats > span { display:inline-flex; align-items:center; gap:6px; }
+.wd-eta { font-size:11px; font-weight:700; letter-spacing:.04em; color:var(--color-neutral-400); }
+.wd-plan { display:flex; flex-wrap:wrap; align-items:center; gap:16px; padding:18px 20px; }
+.wd-plan-body { flex:1; min-width:0; display:flex; flex-direction:column; gap:10px; }
+.wd-plan-route { display:flex; flex-direction:column; gap:10px; }
+.wd-plan-name { font-size:18px; font-weight:500; overflow-wrap:anywhere; }
+.wd-plan-empty { background:transparent; box-shadow:none; border:1px dashed var(--color-neutral-700); }
+.wd-plan-empty .wd-plan-name { font-size:15px; font-weight:400; color:var(--color-neutral-300); }
+.wd-plan-body .wd-rstats { margin:0; padding:0; border:0; }
+.wd-plan-route + .wd-plan-route { padding-top:10px; border-top:1px solid var(--wd-line); }
 .wd-watch { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--color-neutral-400); padding:12px 16px; }
 .wd-watch .gs-arrow { display:none; }
 .wd-watch svg { color:#7fb87a; }
@@ -1067,6 +1161,7 @@ html[data-theme=light] .wd-skipind, html[data-theme=light] .wd-skipchip { color:
 }
 @media (min-width: 900px) and (max-width: 1180px) {
   .wd-body { grid-template-columns:minmax(0,1fr) 300px; }
+  .wd-rstats { flex-wrap:wrap; }
   .wd-headacts .wd-sep, .wd-headacts [data-wd-go] { display:none; }
   .wd-rc { display:none; }
   .wd-thead, .wd-row { grid-template-columns:34px minmax(0,1.1fr) 90px minmax(0,1.6fr); }
@@ -1086,6 +1181,11 @@ html[data-theme=light] .wd-skipind, html[data-theme=light] .wd-skipchip { color:
   .wd-chip { flex:0 0 auto; }
   .wd-body { padding:16px 16px 20px; gap:14px; }
   .wd-main, .wd-side { gap:14px; }
+  /* One column: purpose, coach notes, structure, steps, then the Rouvy links. */
+  .wd-main, .wd-side { display:contents; }
+  .wd-purpose { order:1; } .wd-notes { order:2; }
+  .wd-struct, .wd-strength, .wd-plan { order:3; } .wd-steps, .wd-textcard { order:4; }
+  .wd-rouvy { order:5; } .wd-review { order:6; } .wd-zones { order:7; } .wd-orig { order:8; } .wd-watch { order:9; }
   .wd-card { padding:14px; }
   .wd-msg { padding:0 16px 10px; }
   .wd-actbar { display:flex; gap:8px; position:sticky; bottom:0; margin-top:auto; padding:10px 16px max(14px, env(safe-area-inset-bottom, 0px));

@@ -275,3 +275,81 @@ def test_purpose_verdict_and_coach_review(plan, met, attr, text):
 def test_workout_without_notes_has_no_coach_cards(plan):
     html = _view("w1-mon-swim")["html"]
     assert "Coach notes" not in html and "Purpose" not in html.replace("Purposeful", "") and "Coach review" not in html
+
+
+# ── Rouvy links ───────────────────────────────────────────────────────────────
+
+ROUVY = {"workout": {"name": "Climbing Tempo", "url": "https://rouvy.com/workouts/2"},
+         "routes": [{"name": "Grand Alpine Loop", "url": "https://rouvy.com/virtual-routes/1",
+                     "distanceKm": 109.5, "elevationM": 2979, "eta": "05:20:53"}]}
+
+
+def _link(plan, wid, rouvy):
+    plan_service.apply_operations(PLAN_ID, [{"op": "update_workout", "workout_id": wid, "fields": {"rouvy": rouvy}}],
+                                  "test", "rouvy")
+
+
+def test_rouvy_card_lists_workout_and_route_with_stats_on_one_line(plan):
+    _link(plan, "w1-thu-bike", ROUVY)
+    html = _view("w1-thu-bike")["html"]
+    assert 'aria-label="Rouvy"' in html and html.count('class="wd-rlink"') == 2
+    assert 'href="https://rouvy.com/workouts/2" target="_blank" rel="noopener noreferrer"' in html
+    assert "Climbing Tempo" in html and "Grand Alpine Loop" in html
+    # Distance, elevation gain and ETA share one strip, and only on the route.
+    assert html.count('class="wd-rstats"') == 1
+    assert "109.5 km" in html and "2,979 m" in html and "05:20:53" in html
+    # The side column order: purpose and coach notes, then the Rouvy card.
+    assert html.index("Coach notes") < html.index('aria-label="Rouvy"')
+
+
+def test_rouvy_stats_are_optional(plan):
+    _link(plan, "w1-thu-bike", {"routes": [{"name": "Hills", "url": "https://rouvy.com/r/9", "distanceKm": 62.3}]})
+    html = _view("w1-thu-bike")["html"]
+    assert "62.3 km" in html and "ETA" not in html.split("</style>")[-1] and "Elevation gain" not in html.split("</style>")[-1]
+
+
+def test_ride_with_no_steps_says_to_ride_the_route(plan):
+    plan_service.apply_operations(PLAN_ID, [{"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {
+        "steps": None, "humanReadable": "Easy spin.", "rouvy": {"routes": ROUVY["routes"]}}}], "test", "no steps")
+    html = _view("w1-thu-bike")["html"]
+    assert 'aria-label="Plan"' in html and "Ride Grand Alpine Loop" in html
+    # The stats show in the plan card as well as in the Rouvy card.
+    assert html.count("109.5 km") == 2 and html.count("05:20:53") == 2
+    assert "Easy spin." in html and "wd-plan-empty" not in html.split("</style>")[-1]
+
+
+def test_ride_with_no_steps_and_no_route_asks_for_one(plan):
+    plan_service.apply_operations(PLAN_ID, [{"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {
+        "steps": None, "humanReadable": "Easy spin."}}], "test", "no steps")
+    html = _view("w1-thu-bike")["html"]
+    assert "No route linked yet." in html and 'data-wd-act="edit">Link a route</button>' in html
+    assert 'aria-label="Rouvy"' not in html
+
+
+def test_ride_with_steps_has_no_plan_card_and_other_sports_have_no_rouvy_ui(plan):
+    html = _view("w1-thu-bike")["html"]
+    assert 'aria-label="Plan"' not in html.split("</style>")[-1]
+    for wid in ("w1-mon-swim", "w1-tue-run", "w1-tue-strength"):
+        out = _view(wid)["html"].split("</style>")[-1]
+        assert 'aria-label="Plan"' not in out and 'aria-label="Rouvy"' not in out and "Link a route" not in out
+
+
+def test_rouvy_links_in_stored_non_bike_workouts_are_not_shown(plan):
+    # A hand-edited plan document can hold them; the view still ignores them.
+    row = plan_service.require_plan(PLAN_ID)
+    plan_doc.find_workout(row["plan"], "w1-tue-run")[2]["rouvy"] = ROUVY
+    assert 'aria-label="Rouvy"' not in workout_detail.render(row, "w1-tue-run")["html"].split("</style>")[-1]
+
+
+def test_one_column_order_and_rouvy_css():
+    css = workout_detail.WD_CSS
+    assert ".wd-main, .wd-side { display:contents; }" in css
+    assert ".wd-purpose { order:1; } .wd-notes { order:2; }" in css and ".wd-rouvy { order:5; }" in css
+    assert ".wd-rstats { flex:1 1 100%; display:flex; flex-wrap:nowrap;" in css
+
+
+def test_plan_viewer_edit_form_has_the_rouvy_editor(plan):
+    viewer = TestClient(training_plan.create_app()).get("/training-plan").text
+    assert "function rouvyEditor(d)" in viewer and "(d.sport === 'bike' ? rouvyEditor(d) : '')" in viewer
+    assert "rouvy: rvFields(d)" in viewer and "const RV_MAX_ROUTES = 2;" in viewer
+    assert 'data-act="rv-open"' in viewer and 'data-act="rv-save"' in viewer and "data-rv-field" in viewer
