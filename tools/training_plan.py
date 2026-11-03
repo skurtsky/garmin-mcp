@@ -31,6 +31,8 @@ a plan; without it the active plan is used.
 JSON API used by the viewer:
 
     GET  /training-plan/api/plan         — {plan, id, status, version, readOnly, completed}
+    GET  /training-plan/api/other-plans  — {plans: [{id, status, title, workouts}]}: every other plan's
+                                           workouts, for the List view's "all plans" scope
     POST /training-plan/api/operations   — {operations: [...]} → same shape
     POST /training-plan/api/completion   — {workout_id, completed} → same shape
     POST /training-plan/api/skip         — {workout_id, skipped, reason} → same shape
@@ -619,6 +621,14 @@ async def api_get_plan(request):
         return _api_error(e)
 
 
+async def api_other_plans(request):
+    try:
+        current = plan_service.require_plan(_plan_param(request))
+        return JSONResponse({"plans": plan_service.other_plan_workouts(current["id"])}, headers=_NO_STORE)
+    except (PlanStorageUnavailable, LookupError) as e:
+        return _api_error(e)
+
+
 async def api_operations(request):
     try:
         body = await _json_body(request)
@@ -960,6 +970,7 @@ ROUTES = [
     Route("/training-plan/pdf", serve_plan_pdf, methods=["GET"]),
     Route(plan_calendar.FEED_PATH, serve_calendar, methods=["GET"]),
     Route("/training-plan/api/plan", api_get_plan, methods=["GET"]),
+    Route("/training-plan/api/other-plans", api_other_plans, methods=["GET"]),
     Route("/training-plan/api/operations", api_operations, methods=["POST"]),
     Route("/training-plan/api/completion", api_completion, methods=["POST"]),
     Route("/training-plan/api/skip", api_skip, methods=["POST"]),

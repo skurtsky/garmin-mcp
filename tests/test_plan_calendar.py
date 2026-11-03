@@ -376,3 +376,18 @@ def test_calendar_labels_the_new_tokens_by_name():
     text = "{{bike-watts:ss}} then {{run-pace:strides}} and {{bike-watts:2}}"
     assert plan_calendar._TOKEN_RE.sub(plan_calendar._token_label, text) == \
         "Sweet spot then Stride pace and Zone 2"
+
+
+def test_other_plans_endpoint_lists_the_workouts_of_every_other_plan(client, fake_db):
+    plan_service.save_upload(sample_plan(id="block-a", event="Block A"))
+    plan_service.save_upload(sample_plan(id="block-b", event="Block B", planStartDate="2026-11-02"), activate=False)
+
+    plans = client.get("/training-plan/api/other-plans", params=TOKEN).json()["plans"]
+
+    assert [p["id"] for p in plans] == ["block-b"]            # not the plan on screen
+    b = plans[0]
+    assert b["title"] == "Block B" and b["status"] == "future"
+    first = b["workouts"][0]
+    assert first["id"] == "w1-mon-swim" and first["date"] == "2026-09-14" and first["week"] == 1
+    assert first["completed"] is False and first["skipped"] is False
+    assert all(w["sport"] != "rest" for w in b["workouts"])

@@ -31,8 +31,12 @@ def test_open_week_works_on_archived_plans():
     assert html.index("a === 'open-week'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")
 
 
-def test_month_toggle_hidden_below_desktop_width():
-    assert "@media (max-width: 899px) { .view-seg { display:none; } }" in _html()
+def test_month_and_season_hidden_below_desktop_width_but_week_and_list_stay():
+    """The month grid is desktop-only; the phone keeps the Week | List switch."""
+    html = _html()
+    assert '.view-seg a.seg-opt, .view-seg [data-act="view-month"] { display:none; }' in html
+    assert "@media (max-width: 899px) { .view-seg { display:none; } }" not in html
+    assert 'data-act="view-list"' in html
 
 
 def test_viewer_has_appearance_card_and_light_tokens():
@@ -91,3 +95,23 @@ def test_viewer_preloads_the_season_page_and_pdf_links_show_progress():
     assert "rules.type = 'speculationrules'" in html and "appLink('/training-plan/season')" in html
     assert "'down', 'Download', true);" in html                # the Plan PDF card is a data-pdf link
     assert "document.prerendering" in html                     # a preloaded page leaves the stored view alone
+
+
+def test_list_view_hooks_present():
+    html = _html()
+    assert "const isList = () => state.planView === 'list';" in html
+    assert 'id="list-q"' in html and 'data-act="list-pick"' in html
+    assert "a.slice(0, 5) === 'list-'" in html
+    assert "api('other-plans')" in html
+
+
+def test_list_view_is_browsable_on_archived_plans():
+    """Searching is not an edit, so its click handler sits before the READ_ONLY return."""
+    html = _html()
+    assert html.index("a.slice(0, 5) === 'list-'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")
+
+
+def test_arrow_keys_do_not_page_weeks_in_the_list_view():
+    """Typing in the search box must not step the week."""
+    html = _html()
+    assert "!state.editId && !isList()) {\n    if (e.key === 'ArrowLeft') stepWeek(-1);" in html

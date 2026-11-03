@@ -112,6 +112,41 @@ def list_plans() -> list[dict]:
     return [{k: _iso(v) for k, v in row.items()} for row in db.list_training_plans()]
 
 
+_LIST_FIELDS = ("id", "sport", "name", "description", "durationMinutes", "distanceKm", "distanceMeters",
+                "distanceKmRange", "primaryZone")
+
+
+def other_plan_workouts(current_id: str) -> list[dict]:
+    """Every workout of every plan except ``current_id``, flattened for the
+    viewer's List view when it searches beyond the plan on screen. Rest days
+    are left out; each workout carries its date, its week and whether it was
+    completed or skipped."""
+    _require_db()
+    out = []
+    for meta in db.list_training_plans():
+        if meta["id"] == current_id:
+            continue
+        row = db.get_training_plan(meta["id"])
+        if not row:
+            continue
+        states = db.get_workout_states(meta["id"])
+        skipped = skipped_map(states)
+        workouts = []
+        for week in (row["plan"].get("weeks") or []):
+            for day in (week.get("days") or []):
+                for w in (day.get("workouts") or []):
+                    if w.get("sport") == "rest" or not w.get("id"):
+                        continue
+                    item = {k: w[k] for k in _LIST_FIELDS if w.get(k) is not None}
+                    item.update(date=day.get("date"), week=week.get("weekNumber"),
+                                completed=bool((states.get(w["id"]) or {}).get("completed")),
+                                skipped=w["id"] in skipped)
+                    workouts.append(item)
+        out.append({"id": meta["id"], "status": meta["status"], "title": meta.get("event") or meta["id"],
+                    "startDate": meta.get("start_date"), "endDate": meta.get("end_date"), "workouts": workouts})
+    return out
+
+
 def completed_map(plan_id: str) -> dict[str, bool]:
     return {wid: True for wid, s in db.get_workout_states(plan_id).items() if s.get("completed")}
 

@@ -299,6 +299,8 @@ const PHASE_COLORS = { 'Prep':'#6c93b0','Base 1':'#5ea0b8','Base 2':'#5eb0a3','B
   'Build 1':'#b8b05e','Build 2':'#d9a05a','Build':'#b8b05e','Peak':'#d97a5e','Taper':'#9184d9','Race':'#d9506a' };
 
 const ICONS = {
+  search:'<path d="M229.66 218.34l-50.07-50.06a88.11 88.11 0 1 0-11.31 11.31l50.06 50.07a8 8 0 0 0 11.32-11.32ZM40 112a72 72 0 1 1 72 72 72.08 72.08 0 0 1-72-72Z"/>',
+  sliders:'<path d="M40 88h33a32 32 0 0 0 62 0h81a8 8 0 0 0 0-16h-81a32 32 0 0 0-62 0H40a8 8 0 0 0 0 16Zm64-24a16 16 0 1 1-16 16 16 16 0 0 1 16-16Zm112 104h-17a32 32 0 0 0-62 0H40a8 8 0 0 0 0 16h97a32 32 0 0 0 62 0h17a8 8 0 0 0 0-16Zm-48 24a16 16 0 1 1 16-16 16 16 0 0 1-16 16Z"/>',
   caretUp:'<path d="M213.7 165.7a8 8 0 0 1-11.4 0L128 91.3l-74.3 74.4a8 8 0 0 1-11.4-11.4l80-80a8 8 0 0 1 11.4 0l80 80a8 8 0 0 1 0 11.4Z"/>',
   caretDown:'<path d="M213.7 101.7l-80 80a8 8 0 0 1-11.4 0l-80-80a8 8 0 0 1 11.4-11.4L128 164.7l74.3-74.4a8 8 0 0 1 11.4 11.4Z"/>',
   gauge:'<path d="M128 40a96 96 0 1 0 96 96 96.1 96.1 0 0 0-96-96Zm0 176a80 80 0 1 1 80-80 80.1 80.1 0 0 1-80 80Zm45.7-125.7a8 8 0 0 1 0 11.4L139.3 136a16 16 0 1 1-11.3-11.3l34.3-34.4a8 8 0 0 1 11.4 0Z"/>',
@@ -430,13 +432,13 @@ function sportStatus(sport) {
   return 'Estimated';
 }
 
-function storedPlanView() { try { return localStorage.getItem('pv-plan-view') === 'month' ? 'month' : 'week'; } catch (e) { return 'week'; } }
+function storedPlanView() { try { const v = localStorage.getItem('pv-plan-view'); return v === 'month' || v === 'list' ? v : 'week'; } catch (e) { return 'week'; } }
 /* ?week= opens that week, so in the week view whatever this device last
    used; ?mode=week|month (the Season page's switch) picks and keeps a view. */
 function initialView() {
   const q = new URLSearchParams(APP_QUERY);
   const mode = q.get('mode');
-  if (mode === 'week' || mode === 'month') {
+  if (mode === 'week' || mode === 'month' || mode === 'list') {
     /* A page the browser loads ahead of a click (see below) must not change
        the remembered view unless it's actually opened. */
     const keep = () => { try { localStorage.setItem('pv-plan-view', mode); } catch (e) {} };
@@ -459,7 +461,15 @@ const state = {
   syncRun: null,                   // a past run opened from Recent runs (null: the newest run)
   tab: new URLSearchParams(APP_QUERY).get('view') === 'settings' ? 'settings' : 'plan',
   planWeekNumber: initialWeek(),
-  planView: initialView(),                   // 'week' | 'month'; month only applies on desktop
+  planView: initialView(),                   // 'week' | 'month' | 'list'; month only applies on desktop
+  listQ: '',                       // List view: the search text
+  listSport: 'all',                // List view filters: sport, status, and which plans to search
+  listStatus: 'all',               //   ('all' | 'upcoming' | 'done' | 'skipped')
+  listScope: 'cur',                //   ('cur' = this plan | 'next' = this + future plans | 'all')
+  listMenu: false,                 // the Filters menu (a dropdown, or a bottom sheet on a phone)
+  otherPlans: null,                // the other plans' workouts, fetched when the scope widens
+  otherPlansLoading: false,
+  otherPlansError: '',
   monthKey: initialMonth(),                  // 'YYYY-MM'
   completed: {},
   skipped: {},                     // {workout id: 'auto' | 'manual'}
@@ -550,6 +560,7 @@ function byStartTime(workouts) {
 }
 /* ── month view ── */
 const isMonth = () => state.planView === 'month' && DESKTOP.matches;
+const isList = () => state.planView === 'list';
 function pad2(n) { return String(n).padStart(2, '0'); }
 function dateKey(dt) { return dt.getFullYear() + '-' + pad2(dt.getMonth() + 1) + '-' + pad2(dt.getDate()); }
 function addDays(key, n) { const dt = d(key); dt.setDate(dt.getDate() + n); return dateKey(dt); }
@@ -976,8 +987,172 @@ function weekVolumeHtml(workouts, wk) {
     + '</tbody></table></div>';
 }
 
+/* ── list view ── every workout in a searchable list ──
+   Searches only the plan's own fields (name, description, sport, weekday,
+   date, zone, status). By default it covers this plan; the Filters menu can
+   widen it to the plans before / after (fetched on demand). */
+const LIST_STATUSES = [['all', 'Any status'], ['upcoming', 'Upcoming'], ['done', 'Done'], ['skipped', 'Skipped']];
+const LIST_SCOPES = [['cur', 'Current plan'], ['next', 'Current + upcoming plans'], ['all', 'All plans']];
+
+function loadOtherPlans() {
+  if (state.otherPlans || state.otherPlansLoading) return;
+  state.otherPlansLoading = true; state.otherPlansError = '';
+  api('other-plans')
+    .then(data => { state.otherPlans = data.plans || []; })
+    .catch(err => { state.otherPlansError = err.message; })
+    .then(() => { state.otherPlansLoading = false; if (isList()) render(); });
+}
+/* One entry per workout in scope: {wo, date, week, cur, plan, st}; st is
+   done | skipped | today | upcoming | past (undone, day gone by). */
+function listItems() {
+  const today = todayStr();
+  const mk = (wo, date, week, plan, done, skipped) => ({ wo, date, week, plan, cur: !plan,
+    st: done ? 'done' : skipped ? 'skipped' : date === today ? 'today' : date > today ? 'upcoming' : 'past' });
+  const items = allWorkouts().filter(x => x.wo.sport !== 'rest')
+    .map(x => mk(x.wo, x.date, x.week, null, !!state.completed[x.wo.id], isSkipped(x.wo.id)));
+  if (state.listScope !== 'cur') (state.otherPlans || []).forEach(p => {
+    if (state.listScope === 'next' && p.status !== 'future') return;
+    (p.workouts || []).forEach(w => items.push(mk(w, w.date, w.week, p, !!w.completed, !!w.skipped && !w.completed)));
+  });
+  return items;
+}
+function listHay(it) {
+  const w = it.wo;
+  return [w.name, w.description, w.sport, d(it.date).toLocaleDateString(undefined, { weekday: 'long' }), dayMonth(it.date),
+    w.primaryZone, it.st === 'past' ? '' : it.st, it.plan ? it.plan.title : ''].filter(Boolean).join(' ').toLowerCase();
+}
+function listFiltered() {
+  const toks = state.listQ.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const sport = state.listSport, status = state.listStatus;
+  return listItems().filter(it => {
+    if (sport !== 'all' && it.wo.sport !== sport) return false;
+    if (status === 'upcoming' ? !(it.st === 'upcoming' || it.st === 'today') : status !== 'all' && it.st !== status) return false;
+    if (!toks.length) return true;
+    const hay = listHay(it);
+    return toks.every(t => hay.indexOf(t) >= 0);
+  }).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+}
+function listFilterCount() {
+  return (state.listSport !== 'all' ? 1 : 0) + (state.listStatus !== 'all' ? 1 : 0) + (state.listScope !== 'cur' ? 1 : 0);
+}
+/* Escaped text with every search word marked. */
+function listMark(text, q) {
+  const s = String(text == null ? '' : text);
+  const toks = q.trim().split(/\s+/).filter(Boolean);
+  if (!toks.length) return esc(s);
+  const re = new RegExp('(' + toks.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')', 'gi');
+  return s.split(re).map((part, i) => i % 2 ? '<mark>' + esc(part) + '</mark>' : esc(part)).join('');
+}
+function listRowHtml(it, q) {
+  const w = it.wo;
+  const color = SPORT_COLORS[w.sport] || SPORT_COLORS.rest;
+  const dt = d(it.date);
+  const meta = [fmtDuration(w.durationMinutes), distanceLabel(w), w.primaryZone].filter(Boolean).map(esc).join(' · ');
+  let st = '';
+  if (it.st === 'done') st = '<span class="lv-st" style="color:' + color + ';" role="img" aria-label="Done">' + icon('check', 18) + '<span class="lv-st-txt">Done</span></span>';
+  else if (it.st === 'skipped') st = '<span class="lv-st" style="color:var(--color-skip);" role="img" aria-label="Skipped">' + icon('minus', 18) + '<span class="lv-st-txt">Skipped</span></span>';
+  else if (it.st === 'today') st = '<span class="lv-today">Today</span>';
+  const body = '<span class="lv-date"><span class="lv-dow">' + esc(dt.toLocaleDateString(undefined, { weekday: 'short' })) + '</span><span class="lv-day">' + dt.getDate() + '</span></span>'
+    + '<span class="lv-main"><span class="lv-top"><span class="lv-name">' + listMark(w.name, q) + '</span>'
+      + '<span class="tag" style="background:' + tint(color) + '; color:' + color + '; font-size:10px;">' + esc(w.sport) + '</span></span>'
+    + (w.description ? '<span class="lv-desc">' + listMark(w.description, q) + '</span>' : '')
+    + (meta ? '<span class="lv-meta">' + meta + '</span>' : '') + '</span>'
+    + '<span class="lv-end">' + st + '</span>';
+  const cls = 'lv-row' + (it.st === 'today' ? ' today' : '') + (it.st === 'skipped' ? ' skipped' : '');
+  /* Another plan's workout opens that plan at its week; this plan's opens the workout. */
+  return it.cur
+    ? '<button type="button" class="' + cls + '" data-open="' + esc(w.id) + '">' + body + '</button>'
+    : '<a class="' + cls + '" href="' + esc(planHref(it.plan, { week: it.week })) + '">' + body + '</a>';
+}
+function listGroupsHtml(items, q) {
+  const groups = new Map();
+  items.forEach(it => {
+    const k = (it.plan ? it.plan.id : '') + '|' + it.week;
+    if (!groups.has(k)) groups.set(k, { plan: it.plan, week: it.week, items: [] });
+    groups.get(k).items.push(it);
+  });
+  const today = todayStr();
+  return [...groups.values()].map(g => {
+    const wk = g.plan ? null : weekByNumber(g.week);
+    const range = wk && wk.startDate ? dayMonth(wk.startDate) + ' – ' + (d(wk.startDate).getMonth() === d(wk.endDate).getMonth() ? d(wk.endDate).getDate() : dayMonth(wk.endDate)) : '';
+    const current = wk && wk.startDate && today >= String(wk.startDate).slice(0, 10) && today <= String(wk.endDate).slice(0, 10);
+    const mins = g.items.reduce((sum, it) => sum + (Number(it.wo.durationMinutes) || 0), 0);
+    return '<section class="lv-group"><div class="lv-week"><h2>' + (g.plan ? esc(g.plan.title) + ' · ' : '') + 'Week ' + esc(g.week)
+        + (range ? ' <span class="lv-week-range">· ' + esc(range) + '</span>' : '') + (current ? ' <span class="tag tag-accent-2">This week</span>' : '') + '</h2>'
+      + '<span class="lv-week-sum">' + g.items.length + ' session' + (g.items.length === 1 ? '' : 's') + (mins ? ' · ' + esc(fmtDuration(mins)) : '') + '</span></div>'
+      + '<div class="lv-card">' + g.items.map(it => listRowHtml(it, q)).join('') + '</div></section>';
+  }).join('');
+}
+/* The part that changes as you type: the count line and the grouped rows. */
+function listResultsHtml() {
+  const q = state.listQ;
+  const items = listFiltered();
+  const total = listItems().length;
+  const filtering = q.trim() || state.listSport !== 'all' || state.listStatus !== 'all';
+  let h = '<div class="lv-count" aria-live="polite">' + (filtering ? items.length + ' of ' + total + ' workouts' : total + ' workouts') + '</div>';
+  if (state.listScope !== 'cur' && state.otherPlansLoading) h += '<div class="lv-note">Loading the other plans…</div>';
+  if (state.listScope !== 'cur' && state.otherPlansError) h += '<div class="lv-note" style="color:var(--color-danger);">Could not load the other plans: ' + esc(state.otherPlansError) + '</div>';
+  if (!items.length) {
+    return h + '<div class="lv-empty"><div class="lv-empty-t">No workouts match' + (q.trim() ? ' “' + esc(q.trim()) + '”' : '') + '</div>'
+      + '<div class="lv-empty-s">Try a sport, a day like “Sat”, or a session type like “tempo”.</div>'
+      + '<button type="button" class="btn btn-secondary" data-act="list-reset-all">Clear search and filters</button></div>';
+  }
+  return h + listGroupsHtml(items, q);
+}
+function updateListResults() {
+  const el = document.getElementById('list-results');
+  if (el) el.innerHTML = listResultsHtml();
+  const clear = document.querySelector('.lv-clear');
+  if (clear) clear.hidden = !state.listQ;
+}
+function listOptHtml(field, val, label, cur) {
+  const on = cur === val;
+  return '<button type="button" class="lv-opt' + (on ? ' on' : '') + '" data-act="list-pick" data-field="' + field + '" data-val="' + esc(val) + '" aria-pressed="' + on + '">'
+    + '<span>' + esc(label) + '</span>' + (on ? icon('check', 16) : '') + '</button>';
+}
+function listMenuHtml() {
+  const sports = [...new Set(listItems().map(it => it.wo.sport))].sort();
+  return '<button type="button" class="lv-scrim" data-act="list-menu-close" aria-label="Close filters" tabindex="-1"></button>'
+    + '<div class="lv-menu" role="dialog" aria-label="Filters">'
+    + '<div class="lv-menu-head"><span class="lv-menu-title">Filters</span><button type="button" class="lv-reset" data-act="list-reset">Reset</button></div>'
+    + '<div class="lv-menu-h">Plan</div>' + LIST_SCOPES.map(o => listOptHtml('listScope', o[0], o[1], state.listScope)).join('')
+    + '<div class="lv-menu-h">Sport</div><div class="lv-grid">' + listOptHtml('listSport', 'all', 'All sports', state.listSport)
+      + sports.map(sp => listOptHtml('listSport', sp, capitalize(sp), state.listSport)).join('') + '</div>'
+    + '<div class="lv-menu-h">Status</div><div class="lv-grid">' + LIST_STATUSES.map(o => listOptHtml('listStatus', o[0], o[1], state.listStatus)).join('') + '</div>'
+    + '<button type="button" class="btn btn-primary lv-done" data-act="list-menu-close">Show ' + listFiltered().length + ' workouts</button></div>';
+}
+function listViewHtml() {
+  const n = listFilterCount();
+  return '<div class="lv-bar">'
+    + '<div class="lv-search">' + icon('search', 18)
+      + '<input id="list-q" type="search" aria-label="Search workouts" placeholder="Search workouts" autocomplete="off" enterkeyhint="search" value="' + esc(state.listQ) + '">'
+      + '<button type="button" class="lv-clear" data-act="list-clear-q" aria-label="Clear search"' + (state.listQ ? '' : ' hidden') + '>' + icon('x', 16) + '</button></div>'
+    + '<button type="button" class="btn btn-secondary lv-filter-btn' + (n || state.listMenu ? ' on' : '') + '" data-act="list-menu" aria-haspopup="dialog" aria-expanded="' + !!state.listMenu + '">'
+      + icon('sliders', 18) + '<span class="lv-filter-label">Filters</span>' + (n ? '<span class="lv-badge">' + n + '</span>' : '') + '</button>'
+    + (state.listMenu ? listMenuHtml() : '')
+    + '</div><div id="list-results" class="lv-results">' + listResultsHtml() + '</div>';
+}
+function listAction(a, el) {
+  if (a === 'list-menu') state.listMenu = !state.listMenu;
+  else if (a === 'list-menu-close') state.listMenu = false;
+  else if (a === 'list-pick') {
+    state[el.dataset.field] = el.dataset.val;
+    if (el.dataset.field === 'listScope' && el.dataset.val !== 'cur') loadOtherPlans();
+  }
+  else if (a === 'list-reset') { state.listSport = 'all'; state.listStatus = 'all'; state.listScope = 'cur'; }
+  else if (a === 'list-reset-all') { state.listQ = ''; state.listSport = 'all'; state.listStatus = 'all'; state.listScope = 'cur'; }
+  else if (a === 'list-clear-q') {
+    state.listQ = ''; render();
+    const input = document.getElementById('list-q'); if (input) input.focus();
+    return;
+  }
+  else return;
+  render();
+}
+
 function planTab() {
   const month = isMonth();
+  const list = isList();
   const n = month ? weekForMonth(state.monthKey) : state.planWeekNumber;
   const wk = weekByNumber(n);
   const phase = phaseForWeek(n);
@@ -1006,8 +1181,8 @@ function planTab() {
   let h = readOnlyBanner() + carryoverBanner() + '<div class="plan-head">'
     + '<div class="plan-head-main">'
       + '<div class="plan-head-kicker">' + esc(PLAN.meta.event) + esc(race) + '</div>'
-      + (month ? monthHeadHtml() : '<div class="plan-head-week">Week ' + n + ' <span class="plan-head-sub">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>')
-      + (month ? '' : wk ? '<div class="plan-head-planned"><b>' + esc(plannedMin ? fmtDuration(plannedMin) : '0min') + '</b> planned'
+      + (list ? '<div class="plan-head-week">All workouts</div>' : month ? monthHeadHtml() : '<div class="plan-head-week">Week ' + n + ' <span class="plan-head-sub">of ' + esc(last) + (range ? ' · ' + esc(range) : '') + '</span></div>')
+      + (list ? '<div class="plan-head-planned"><b>' + nonRest.length + '</b> sessions · ' + doneCount + ' done</div>' : month ? '' : wk ? '<div class="plan-head-planned"><b>' + esc(plannedMin ? fmtDuration(plannedMin) : '0min') + '</b> planned'
           + ' · ' + weekWorkouts.length + ' session' + (weekWorkouts.length === 1 ? '' : 's') + '</div>' : '')
     + '</div>'
     + '<div class="plan-head-progress">'
@@ -1020,13 +1195,14 @@ function planTab() {
       + '<div class="plan-bar"><div style="width:' + Math.max(pctDone, doneCount ? 2 : 0) + '%;"></div></div>'
     + '</div>'
     + '<div class="plan-head-nav">'
-      + '<button type="button" class="btn btn-secondary plan-today" data-act="go-today"' + (atToday() || !todayWeek() ? ' disabled' : '')
-        + ' title="' + (todayWeek() ? 'Jump back to ' + (month ? 'this month' : 'this week') : 'Today is outside this plan') + '">' + (month ? 'This month' : 'This week') + '</button>'
+      + (list ? '' : '<button type="button" class="btn btn-secondary plan-today" data-act="go-today"' + (atToday() || !todayWeek() ? ' disabled' : '')
+        + ' title="' + (todayWeek() ? 'Jump back to ' + (month ? 'this month' : 'this week') : 'Today is outside this plan') + '">' + (month ? 'This month' : 'This week') + '</button>')
       + '<div class="seg view-seg" role="group" aria-label="Plan view">'
-        + '<button type="button" class="seg-opt' + (month ? '' : ' on') + '" data-act="view-week" aria-pressed="' + !month + '">Week</button>'
+        + '<button type="button" class="seg-opt' + (month || list ? '' : ' on') + '" data-act="view-week" aria-pressed="' + (!month && !list) + '">Week</button>'
         + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '">Month</button>'
+        + '<button type="button" class="seg-opt' + (list ? ' on' : '') + '" data-act="view-list" aria-pressed="' + list + '">List</button>'
         + '<a class="seg-opt" href="' + esc(appLink('/training-plan/season')) + '" title="Every plan on one timeline">Season</a></div>'
-      + (month
+      + (list ? '' : month
         ? '<button type="button" class="btn btn-icon" data-act="prev"' + (monthAtEnd(-1) ? ' disabled' : '') + ' aria-label="Previous month">' + icon('left') + '</button>'
           + '<button type="button" class="btn btn-icon" data-act="next"' + (monthAtEnd(1) ? ' disabled' : '') + ' aria-label="Next month">' + icon('right') + '</button>'
         : '<button type="button" class="btn btn-icon" data-act="prev"' + (n <= 1 && !NEIGHBORS.prev ? ' disabled' : '')
@@ -1035,6 +1211,7 @@ function planTab() {
             + ' aria-label="' + esc(n >= last && NEIGHBORS.next ? 'Next plan: ' + NEIGHBORS.next.event : 'Next week') + '">' + icon('right') + '</button>')
     + '</div></div>';
 
+  if (list) return h + listViewHtml();
   if (month) return h + monthNeighborNote(state.monthKey) + monthGridHtml();
 
   const focus = wk ? wk.focus : phase.focus;
@@ -2390,7 +2567,8 @@ document.getElementById('app').addEventListener('click', e => {
   const a = act ? act.getAttribute('data-act') : null;
   if (!act) return;
   if (a === 'backdrop' && e.target !== act) return;
-  if (a === 'view-week' || a === 'view-month') return setPlanView(a.slice(5));
+  if (a === 'view-week' || a === 'view-month' || a === 'view-list') return setPlanView(a.slice(5));
+  if (a.slice(0, 5) === 'list-') return listAction(a, act);
   /* Browsing a week is not an edit, so archived plans can do it too. */
   if (a === 'open-week') { state.planView = 'week'; persistView(); state.planWeekNumber = +act.dataset.week; return render(); }
   if (a === 'open-plan') return goToPlan(NEIGHBORS[act.dataset.neighbor], { month: state.monthKey });
@@ -2574,6 +2752,7 @@ document.getElementById('app').addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.id === 'we-tagInput' && state.editDraft) { e.preventDefault(); addDraftTag(state.editDraft); render(); const i = document.getElementById('we-tagInput'); if (i) i.focus(); }
 });
 document.getElementById('app').addEventListener('input', e => {
+  if (e.target.id === 'list-q') { state.listQ = e.target.value; return updateListResults(); }
   const rvField = e.target.getAttribute && e.target.getAttribute('data-rv-field');
   if (rvField && state.editDraft && state.editDraft.rvForm) { state.editDraft.rvForm[rvField] = e.target.value; return; }
   const editField = e.target.getAttribute && e.target.getAttribute('data-edit-field');
@@ -2779,9 +2958,10 @@ document.addEventListener('touchend', e => {
 
 document.addEventListener('keydown', e => {
   if (window.WD && window.WD.isOpen()) return;   // the workout view has the keys
+  if (e.key === 'Escape' && state.listMenu) { state.listMenu = false; return render(); }
   if (e.key === 'Escape' && state.weShape) { state.weShape = null; return render(); }   // a shape menu closes first
   if (e.key === 'Escape' && state.editId) { state.editId = null; state.editDraft = null; render(); }
-  if (state.tab === 'plan' && !state.editId) {
+  if (state.tab === 'plan' && !state.editId && !isList()) {
     if (e.key === 'ArrowLeft') stepWeek(-1);
     if (e.key === 'ArrowRight') stepWeek(1);
   }
@@ -3060,7 +3240,82 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .view-seg .seg-opt + .seg-opt { border-left:1px solid var(--color-divider); }
 .view-seg .seg-opt.on { color:var(--color-accent); box-shadow:inset 0 0 0 1px var(--color-accent); }
 .plan-head-nav { align-items:center; }
-@media (max-width: 899px) { .view-seg { display:none; } }
+/* — List view — */
+.lv-bar { position:sticky; top:0; z-index:6; display:flex; gap:8px; align-items:center; padding:8px 24px 10px; background:var(--color-bg); }
+.lv-search { flex:1; min-width:0; display:flex; align-items:center; gap:8px; padding:0 2px 0 14px; min-height:44px; border-radius:var(--radius-lg);
+  background:var(--color-surface); box-shadow:var(--shadow-sm); color:var(--color-neutral-400); }
+.lv-search:focus-within { box-shadow:0 0 0 2px var(--color-accent); }
+.lv-search input { flex:1; min-width:0; height:42px; border:0; background:transparent; color:var(--color-text); font:inherit; font-size:16px; outline:none; }
+.lv-search input::placeholder { color:var(--color-neutral-500); }
+.lv-search input::-webkit-search-cancel-button { display:none; }
+.lv-clear { width:44px; height:44px; flex:none; border:0; border-radius:var(--radius-md); background:transparent; color:var(--color-neutral-400); cursor:pointer; display:inline-flex; align-items:center; justify-content:center; }
+.lv-clear[hidden] { display:none; }
+.lv-filter-btn { position:relative; min-height:44px; padding:0 14px; gap:8px; flex:none; }
+.lv-filter-btn.on { background:var(--color-accent-900); }
+.lv-badge { min-width:20px; height:20px; padding:0 5px; border-radius:999px; box-sizing:border-box; background:var(--color-accent); color:var(--color-bg);
+  font-size:12px; font-weight:600; display:inline-flex; align-items:center; justify-content:center; }
+.lv-scrim { position:fixed; inset:0; z-index:7; border:0; padding:0; background:transparent; cursor:default; }
+.lv-menu { position:absolute; z-index:8; top:calc(100% - 4px); right:24px; width:300px; max-width:calc(100% - 48px); box-sizing:border-box;
+  padding:8px; display:flex; flex-direction:column; border-radius:var(--radius-lg); background:var(--color-surface); box-shadow:var(--shadow-md); }
+.lv-menu-head { display:flex; align-items:center; justify-content:space-between; padding:2px 4px 0 12px; }
+.lv-menu-title { font-family:var(--font-heading); font-size:16px; font-weight:500; }
+.lv-reset { min-height:44px; padding:0 10px; border:0; background:transparent; color:var(--color-accent-400); font:inherit; font-size:14px; cursor:pointer; }
+.lv-menu-h { padding:10px 12px 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--color-neutral-500); }
+.lv-opt { display:flex; align-items:center; justify-content:space-between; gap:8px; min-height:44px; padding:0 12px; border:0; border-radius:10px;
+  background:transparent; color:var(--color-text); font:inherit; font-size:14px; text-align:left; cursor:pointer; }
+.lv-opt:hover { background:color-mix(in srgb, var(--color-text) 7%, transparent); }
+.lv-opt.on { background:color-mix(in srgb, var(--color-accent) 18%, transparent); color:var(--color-accent-200); font-weight:500; }
+.lv-done { margin-top:10px; min-height:44px; justify-content:center; }
+.lv-results { padding:0 24px 24px; }
+.lv-count { font-size:12px; color:var(--color-neutral-500); padding:2px 2px 0; }
+.lv-note { margin-top:8px; font-size:13px; color:var(--color-neutral-400); }
+.lv-week { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:baseline; gap:4px 16px; padding:14px 2px 6px; }
+.lv-week h2 { margin:0; font-size:14px; font-weight:600; letter-spacing:0; }
+.lv-week-range { font-weight:400; color:var(--color-neutral-500); }
+.lv-week-sum { font-size:12px; color:var(--color-neutral-500); }
+.lv-card { border-radius:var(--radius-lg); background:var(--color-surface); box-shadow:var(--shadow-sm); overflow:hidden; }
+.lv-row { display:flex; align-items:center; gap:14px; width:100%; box-sizing:border-box; min-height:64px; padding:12px 16px; border:0; border-top:1px solid var(--color-divider);
+  background:transparent; color:inherit; font:inherit; text-align:left; text-decoration:none; cursor:pointer; }
+.lv-row:first-child { border-top:0; }
+.lv-row:hover { background:color-mix(in srgb, var(--color-text) 6%, transparent); }
+.lv-row.today { background:color-mix(in srgb, var(--color-accent) 12%, transparent); }
+.lv-row.skipped .lv-name { color:var(--color-neutral-300); }
+.lv-date { width:40px; flex:none; display:flex; flex-direction:column; align-items:center; line-height:1.1; }
+.lv-dow { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--color-neutral-500); }
+.lv-day { font-size:20px; font-weight:500; }
+.lv-main { flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; }
+.lv-top { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; }
+.lv-name { font-size:15px; font-weight:500; overflow-wrap:anywhere; }
+.lv-desc { font-size:13px; color:var(--color-neutral-300); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.lv-meta { font-size:12px; color:var(--color-neutral-500); }
+.lv-end { flex:none; min-width:44px; display:flex; justify-content:flex-end; }
+.lv-st { display:inline-flex; align-items:center; gap:5px; font-size:13px; }
+.lv-today { font-size:11px; font-weight:600; color:var(--color-bg); background:var(--color-accent-400); border-radius:999px; padding:3px 10px; }
+.lv-empty { margin-top:16px; padding:40px 20px; display:flex; flex-direction:column; align-items:center; gap:10px; text-align:center;
+  border-radius:var(--radius-lg); background:var(--color-surface); box-shadow:var(--shadow-sm); }
+.lv-empty-t { font-family:var(--font-heading); font-size:17px; font-weight:500; }
+.lv-empty-s { font-size:14px; color:var(--color-neutral-400); max-width:360px; }
+.lv-results mark { background:color-mix(in srgb, var(--color-accent) 30%, transparent); color:inherit; border-radius:3px; padding:0 1px; }
+.view-seg a.seg-opt { color:inherit; text-decoration:none; }
+@media (max-width: 899px) {
+  .view-seg a.seg-opt, .view-seg [data-act="view-month"] { display:none; }
+  .view-seg .seg-opt { min-height:40px; }
+  .lv-bar { padding:8px 18px 10px; }
+  .lv-filter-label { display:none; }
+  .lv-filter-btn { width:48px; padding:0; justify-content:center; }
+  .lv-badge { position:absolute; top:-6px; right:-6px; }
+  .lv-scrim { background:rgba(10,11,16,.6); }
+  /* A sheet that floats just above the site nav's pill (tools/navbar.py), which is always on top. */
+  .lv-menu { position:fixed; left:8px; right:8px; top:auto; bottom:calc(76px + max(16px, calc(env(safe-area-inset-bottom, 0px) - 12px))); width:auto; max-width:none;
+    max-height:calc(100vh - 170px); overflow-y:auto; padding:12px 16px 16px; border-radius:20px; box-shadow:var(--shadow-lg); }
+  .lv-menu-head { padding-left:4px; }
+  .lv-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
+  .lv-opt { min-height:48px; font-size:16px; }
+  .lv-results { padding:0 18px 24px; }
+  .lv-desc { display:none; }
+  .lv-st-txt { display:none; }
+  .lv-end { min-width:24px; }
+}
 .slide-from-left { animation: pv-from-left .3s cubic-bezier(.2,.8,.2,1); }
 .slide-from-right { animation: pv-from-right .3s cubic-bezier(.2,.8,.2,1); }
 /* Tap feedback: a quick press so a tap visibly registered. */
