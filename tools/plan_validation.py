@@ -207,6 +207,11 @@ def _check_workout(report, plan, w, path, seen_ids, thresholds):
             plan_doc.clean_tags(w["tags"])
         except PlanError as e:
             report.error(f"{path}.tags", str(e))
+    if w.get("rouvy") not in (None, {}):
+        try:
+            plan_doc.clean_rouvy(w["rouvy"], w.get("sport"))
+        except PlanError as e:
+            report.error(f"{path}.rouvy", str(e))
     if w.get("purposeMet") is not None and not isinstance(w["purposeMet"], bool):
         report.error(f"{path}.purposeMet", "Must be true (met), false (not met) or omitted (not reviewed yet).")
     elif isinstance(w.get("purposeMet"), bool) and not str(w.get("purpose") or "").strip():

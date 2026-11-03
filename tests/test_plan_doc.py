@@ -404,3 +404,110 @@ def test_update_week_sport_targets():
 
 def test_run_z1_pace_has_no_tight_upper_limit():
     assert plan_doc.RUN_PACE_OFFSET_TABLE[0] == ("1", "Recovery", 70, 150)   # 4:15 threshold -> 5:25-6:45
+
+
+# ── ROUVY LINKS (bike workouts) ───────────────────────────────────────────────
+
+ROUTE = {"name": "Grand Alpine Loop", "url": "https://rouvy.com/virtual-routes/1"}
+RWORKOUT = {"name": "Climbing Tempo", "url": "https://rouvy.com/workouts/2"}
+
+
+def _rouvy(plan, wid="w1-thu-bike"):
+    return plan_doc.find_workout(plan, wid)[2].get("rouvy")
+
+
+def test_rouvy_links_are_tidied_and_removable():
+    plan, _, _ = _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"rouvy": {
+        "routes": [{"name": "  Grand   Alpine Loop ", "url": " https://www.rouvy.com/r/1 ",
+                    "distanceKm": "109.54", "elevationM": 2979.4, "eta": "5:20:53"}]}}})
+    assert _rouvy(plan) == {"routes": [{"name": "Grand Alpine Loop", "url": "https://www.rouvy.com/r/1",
+                                        "distanceKm": 109.5, "elevationM": 2979, "eta": "05:20:53"}]}
+    plan, _, _ = _apply(plan, {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"rouvy": None}})
+    assert "rouvy" not in plan_doc.find_workout(plan, "w1-thu-bike")[2]
+
+
+def test_rouvy_workout_and_route_limits():
+    ok = {"workout": RWORKOUT, "routes": [ROUTE]}
+    plan, _, _ = _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"rouvy": ok}})
+    assert _rouvy(plan) == ok
+    # Two routes only when no workout is linked.
+    two = {"routes": [ROUTE, dict(ROUTE, name="Coastal Hills")]}
+    plan, _, _ = _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"rouvy": two}})
+    assert len(_rouvy(plan)["routes"]) == 2
+    with pytest.raises(PlanError, match="takes one route"):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-thu-bike",
+                               "fields": {"rouvy": {"workout": RWORKOUT, **two}}})
+    with pytest.raises(PlanError, match="at most 2"):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-thu-bike",
+                               "fields": {"rouvy": {"routes": two["routes"] + [ROUTE]}}})
+
+
+@pytest.mark.parametrize("rouvy, message", [
+    ({"routes": [{"name": "A", "url": "https://example.com/r"}]}, "rouvy.com"),
+    ({"routes": [{"name": "A", "url": "ftp://rouvy.com/r"}]}, "rouvy.com"),
+    ({"routes": [{"name": "", "url": "https://rouvy.com/r"}]}, "needs a name"),
+    ({"routes": [{"name": "A", "url": "https://rouvy.com/r", "eta": "5:61"}]}, "hh:mm:ss"),
+    ({"routes": [{"name": "A", "url": "https://rouvy.com/r", "distanceKm": -1}]}, "non-negative"),
+    ({"routes": [{"name": "A", "url": "https://rouvy.com/r", "speed": 3}]}, "doesn't take speed"),
+    ({"workout": {"name": "W", "url": "https://rouvy.com/w", "eta": "01:00:00"}}, "doesn't take eta"),
+    ({"workout": "https://rouvy.com/w"}, "must be an object"),
+    ({"routes": "r"}, "list"),
+    ({"bogus": 1}, "doesn't take bogus"),
+    ("link", "object"),
+])
+def test_bad_rouvy_links_are_rejected(rouvy, message):
+    with pytest.raises(PlanError, match=message):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": "w1-thu-bike", "fields": {"rouvy": rouvy}})
+
+
+@pytest.mark.parametrize("wid", ["w1-mon-swim", "w1-tue-run", "w1-tue-strength"])
+def test_rouvy_links_only_go_on_bike_workouts(wid):
+    with pytest.raises(PlanError, match="only go on bike"):
+        _apply(sample_plan(), {"op": "update_workout", "workout_id": wid, "fields": {"rouvy": {"routes": [ROUTE]}}})
+    with pytest.raises(PlanError, match="only go on bike"):
+        _apply(sample_plan(), {"op": "add_workout", "date": "2026-09-16", "workout": {
+            "sport": "run", "name": "Easy", "rouvy": {"workout": RWORKOUT}}})
+    # An empty value is fine anywhere: there is nothing to link.
+    _apply(sample_plan(), {"op": "update_workout", "workout_id": wid, "fields": {"rouvy": None}})
+
+
+def test_add_bike_workout_takes_rouvy_and_sport_change_needs_them_removed():
+    plan, _, _ = _apply(sample_plan(), {"op": "add_workout", "date": "2026-09-16", "workout": {
+        "sport": "bike", "name": "Spin", "rouvy": {"routes": [ROUTE]}}})
+    assert _rouvy(plan, "w1-wed-bike")["routes"][0]["name"] == "Grand Alpine Loop"
+    with pytest.raises(PlanError, match="rouvy: null"):
+        _apply(plan, {"op": "update_workout", "workout_id": "w1-wed-bike", "fields": {"sport": "run"}})
+    plan, _, _ = _apply(plan, {"op": "update_workout", "workout_id": "w1-wed-bike",
+                               "fields": {"sport": "run", "rouvy": None}})
+    assert _rouvy(plan, "w1-wed-bike") is None
+
+
+@pytest.mark.parametrize("wid, rouvy, message", [
+    ("w1-thu-bike", {"routes": [{"name": "A", "url": "https://example.com"}]}, "rouvy.com"),
+    ("w1-mon-swim", {"routes": [ROUTE]}, "only go on bike"),
+])
+def test_uploaded_plan_validates_rouvy_links(wid, rouvy, message):
+    plan = sample_plan()
+    plan_doc.find_workout(plan, wid)[2]["rouvy"] = rouvy
+    errors, _ = plan_doc.validate_plan(plan)
+    assert any(message in e for e in errors), errors
+
+
+def test_rouvy_links_reach_the_read_view():
+    from tools import plan_service
+    plan = sample_plan()
+    w = plan_doc.find_workout(plan, "w1-thu-bike")[2]
+    w["rouvy"] = {"workout": RWORKOUT, "routes": [ROUTE]}
+    assert plan_doc.validate_plan(plan)[0] == []
+    assert plan_service._workout_view(w, {"date": "2026-09-17"}, {}, False)["rouvy"] == w["rouvy"]
+
+
+def test_create_plan_validation_flags_bad_rouvy_links():
+    from tools import plan_validation
+    plan = sample_plan()
+    plan_doc.find_workout(plan, "w1-mon-swim")[2]["rouvy"] = {"routes": [ROUTE]}
+    plan_doc.find_workout(plan, "w1-thu-bike")[2]["rouvy"] = {"routes": [{"name": "A", "url": "https://example.com"}]}
+    errors, _ = plan_validation.validate_document(plan)
+    paths = {e["path"]: e["message"] for e in errors if str(e["path"]).endswith(".rouvy")}
+    assert len(paths) == 2, errors
+    assert any("only go on bike" in m for m in paths.values()) and any("rouvy.com" in m for m in paths.values())

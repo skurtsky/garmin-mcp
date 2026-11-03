@@ -43,6 +43,11 @@ FIELD_BUDGETS = {"description": 400, "keyTargets": 240, "cues": 200, "purpose": 
 MAX_TAGS = 8
 MAX_TAG_LENGTH = 40
 MAX_REVIEWS = 30
+# Rouvy links on a bike workout: at most one Rouvy workout, and routes — one
+# when a workout is linked, otherwise up to two (a session that plans for two).
+ROUVY_SPORTS = ("bike",)
+MAX_ROUVY_NAME_LENGTH = 80
+MAX_ROUVY_ROUTES = 2
 MAX_REVIEW_LENGTH = 800
 MAX_KEY_SESSIONS = 6
 MAX_KEY_SESSION_LENGTH = 140
@@ -264,6 +269,11 @@ def validate_plan(plan) -> tuple[list[str], list[str]]:
                         clean_tags(w["tags"])
                     except PlanError as e:
                         errors.append(f"{wid}: {e}")
+                if w.get("rouvy") not in (None, {}):
+                    try:
+                        clean_rouvy(w["rouvy"], w.get("sport"))
+                    except PlanError as e:
+                        errors.append(f"{wid}: {e}")
                 if w.get("purposeMet") is not None and not isinstance(w["purposeMet"], bool):
                     errors.append(f"{wid}: purposeMet must be true, false or omitted.")
                 if "coachReview" in w and not isinstance(w["coachReview"], list):
@@ -337,6 +347,93 @@ def normalize_plan(plan: dict) -> dict:
 
 
 # ── EDIT OPERATIONS ───────────────────────────────────────────────────────────
+
+_ETA_RE = re.compile(r"^(\d{1,3}):([0-5]\d):([0-5]\d)$")
+
+
+def _rouvy_url(value, what: str) -> str:
+    from urllib.parse import urlparse
+    url = str(value or "").strip()
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https") or not (host == "rouvy.com" or host.endswith(".rouvy.com")):
+        raise PlanError(f"The {what} link must be a rouvy.com address (https://…).")
+    return url
+
+
+def _rouvy_number(value, key: str, what: str, places: int):
+    if isinstance(value, str) and value.strip():
+        try:
+            value = float(value)
+        except ValueError:
+            raise PlanError(f"The {what}'s {key} must be a number.") from None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        raise PlanError(f"The {what}'s {key} must be a non-negative number.")
+    return _tidy(value, places)
+
+
+def _rouvy_item(value, what: str, route: bool) -> dict:
+    if not isinstance(value, dict):
+        raise PlanError(f"The Rouvy {what} must be an object with a name and a link, "
+                        '{"name": "…", "url": "https://rouvy.com/…"}.')
+    allowed = {"name", "url"} | ({"distanceKm", "elevationM", "eta"} if route else set())
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise PlanError(f"The Rouvy {what} doesn't take {', '.join(unknown)} (it takes {', '.join(sorted(allowed))}).")
+    name = " ".join(str(value.get("name") or "").split())
+    if not name:
+        raise PlanError(f"The Rouvy {what} needs a name.")
+    if len(name) > MAX_ROUVY_NAME_LENGTH:
+        raise PlanError(f"The Rouvy {what}'s name is {len(name)} characters (max {MAX_ROUVY_NAME_LENGTH}).")
+    out = {"name": name, "url": _rouvy_url(value.get("url"), what)}
+    if route:
+        for key, places in (("distanceKm", 1), ("elevationM", 0)):
+            if value.get(key) not in (None, ""):
+                out[key] = _rouvy_number(value[key], key, what, places)
+        if value.get("eta") not in (None, ""):
+            m = _ETA_RE.match(str(value["eta"]).strip())
+            if not m:
+                raise PlanError(f"The {what}'s eta must be hh:mm:ss, for example 05:20:53.")
+            out["eta"] = f"{int(m.group(1)):02d}:{m.group(2)}:{m.group(3)}"
+    return out
+
+
+def clean_rouvy(value, sport) -> dict | None:
+    """A bike workout's Rouvy links as ``{"workout": {name, url}, "routes":
+    [{name, url, distanceKm?, elevationM?, eta?}]}``, validated and tidied.
+    One workout at most; routes: one when a workout is linked, otherwise up to
+    two. Only bike workouts take them. None/{} (or nothing linked) → None (the
+    field is removed)."""
+    if value is None or value == {}:
+        return None
+    if not isinstance(value, dict):
+        raise PlanError('rouvy must be an object like {"workout": {"name": "…", "url": "…"}, "routes": [{…}]}.')
+    unknown = sorted(set(value) - {"workout", "routes"})
+    if unknown:
+        raise PlanError(f"rouvy doesn't take {', '.join(unknown)} (it takes workout and routes).")
+    workout = value.get("workout")
+    routes = value.get("routes")
+    if workout in (None, {}, ""):
+        workout = None
+    if routes is None:
+        routes = []
+    if not isinstance(routes, list):
+        raise PlanError("rouvy.routes must be a list of routes.")
+    if not workout and not routes:
+        return None
+    if sport not in ROUVY_SPORTS:
+        raise PlanError(f"Rouvy links only go on bike workouts (this one is {sport or 'not set'}).")
+    limit = 1 if workout else MAX_ROUVY_ROUTES
+    if len(routes) > limit:
+        raise PlanError("A workout with a linked Rouvy workout takes one route — remove the workout link or a route."
+                        if workout else f"A session takes at most {MAX_ROUVY_ROUTES} Rouvy routes.")
+    out = {}
+    if workout:
+        out["workout"] = _rouvy_item(workout, "workout", route=False)
+    if routes:
+        out["routes"] = [_rouvy_item(r_, "route", route=True) for r_ in routes]
+    return out
+
 
 def clean_tags(value, what="tags") -> list[str] | None:
     """A workout's tags as a tidy list: trimmed, whitespace collapsed, no
@@ -445,6 +542,8 @@ def _clean_workout_fields(fields: dict, *, adding: bool, sport: str | None = Non
     for key in ("name", "type", "description", "keyTargets", "humanReadable", "primaryZone", "purpose", "cues"):
         if key in fields and fields[key] is not None and not isinstance(fields[key], str):
             raise PlanError(f"{key} must be text.")
+    if "rouvy" in fields:
+        fields["rouvy"] = clean_rouvy(fields["rouvy"], fields.get("sport") or sport)
     check_ftp_tokens(fields.get("humanReadable"), "humanReadable")
     if "steps" in fields:
         # Structured steps (tools/workout_steps.py); null/[] removes them.
@@ -497,6 +596,10 @@ def _op_update_workout(plan, op):
         except PlanError as e:
             raise PlanError(f"Its steps don't fit a {fields['sport']} workout ({e}) — "
                             "send new steps (or null to remove them) with the sport change.") from None
+    if ("sport" in fields and fields["sport"] not in ROUVY_SPORTS and workout.get("rouvy")
+            and "rouvy" not in fields):
+        raise PlanError(f"It has Rouvy links, which only go on bike workouts — send rouvy: null with the "
+                        f"change to {fields['sport']} to remove them.")
     new_date = fields.pop("date", None)
     _apply_fields(workout, fields)
     if not str(workout.get("name") or "").strip():
