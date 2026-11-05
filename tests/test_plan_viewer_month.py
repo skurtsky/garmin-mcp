@@ -31,10 +31,11 @@ def test_open_week_works_on_archived_plans():
     assert html.index("a === 'open-week'") < html.index("if (READ_ONLY) return;\n  if (a === 'validate')")
 
 
-def test_month_and_season_hidden_below_desktop_width_but_week_and_list_stay():
-    """The month grid is desktop-only; the phone keeps the Week | List switch."""
+def test_month_disabled_and_season_hidden_below_desktop_width_but_week_and_list_stay():
+    """The month grid is desktop-only: on a phone its button is disabled, not hidden."""
     html = _html()
-    assert '.view-seg a.seg-opt, .view-seg [data-act="view-month"] { display:none; }' in html
+    assert ".view-seg a.seg-opt { display:none; }" in html
+    assert "(DESKTOP.matches ? '' : ' disabled title=" in html
     assert "@media (max-width: 899px) { .view-seg { display:none; } }" not in html
     assert 'data-act="view-list"' in html
 

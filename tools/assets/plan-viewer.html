@@ -1199,7 +1199,7 @@ function planTab() {
         + ' title="' + (todayWeek() ? 'Jump back to ' + (month ? 'this month' : 'this week') : 'Today is outside this plan') + '">' + (month ? 'This month' : 'This week') + '</button>')
       + '<div class="seg view-seg" role="group" aria-label="Plan view">'
         + '<button type="button" class="seg-opt' + (month || list ? '' : ' on') + '" data-act="view-week" aria-pressed="' + (!month && !list) + '">Week</button>'
-        + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '">Month</button>'
+        + '<button type="button" class="seg-opt' + (month ? ' on' : '') + '" data-act="view-month" aria-pressed="' + month + '"' + (DESKTOP.matches ? '' : ' disabled title="Month view is not available on a phone yet"') + '>Month</button>'
         + '<button type="button" class="seg-opt' + (list ? ' on' : '') + '" data-act="view-list" aria-pressed="' + list + '">List</button>'
         + '<a class="seg-opt" href="' + esc(appLink('/training-plan/season')) + '" title="Every plan on one timeline">Season</a></div>'
       + (list ? '' : month
@@ -3298,7 +3298,8 @@ a.seg-opt { color:inherit; text-decoration:none; }
 .lv-results mark { background:color-mix(in srgb, var(--color-accent) 30%, transparent); color:inherit; border-radius:3px; padding:0 1px; }
 .view-seg a.seg-opt { color:inherit; text-decoration:none; }
 @media (max-width: 899px) {
-  .view-seg a.seg-opt, .view-seg [data-act="view-month"] { display:none; }
+  .view-seg a.seg-opt { display:none; }
+  .view-seg .seg-opt:disabled { color:var(--color-neutral-600); cursor:not-allowed; }
   .view-seg .seg-opt { min-height:40px; }
   .lv-bar { padding:8px 18px 10px; }
   .lv-filter-label { display:none; }
