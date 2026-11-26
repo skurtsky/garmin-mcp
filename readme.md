@@ -19,7 +19,9 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 | Tool | Description |
 |---|---|
 | `athlete_profile` | Weight, height, VO2max (running & cycling), lactate threshold HR and pace, FTP, and 7-day average resting HR |
-| `gear` | Registered gear (shoes, bikes, etc.) with distance, activity count, and status |
+| `gear` | Registered gear (shoes, bikes, etc.) with distance, activity count, and status; each item includes its `uuid` |
+| `set_gear_on_activity` | Attach a piece of gear to an activity (`activity_id` + gear `uuid` from `gear`) |
+| `remove_gear_from_activity` | Detach a piece of gear from an activity (`activity_id` + gear `uuid`) |
 
 ### Activities
 
@@ -676,7 +678,7 @@ garmin-mcp/
 │   ├── health.py          # get_sleep, get_daily_readiness, get_daily_health, get_training_status, get_training_readiness
 │   ├── navbar.py          # the one site nav (bottom pill / desktop rail) on every hosted page
 │   ├── performance.py     # get_endurance_score, get_running_tolerance, get_personal_records
-│   ├── profile.py         # get_athlete_profile, get_gear
+│   ├── profile.py         # get_athlete_profile, get_gear, set/remove activity gear
 │   ├── plan_calendar.py   # the active plan as an iCalendar feed + its start-time schedule and feed key
 │   ├── plan_doc.py        # training-plan document rules: validation, weekly totals, edit operations
 │   ├── plan_validation.py # strict plan validation for create_training_plan / replace_week (paths, errors, warnings)

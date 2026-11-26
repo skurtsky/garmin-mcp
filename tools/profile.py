@@ -149,3 +149,28 @@ def get_activity_gear(activity_id: int) -> list[dict]:
         items.append(_activity_gear_item(g, stats))
 
     return items
+
+
+def set_activity_gear(activity_id: int, gear_uuid: str) -> dict:
+    """
+    Attach a piece of gear to an activity. gear_uuid is the `uuid` returned
+    by get_gear / get_activity_gear.
+
+    Note: the copy of gear cached in the DB (activity_details.detail) is not
+    updated here and stays stale until the activity is re-synced; live reads
+    (activity_detail's gear) reflect the change immediately.
+    """
+    client = get_client()
+    client.add_gear_to_activity(gear_uuid, activity_id)
+    return {'activity_id': activity_id, 'gear_uuid': gear_uuid, 'action': 'added'}
+
+
+def remove_activity_gear(activity_id: int, gear_uuid: str) -> dict:
+    """
+    Detach a piece of gear from an activity. gear_uuid is the `uuid` returned
+    by get_gear / get_activity_gear. Same DB-cache staleness caveat as
+    set_activity_gear.
+    """
+    client = get_client()
+    client.remove_gear_from_activity(gear_uuid, activity_id)
+    return {'activity_id': activity_id, 'gear_uuid': gear_uuid, 'action': 'removed'}

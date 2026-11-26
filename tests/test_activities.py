@@ -761,3 +761,35 @@ def test_get_weekly_summary_from_db_offset_queries_the_right_week(monkeypatch):
     assert result["activities"] == []
     assert seen["range"][0] == expected_monday.isoformat()
 
+
+
+def test_extract_laps_swim_lengths_from_length_dtos():
+    laps_data = {'lapDTOs': [{
+        'lapIndex': 1, 'distance': 50, 'duration': 60, 'intensityType': 'ACTIVE',
+        'lengthDTOs': [
+            {'lengthIndex': 0, 'distance': 25, 'duration': 30,
+             'totalNumberOfStrokes': 18, 'averageSWOLF': 48,
+             'swimStroke': 'FREESTYLE', 'averageHR': 130},
+            {'distance': 25, 'duration': 30},  # sparse length: no .get() may raise
+        ],
+    }]}
+    rows = _extract_laps(laps_data, weight_kg=70, sport='lap_swimming')
+    first, second = rows[0]['lengths']
+    assert first == {'length': 0, 'distance_m': 25, 'time': '0:30.0',
+                     'pace': '2:00/100m', 'strokes': 18, 'swolf': 48,
+                     'stroke': 'FREESTYLE', 'avg_hr': 130}
+    assert second['strokes'] is None and second['length'] is None
+
+
+def test_extract_laps_swim_without_length_dtos_has_no_lengths_key():
+    base = {'lapIndex': 1, 'distance': 100, 'duration': 136, 'intensityType': 'ACTIVE'}
+    for lap in (base, {**base, 'lengthDTOs': []}, {**base, 'lengthDTOs': None}):
+        rows = _extract_laps({'lapDTOs': [lap]}, weight_kg=70, sport='lap_swimming')
+        assert 'lengths' not in rows[0]
+        assert rows[0]['avg_pace'] == '2:16/100m'
+
+
+def test_extract_laps_non_swim_ignores_length_dtos():
+    laps_data = {'lapDTOs': [{'lapIndex': 1, 'distance': 1000, 'duration': 300,
+                              'lengthDTOs': [{'distance': 25, 'duration': 30}]}]}
+    assert 'lengths' not in _extract_laps(laps_data, weight_kg=70, sport='running')[0]

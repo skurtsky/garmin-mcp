@@ -138,6 +138,22 @@ def _is_bike_sport(sport: str) -> bool:
     return 'bik' in sport or 'cycl' in sport or 'ride' in sport
 
 
+def _extract_length(length: dict) -> dict:
+    """One pool length within a swim lap (all fields optional in Garmin's payload)."""
+    distance = length.get('distance') or 0
+    duration = length.get('duration') or 0
+    return {
+        'length':     length.get('lengthIndex'),
+        'distance_m': distance,
+        'time':       _fmt_time(duration),
+        'pace':       _label_pace(_fmt_pace_100m(distance, duration), '/100m'),
+        'strokes':    length.get('totalNumberOfStrokes'),
+        'swolf':      length.get('averageSWOLF'),
+        'stroke':     length.get('swimStroke'),
+        'avg_hr':     length.get('averageHR'),
+    }
+
+
 def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[dict]:
     """Extract per-lap data from Garmin splits response.
 
@@ -177,7 +193,7 @@ def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[di
             avg_pace = _label_pace(_fmt_pace(avg_speed), '/km')
             avg_moving_pace = _label_pace(_fmt_pace(avg_moving_speed), '/km')
 
-        rows.append({
+        row = {
             'interval':              interval_label,
             'step_type':             intensity.replace('_', ' ').title(),
             'lap':                   lap.get('lapIndex'),
@@ -204,7 +220,10 @@ def _extract_laps(laps_data: dict, weight_kg: float, sport: str = '') -> list[di
             'avg_temp_c':            lap.get('averageTemperature'),
             'calories':              lap.get('calories'),
             'compliance_score':      lap.get('directWorkoutComplianceScore'),
-        })
+        }
+        if is_swim and lap.get('lengthDTOs'):
+            row['lengths'] = [_extract_length(x) for x in lap['lengthDTOs']]
+        rows.append(row)
 
     return rows
 

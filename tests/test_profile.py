@@ -138,3 +138,34 @@ def test_resting_hr_falls_back_to_yesterday_when_today_has_none(monkeypatch):
     monkeypatch.setattr(profile_mod, "get_client", lambda: _Client())
     monkeypatch.setattr(profile_mod, "local_today", lambda: date(2026, 9, 28))
     assert profile_mod.get_athlete_profile()["resting_hr_7day_avg"] == 48
+
+
+class _FakeGearClient:
+    def __init__(self):
+        self.calls = []
+
+    def add_gear_to_activity(self, gear_uuid, activity_id):
+        self.calls.append(('add', gear_uuid, activity_id))
+        return {}
+
+    def remove_gear_from_activity(self, gear_uuid, activity_id):
+        self.calls.append(('remove', gear_uuid, activity_id))
+        return {}
+
+
+def test_set_activity_gear_calls_client(monkeypatch):
+    from tools import profile
+    fake = _FakeGearClient()
+    monkeypatch.setattr(profile, 'get_client', lambda: fake)
+    out = profile.set_activity_gear(123, 'uuid-1')
+    assert fake.calls == [('add', 'uuid-1', 123)]
+    assert out == {'activity_id': 123, 'gear_uuid': 'uuid-1', 'action': 'added'}
+
+
+def test_remove_activity_gear_calls_client(monkeypatch):
+    from tools import profile
+    fake = _FakeGearClient()
+    monkeypatch.setattr(profile, 'get_client', lambda: fake)
+    out = profile.remove_activity_gear(123, 'uuid-1')
+    assert fake.calls == [('remove', 'uuid-1', 123)]
+    assert out['action'] == 'removed'

@@ -5,7 +5,9 @@ import zlib
 from fastmcp import FastMCP
 from dotenv import load_dotenv
 
-from tools.profile import get_athlete_profile, get_gear
+from tools.profile import (
+    get_athlete_profile, get_gear, set_activity_gear, remove_activity_gear,
+)
 from tools.challenges import (
     get_active_goals,
     get_earned_badges,
@@ -391,6 +393,30 @@ def gear() -> list:
     activity type, distance and time used, and current status.
     """
     return get_gear()
+
+
+@mcp.tool()
+def set_gear_on_activity(activity_id: int, gear_uuid: str) -> dict:
+    """
+    Attach a piece of gear (shoes, bike, …) to an activity.
+
+    Args:
+        activity_id: Garmin activity ID
+        gear_uuid:   The gear's `uuid`, as returned by the `gear` tool
+    """
+    return set_activity_gear(activity_id, gear_uuid)
+
+
+@mcp.tool()
+def remove_gear_from_activity(activity_id: int, gear_uuid: str) -> dict:
+    """
+    Detach a piece of gear from an activity.
+
+    Args:
+        activity_id: Garmin activity ID
+        gear_uuid:   The gear's `uuid`, as returned by the `gear` tool
+    """
+    return remove_activity_gear(activity_id, gear_uuid)
 
 
 @mcp.tool()
