@@ -270,6 +270,7 @@ Optional environment variables:
 | `DASHBOARD_TZ_OFFSET_HOURS` | `0` | Fixed offset from UTC (e.g. `-4`), used only when `LOCAL_TIMEZONE` is unset. Doesn't follow daylight saving |
 | `DASHBOARD_REFRESH_SECONDS` | `300` | How old the dashboard can get before coming back to the app refreshes it; set `0` to disable |
 | `DASHBOARD_TREND_PERIOD` | `14d` | `get_trends` window backing the Trends tab (`7d`, `14d`, `1m`, …) — the 7d/14d/30d toggle only offers ranges within this window. `get_trends` fetches its per-day metrics concurrently, but there's no batch endpoint for most of them, so wider windows still add latency; `1m` (30d) restores the full toggle at the cost of a slower load |
+| `CARTO_BASEMAPS_API_KEY` | — | Free CARTO Basemaps API key for the activity route map. CARTO now serves a watermark instead of tiles without one; when set, it's appended to the tile URL as `?key=`. Leave unset to keep the watermarked tiles. Never commit it |
 
 ## Training Plan
 

@@ -53,6 +53,24 @@ REFRESH_SECONDS = int(os.environ.get("DASHBOARD_REFRESH_SECONDS", "300"))
 # fetched window actually show a toggle button.
 TREND_PERIOD = os.environ.get("DASHBOARD_TREND_PERIOD", "").strip() or "6m"
 
+# CARTO's basemap tiles now need a free API key appended as ?key=...; without
+# one every tile is a watermark PNG. The key is supplied at runtime only (never
+# committed) via CARTO_BASEMAPS_API_KEY and injected into the tile URL below.
+_CARTO_TILE_URL = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+
+
+def map_tile_url() -> str:
+    """Route-map tile URL template, with ?key= appended when a CARTO key is set.
+
+    Read per call so the env var can change without re-importing. Unset/blank
+    leaves the URL untouched (watermarked tiles, as before). The key is
+    URL-encoded and never logged.
+    """
+    key = os.environ.get("CARTO_BASEMAPS_API_KEY", "").strip()
+    if not key:
+        return _CARTO_TILE_URL
+    return f"{_CARTO_TILE_URL}?{urlencode({'key': key})}"
+
 
 _TREND_METRICS = ["rhr", "hrv", "sleep_score", "stress", "steps", "training_load"]
 
@@ -3888,7 +3906,9 @@ _ACTIVITY_MODAL_JS = """
     if (!pts.length) return;
     destroyMap();
     var map = L.map(el, { zoomControl: true, attributionControl: true, scrollWheelZoom: false });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    var tileUrl = (window.__DASH && window.__DASH.mapTileUrl) ||
+      'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png';
+    L.tileLayer(tileUrl, {
       attribution: '&copy; OpenStreetMap contributors &copy; CARTO', maxZoom: 19,
     }).addTo(map);
     var line = L.polyline(pts, { color: '#9184d9', weight: 3, opacity: 0.9 }).addTo(map);
@@ -4869,6 +4889,7 @@ def render_dashboard_body(data: dict, token: str | None = None,
     app_config = json.dumps({
         "renderedAt": int(time.time() * 1000),
         "staleAfterMs": max(0, REFRESH_SECONDS) * 1000,
+        "mapTileUrl": map_tile_url(),
     })
     return (
         "<style>#dash-boot{display:none}</style>"

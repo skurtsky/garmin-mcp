@@ -1152,6 +1152,34 @@ def test_no_external_requests_on_load():
     )
 
 
+def test_map_tile_url_appends_key_when_set(monkeypatch):
+    monkeypatch.setenv("CARTO_BASEMAPS_API_KEY", "TESTKEY")
+    url = dashboard.map_tile_url()
+    assert url == (
+        "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=TESTKEY"
+    )
+    assert "cartocdn.com" in url
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_map_tile_url_unchanged_without_key(monkeypatch, value):
+    if value is None:
+        monkeypatch.delenv("CARTO_BASEMAPS_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("CARTO_BASEMAPS_API_KEY", value)
+    url = dashboard.map_tile_url()
+    assert "key=" not in url
+    assert url == "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+
+
+def test_map_tile_url_is_injected_into_page(monkeypatch):
+    monkeypatch.setenv("CARTO_BASEMAPS_API_KEY", "TESTKEY")
+    html = dashboard.render_dashboard_html(SAMPLE)
+    assert "?key=TESTKEY" in html
+    monkeypatch.delenv("CARTO_BASEMAPS_API_KEY")
+    assert "key=" not in dashboard.render_dashboard_html(SAMPLE).split("mapTileUrl")[1][:150]
+
+
 def test_render_includes_inline_chart_interactivity_script():
     html = dashboard.render_dashboard_html(SAMPLE)
     assert "<script>" in html
