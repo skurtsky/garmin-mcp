@@ -29,6 +29,7 @@ and [FastMCP](https://github.com/jlowin/fastmcp).
 |---|---|
 | `recent_activities` | Recent activity list with summary metrics; supports sport type filter and date range |
 | `activity_detail` | Full activity detail with lap splits, structured-workout interval/phase breakdown, HR zones, and weather conditions; multisport activities also break out each leg (swim / T1 / bike / T2 / run) under `sub_activities`; `gear` lists the shoes/bike used with their cumulative distance, per-leg for multisport |
+| `download_activity_fit` | Download the original FIT file for an activity as base64 (`fit_base64`) with `filename` and `size_bytes` |
 | `weekly_summary` | Aggregated activity totals for a Monday–Sunday week with per-sport breakdown |
 | `activity_summary` | Aggregated training stats (distance, duration, calories, elevation) over any date range, optionally filtered by sport with a per-sport breakdown |
 | `personal_records` | Personal records for running, cycling, and swimming grouped by sport |

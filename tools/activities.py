@@ -1,9 +1,13 @@
 # tools/activities.py
+import base64
 import calendar
+import io
 import logging
 import re
 import time
+import zipfile
 from collections import Counter
+from garminconnect import Garmin
 from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
 from tools.best_efforts import activity_efforts
@@ -1226,4 +1230,47 @@ def get_swim_records(months: int = 6, top_n: int = 5) -> dict:
         'period':        f"{start.isoformat()} to {today.isoformat()}",
         'swims_scanned': len(swims),
         'longest_sets':  sets[:top_n],
+    }
+
+
+def download_activity_fit(activity_id: int) -> dict:
+    """Download the original FIT file for an activity, base64-encoded.
+
+    Garmin serves the ORIGINAL format as a zip wrapping the .fit; it is
+    unwrapped here so the result is the raw FIT file. Raises ValueError with a
+    clear message for an unknown activity or a failed/empty download.
+    """
+    client = get_client()
+    try:
+        data = client.download_activity(
+            activity_id, dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
+        )
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "not found" in msg.lower():
+            raise ValueError(f"No activity found with id {activity_id}.") from e
+        raise ValueError(
+            f"Failed to download FIT file for activity {activity_id}: {msg}"
+        ) from e
+    if not data:
+        raise ValueError(f"Garmin returned no FIT data for activity {activity_id}.")
+    data = bytes(data)
+    if zipfile.is_zipfile(io.BytesIO(data)):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                names = [n for n in zf.namelist() if n.lower().endswith(".fit")]
+                if not names:
+                    raise ValueError(
+                        f"Download for activity {activity_id} contained no .fit file."
+                    )
+                data = zf.read(names[0])
+        except zipfile.BadZipFile as e:
+            raise ValueError(
+                f"Download for activity {activity_id} was a corrupt zip: {e}"
+            ) from e
+    return {
+        "activity_id": activity_id,
+        "filename": f"{activity_id}.fit",
+        "size_bytes": len(data),
+        "fit_base64": base64.b64encode(data).decode("ascii"),
     }

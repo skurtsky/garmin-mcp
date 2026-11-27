@@ -16,6 +16,7 @@ from tools.challenges import (
 from tools.activities import (
     get_activities,
     get_activity,
+    download_activity_fit as _download_activity_fit,
     get_activity_summary,
     get_weekly_summary,
     get_swim_records,
@@ -215,6 +216,21 @@ def activity_detail(activity_id: int) -> dict:
         activity_id: Garmin activity ID (get from recent_activities)
     """
     return get_activity(activity_id)
+
+
+@mcp.tool()
+def download_activity_fit(activity_id: int) -> dict:
+    """
+    Download the ORIGINAL FIT file for an activity (the device's raw
+    recording, not TCX/GPX). Returns activity_id, filename
+    ('<activity_id>.fit'), size_bytes and fit_base64 (the file, base64-encoded;
+    decode it to get the exact FIT bytes). Errors for an unknown activity or a
+    failed download. Files can be large, so use only when raw FIT data is needed.
+
+    Args:
+        activity_id: Garmin activity ID (get from recent_activities)
+    """
+    return _download_activity_fit(activity_id)
 
 
 @mcp.tool()
