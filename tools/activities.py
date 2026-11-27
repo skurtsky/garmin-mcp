@@ -3,7 +3,9 @@ import base64
 import calendar
 import io
 import logging
+import os
 import re
+import tempfile
 import time
 import zipfile
 from collections import Counter
@@ -1274,3 +1276,89 @@ def download_activity_fit(activity_id: int) -> dict:
         "size_bytes": len(data),
         "fit_base64": base64.b64encode(data).decode("ascii"),
     }
+
+
+def _extract_upload_result(resp) -> dict:
+    """Normalise a Garmin upload response (dict, or Response-like) to a dict."""
+    if hasattr(resp, "json") and callable(resp.json):
+        try:
+            resp = resp.json()
+        except Exception:  # noqa: BLE001
+            resp = {}
+    return resp if isinstance(resp, dict) else {}
+
+
+def upload_activity_fit(fit_base64: str, filename: str = "activity.fit") -> dict:
+    """Upload a FIT file (base64-encoded) to Garmin Connect as a NEW activity.
+
+    Uploading never amends an existing activity. Returns activity_id (parsed
+    from the import result), filename, size_bytes and the raw upload_status.
+    Raises ValueError for bad base64, empty data, an upload Garmin rejects
+    (including duplicates) or any upload failure.
+    """
+    if not fit_base64 or not str(fit_base64).strip():
+        raise ValueError("fit_base64 is empty; provide the base64-encoded FIT file.")
+    try:
+        data = base64.b64decode(fit_base64, validate=True)
+    except Exception as e:  # binascii.Error / ValueError
+        raise ValueError(f"fit_base64 is not valid base64: {e}") from e
+    if not data:
+        raise ValueError("Decoded FIT data is empty.")
+
+    # Only the basename is used, and the extension must be one the library
+    # accepts; default to .fit so a odd filename can't escape the temp dir.
+    name = os.path.basename(filename or "") or "activity.fit"
+    if not name.lower().endswith(".fit"):
+        name = f"{name}.fit"
+
+    client = get_client()
+    with tempfile.TemporaryDirectory(prefix="garmin_fit_") as tmp:
+        path = os.path.join(tmp, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        try:
+            resp = client.upload_activity(path)
+        except Exception as e:
+            msg = str(e)
+            if "409" in msg or "duplicate" in msg.lower():
+                raise ValueError(
+                    f"Garmin rejected the upload as a duplicate activity: {msg}"
+                ) from e
+            raise ValueError(f"Failed to upload FIT file: {msg}") from e
+
+    status = _extract_upload_result(resp)
+    result = status.get("detailedImportResult", status)
+    successes = result.get("successes") or []
+    failures = result.get("failures") or []
+    activity_id = None
+    for item in successes:
+        if isinstance(item, dict) and item.get("internalId") is not None:
+            activity_id = item["internalId"]
+            break
+    if activity_id is None and not failures:
+        activity_id = result.get("internalId")
+    if activity_id is None:
+        detail = f" Garmin reported: {failures}" if failures else ""
+        raise ValueError(f"Upload did not create an activity.{detail}")
+    return {
+        "activity_id": activity_id,
+        "filename": name,
+        "size_bytes": len(data),
+        "upload_status": status,
+    }
+
+
+def delete_activity(activity_id: int) -> dict:
+    """Permanently delete an activity from Garmin Connect.
+
+    Raises ValueError for an unknown activity or a failed delete.
+    """
+    client = get_client()
+    try:
+        client.delete_activity(str(activity_id))
+    except Exception as e:
+        msg = str(e)
+        if "404" in msg or "not found" in msg.lower():
+            raise ValueError(f"No activity found with id {activity_id}.") from e
+        raise ValueError(f"Failed to delete activity {activity_id}: {msg}") from e
+    return {"activity_id": activity_id, "deleted": True}

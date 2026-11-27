@@ -17,6 +17,8 @@ from tools.activities import (
     get_activities,
     get_activity,
     download_activity_fit as _download_activity_fit,
+    upload_activity_fit as _upload_activity_fit,
+    delete_activity as _delete_activity,
     get_activity_summary,
     get_weekly_summary,
     get_swim_records,
@@ -231,6 +233,36 @@ def download_activity_fit(activity_id: int) -> dict:
         activity_id: Garmin activity ID (get from recent_activities)
     """
     return _download_activity_fit(activity_id)
+
+
+@mcp.tool()
+def upload_activity_fit(fit_base64: str, filename: str = "activity.fit") -> dict:
+    """
+    Upload a FIT file to Garmin Connect. This creates a NEW activity; it does
+    not amend an existing one (to replace an activity, upload the new file and
+    then delete_activity the old one). Returns activity_id (the new activity),
+    filename, size_bytes and upload_status (Garmin's raw import response).
+    Errors for bad base64, empty data, duplicates, or a failed upload.
+
+    Args:
+        fit_base64: The FIT file bytes, base64-encoded (as from download_activity_fit)
+        filename: Name for the uploaded file (default 'activity.fit')
+    """
+    return _upload_activity_fit(fit_base64, filename)
+
+
+@mcp.tool()
+def delete_activity(activity_id: int) -> dict:
+    """
+    Permanently delete an activity from Garmin Connect. This cannot be undone,
+    so download_activity_fit first if the data may be needed. Returns
+    activity_id and deleted=true. Errors for an unknown activity or a failed
+    delete.
+
+    Args:
+        activity_id: Garmin activity ID (get from recent_activities)
+    """
+    return _delete_activity(activity_id)
 
 
 @mcp.tool()
