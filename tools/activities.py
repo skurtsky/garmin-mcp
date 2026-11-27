@@ -2,6 +2,7 @@
 import base64
 import calendar
 import io
+import json
 import logging
 import os
 import re
@@ -13,7 +14,7 @@ from garminconnect import Garmin
 from garmin_client import get_client
 from tools.profile import get_athlete_profile, get_activity_gear
 from tools.best_efforts import activity_efforts
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from tools.local_time import local_today
 
 logger = logging.getLogger(__name__)
@@ -1279,22 +1280,94 @@ def download_activity_fit(activity_id: int) -> dict:
 
 
 def _extract_upload_result(resp) -> dict:
-    """Normalise a Garmin upload response (dict, or Response-like) to a dict."""
+    """Normalise a Garmin upload response (dict, JSON string, bytes, or
+    Response-like) to a dict. Anything unparseable becomes {}."""
     if hasattr(resp, "json") and callable(resp.json):
         try:
             resp = resp.json()
         except Exception:  # noqa: BLE001
-            resp = {}
+            resp = getattr(resp, "text", None) or {}
+    if isinstance(resp, (bytes, bytearray)):
+        resp = resp.decode("utf-8", "replace")
+    if isinstance(resp, str):
+        try:
+            resp = json.loads(resp)
+        except ValueError:
+            return {}
+    if isinstance(resp, list):  # bare list of import results
+        resp = {"successes": resp}
     return resp if isinstance(resp, dict) else {}
+
+
+def _id_from_item(item):
+    if isinstance(item, dict):
+        for key in ("internalId", "activityId", "id"):
+            if item.get(key) is not None:
+                return item[key]
+    elif isinstance(item, int) and not isinstance(item, bool):
+        return item
+    return None
+
+
+def _parse_upload_activity_id(status: dict):
+    """Find the new activity id in any known upload response shape."""
+    for result in (status.get("detailedImportResult"), status):
+        if not isinstance(result, dict):
+            continue
+        successes = result.get("successes") or []
+        if isinstance(successes, dict):
+            successes = [successes]
+        for item in successes:
+            found = _id_from_item(item)
+            if found is not None:
+                return found
+        if not (result.get("failures") or []):
+            found = _id_from_item(result)
+            if found is not None:
+                return found
+    return None
+
+
+def _recent_activity_list(client, limit: int = 5) -> list[dict]:
+    """Newest-first activity list; [] on any error or odd shape."""
+    try:
+        acts = client.get_activities(0, limit)
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(acts, list):
+        return []
+    return [a for a in acts if isinstance(a, dict) and a.get("activityId") is not None]
+
+
+def _looks_just_created(a: dict, now: datetime, window_s: int = 600) -> bool:
+    """True if an activity-list entry carries a creation/upload timestamp within
+    the last few minutes."""
+    for key in ("uploadDate", "createdDate", "createDate", "uploadedDate"):
+        val = a.get(key)
+        if not val:
+            continue
+        try:
+            if isinstance(val, (int, float)):
+                ts = datetime.fromtimestamp(val / 1000, tz=timezone.utc)
+            else:
+                ts = datetime.fromisoformat(str(val).replace("Z", "+00:00"))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            continue
+        if abs((now - ts).total_seconds()) <= window_s:
+            return True
+    return False
 
 
 def upload_activity_fit(fit_base64: str, filename: str = "activity.fit") -> dict:
     """Upload a FIT file (base64-encoded) to Garmin Connect as a NEW activity.
 
     Uploading never amends an existing activity. Returns activity_id (parsed
-    from the import result), filename, size_bytes and the raw upload_status.
-    Raises ValueError for bad base64, empty data, an upload Garmin rejects
-    (including duplicates) or any upload failure.
+    from the import result, or, if Garmin's response carries no id, found by
+    looking up the newly created activity), filename, size_bytes and the raw
+    upload_status. Raises ValueError for bad base64, empty data, an upload
+    Garmin rejects (including duplicates) or any upload failure.
     """
     if not fit_base64 or not str(fit_base64).strip():
         raise ValueError("fit_base64 is empty; provide the base64-encoded FIT file.")
@@ -1312,6 +1385,8 @@ def upload_activity_fit(fit_base64: str, filename: str = "activity.fit") -> dict
         name = f"{name}.fit"
 
     client = get_client()
+    # Snapshot of existing ids so the fallback can tell which activity is new.
+    before_ids = {a["activityId"] for a in _recent_activity_list(client)}
     with tempfile.TemporaryDirectory(prefix="garmin_fit_") as tmp:
         path = os.path.join(tmp, name)
         with open(path, "wb") as f:
@@ -1328,18 +1403,24 @@ def upload_activity_fit(fit_base64: str, filename: str = "activity.fit") -> dict
 
     status = _extract_upload_result(resp)
     result = status.get("detailedImportResult", status)
-    successes = result.get("successes") or []
-    failures = result.get("failures") or []
-    activity_id = None
-    for item in successes:
-        if isinstance(item, dict) and item.get("internalId") is not None:
-            activity_id = item["internalId"]
-            break
+    failures = (result.get("failures") if isinstance(result, dict) else None) or []
+    activity_id = _parse_upload_activity_id(status)
+
     if activity_id is None and not failures:
-        activity_id = result.get("internalId")
+        # Garmin created the activity but the response had no usable id.
+        recent = _recent_activity_list(client)
+        now = datetime.now(timezone.utc)
+        new = [a for a in recent if a["activityId"] not in before_ids]
+        if before_ids and new:
+            activity_id = new[0]["activityId"]
+        elif not before_ids and recent and _looks_just_created(recent[0], now):
+            activity_id = recent[0]["activityId"]
+
     if activity_id is None:
         detail = f" Garmin reported: {failures}" if failures else ""
-        raise ValueError(f"Upload did not create an activity.{detail}")
+        raise ValueError(
+            f"Upload did not create an activity.{detail} Raw response: {resp!r}"
+        )
     return {
         "activity_id": activity_id,
         "filename": name,
